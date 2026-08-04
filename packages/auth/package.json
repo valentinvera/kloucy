@@ -1,0 +1,25 @@
+{
+  "name": "@kloucy/auth",
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    },
+    "./*": {
+      "default": "./src/*.ts"
+    }
+  },
+  "scripts": {},
+  "dependencies": {
+    "@better-auth/expo": "catalog:",
+    "@kloucy/db": "workspace:*",
+    "@kloucy/env": "workspace:*",
+    "better-auth": "catalog:",
+    "dotenv": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@kloucy/config": "workspace:*",
+    "typescript": "^6.0.3"
+  }
+}
