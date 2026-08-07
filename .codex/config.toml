@@ -1,10 +1,14 @@
 [mcp_servers.context7]
-command = "npx"
+command = "bunx"
 args = ["-y", "@upstash/context7-mcp"]
 
 [mcp_servers.shadcn]
-command = "npx"
+command = "bunx"
 args = ["-y", "shadcn@latest", "mcp"]
+
+[mcp_servers.playwright]
+command = "bunx"
+args = ["-y", "@playwright/mcp@latest"]
 
 [mcp_servers.neon]
 type = "http"

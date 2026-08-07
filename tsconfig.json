@@ -1,5 +1,5 @@
 {
-  "extends": "@kloucy/config/tsconfig.base.json",
+  "extends": "@kloucy/ts-config/base",
   "compilerOptions": {
     "strictNullChecks": true
   }

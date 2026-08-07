@@ -1,33 +1,48 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
+  "globalDependencies": [
+    "**/package.json",
+    "**/.env*",
+    "**/tsconfig.json",
+    "bun.lock"
+  ],
+  "globalPassThroughEnv": [
+    "BETTER_AUTH_SECRET",
+    "BETTER_AUTH_URL",
+    "CORS_ORIGIN",
+    "DATABASE_URL",
+    "DATABASE_URL_DIRECT",
+    "DOCS_HOST",
+    "DOCS_PORT",
+    "EXPO_PUBLIC_API_URL",
+    "EXPO_TOKEN",
+    "PLAYWRIGHT_API_PORT",
+    "PLAYWRIGHT_API_URL",
+    "PLAYWRIGHT_ARTIFACTS_HOST",
+    "PLAYWRIGHT_ARTIFACTS_PORT",
+    "PLAYWRIGHT_BASE_URL",
+    "PLAYWRIGHT_BRAVE_EXECUTABLE_PATH",
+    "PLAYWRIGHT_BROWSER_EXECUTABLE_PATH",
+    "PLAYWRIGHT_RESOLVED_API_PORT",
+    "PLAYWRIGHT_RESOLVED_WEB_PORT",
+    "PLAYWRIGHT_SKIP_WEBSERVER",
+    "PLAYWRIGHT_WEB_PORT",
+    "PORT",
+    "VITE_API_URL",
+    "VITE_HOST",
+    "VITE_PORT"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": ["dist/**"]
-    },
-    "lint": {
-      "dependsOn": ["^lint"]
+      "outputs": ["dist/**", ".output/**", "target/**"]
     },
     "check-types": {
-      "dependsOn": ["^check-types"]
+      "dependsOn": ["^build", "^check-types"]
     },
     "dev": {
-      "cache": false,
-      "persistent": true
-    },
-    "db:push": {
-      "cache": false
-    },
-    "db:generate": {
-      "cache": false
-    },
-    "db:migrate": {
-      "cache": false,
-      "persistent": true
-    },
-    "db:studio": {
       "cache": false,
       "persistent": true
     }

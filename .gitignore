@@ -1,27 +1,44 @@
 # Dependencies
 node_modules
-.pnp
-.pnp.js
 
 # Build outputs
 dist
 build
+out
+web-build
+.output
+.nitro
+.vinxi
+.react-router
+.tanstack
+dev-dist
+target
 *.tsbuildinfo
+expo-env.d.ts
+uniwind-env.d.ts
+uniwind-types.d.ts
 
 # Generated files
 apps/web/src/routeTree.gen.ts
+apps/docs/src/routeTree.gen.ts
+packages/trpc/src/generated/server.ts
+prisma/generated
+packages/db/prisma/generated
+apps/docs/api
+apps/docs/server/build
+apps/docs/public/build
+apps/docs/playwright/.cache
 
 # Environment variables
-.env
-.env*.local
+.env*
+!.env.example
+.dev.vars*
 
 # IDEs and editors
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
 .idea
+.idea/workspace.xml
+.idea/usage.statistics.xml
+.idea/shelf
 *.swp
 *.swo
 *~
@@ -31,23 +48,44 @@ apps/web/src/routeTree.gen.ts
 logs
 .evlog/
 *.log
+*.log*
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+npm-debug.*
 lerna-debug.log*
 .pnpm-debug.log*
+pnpm-debug.log*
 
 # Turbo
 .turbo
-.nx
 
-# Better-T-Stack
-.alchemy
+# Deployment and local platform state
 .vercel
+.source
 
 # Testing
 coverage
+*.lcov
 .nyc_output
+test-results
+playwright-report
+blob-report
+.playwright-output
+
+# Expo and mobile signing
+.expo
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+.metro-health-check*
+
+# Local databases and certificates
+*.db*
+*.pem
 
 # Misc
 *.tgz

@@ -19,6 +19,12 @@
       "skillPath": "plugins/expo/skills/expo-tailwind-setup/SKILL.md",
       "computedHash": "fe7cb21735243b2701a3a1e35be6fbfd7cff6a146447200d4b14d225b619a46d"
     },
+    "gpui-component": {
+      "source": "longbridge/gpui-component",
+      "sourceType": "github",
+      "skillPath": "skills/gpui-component/SKILL.md",
+      "computedHash": "232b89966beb01bfda5f697f966cc80014d52b4d94ad724734a93e2452850394"
+    },
     "heroui-native": {
       "source": "heroui-inc/heroui",
       "sourceType": "github",
@@ -30,6 +36,24 @@
       "sourceType": "github",
       "skillPath": "skills/neon-postgres/SKILL.md",
       "computedHash": "7985b983f8ae5e36d88b82bcc2f3353726d22ced9be97d438681b308afed509e"
+    },
+    "nestjs-best-practices": {
+      "source": "kadajett/agent-nestjs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/nestjs-best-practices/SKILL.md",
+      "computedHash": "58f8a630637be3acce1f118c747d68160346ada8a43d76cb52a5b4c4edaa2d37"
+    },
+    "playwright-explore-website": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/playwright-explore-website/SKILL.md",
+      "computedHash": "ac361696198c2db22a0f9d3aa456d2f83c9f0110bf00d6ca529f735395fe3a5c"
+    },
+    "rust-async-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/systems-programming/skills/rust-async-patterns/SKILL.md",
+      "computedHash": "20d32ef58158c94eb4dfc4aaf19bec7ae2a025ae5d42da7b49ccfbaeda389273"
     },
     "shadcn": {
       "source": "shadcn/ui",

@@ -9,10 +9,14 @@
     "catalog": {
       "dotenv": "^17.4.2",
       "zod": "^4.4.3",
+      "typescript": "^6",
       "@types/bun": "^1.3.14",
       "hono": "^4.12.32",
+      "@nestjs/common": "^11.1.27",
+      "@nestjs/core": "^11.1.27",
+      "@nestjs/platform-express": "^11.1.27",
       "@trpc/server": "^11.18.0",
-      "better-auth": "1.6.25",
+      "better-auth": "1.6.22",
       "@tanstack/react-query": "^5.101.4",
       "lucide-react": "^1.27.0",
       "next-themes": "^0.4.6",
@@ -20,10 +24,16 @@
       "tailwindcss": "^4.3.3",
       "@trpc/tanstack-react-query": "^11.18.0",
       "@trpc/client": "^11.18.0",
+      "nestjs-trpc": "^2.12.0",
+      "reflect-metadata": "^0.2.2",
+      "rxjs": "7.8.1",
+      "react": "^19.2.8",
+      "react-dom": "^19.2.8",
       "@tanstack/react-form": "^1.33.2",
+      "@types/react": "^19.2.17",
       "@types/react-dom": "^19.2.3",
       "tailwind-merge": "^3.6.0",
-      "@better-auth/expo": "1.6.25"
+      "@better-auth/expo": "1.6.23"
     }
   },
   "type": "module",
@@ -31,15 +41,20 @@
     "dev": "turbo run dev",
     "build": "turbo run build",
     "check-types": "turbo run check-types",
-    "dev:native": "turbo run dev -F native",
-    "dev:web": "turbo run dev -F web",
-    "dev:server": "turbo run dev -F server",
-    "db:push": "turbo run db:push -F @kloucy/db",
-    "db:studio": "turbo run db:studio -F @kloucy/db",
-    "db:generate": "turbo run db:generate -F @kloucy/db",
-    "db:migrate": "turbo run db:migrate -F @kloucy/db",
+    "dev:mobile": "turbo run dev -F @kloucy/mobile",
+    "dev:desktop": "turbo run dev -F desktop",
+    "dev:docs": "turbo run dev -F @kloucy/docs",
+    "dev:web": "turbo run dev -F @kloucy/web",
+    "dev:api": "turbo run dev -F @kloucy/api",
+    "browser:install": "playwright install chromium",
+    "browser:open": "playwright cli open",
+    "browser:serve-artifacts": "bun scripts/playwright/serve-artifacts.ts",
+    "browser:show": "playwright cli show",
     "check": "ultracite check",
-    "fix": "ultracite fix"
+    "fix": "ultracite fix",
+    "test:e2e": "bun scripts/playwright/run.ts test",
+    "test:e2e:headed": "bun scripts/playwright/run.ts test --headed",
+    "test:e2e:ui": "bun scripts/playwright/run.ts test --ui"
   },
   "dependencies": {
     "@kloucy/env": "workspace:*",
@@ -48,12 +63,25 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.3",
-    "@kloucy/config": "workspace:*",
+    "@commitlint/cli": "^21.2.1",
+    "@commitlint/config-conventional": "^21.2.0",
+    "@kloucy/ts-config": "workspace:*",
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/schematics": "^11.0.0",
+    "@playwright/test": "^1.61.1",
+    "@swc/cli": "^0.8.1",
+    "@swc/core": "^1.15.46",
     "@types/bun": "catalog:",
     "lefthook": "latest",
+    "tsdown": "^0.22.14",
     "turbo": "^2.10.7",
-    "typescript": "^6.0.3",
+    "typescript": "catalog:",
     "ultracite": "7.9.4"
   },
-  "packageManager": "bun@1.3.14"
+  "packageManager": "bun@1.3.14",
+  "commitlint": {
+    "extends": [
+      "@commitlint/config-conventional"
+    ]
+  }
 }

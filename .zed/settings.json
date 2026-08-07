@@ -50,14 +50,20 @@
   "context_servers": {
     "context7": {
       "source": "custom",
-      "command": "npx",
+      "command": "bunx",
       "args": ["-y", "@upstash/context7-mcp"],
       "env": {}
     },
     "shadcn": {
       "source": "custom",
-      "command": "npx",
+      "command": "bunx",
       "args": ["-y", "shadcn@latest", "mcp"],
+      "env": {}
+    },
+    "playwright": {
+      "source": "custom",
+      "command": "bunx",
+      "args": ["-y", "@playwright/mcp@latest"],
       "env": {}
     },
     "neon": {

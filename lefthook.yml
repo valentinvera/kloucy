@@ -4,7 +4,12 @@
 pre-commit:
   parallel: true
   jobs:
-    - name: biome
-      glob: "*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
-      run: bun biome check --write --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
+    - name: biome + ultracite
+      glob: "*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc,md,mdx,css}"
+      run: bunx ultracite fix {staged_files} && bunx ultracite check {staged_files}
       stage_fixed: true
+
+commit-msg:
+  jobs:
+    - name: commitlint
+      run: bunx commitlint --edit {1}
