@@ -1,0 +1,17 @@
+{
+  "name": "@kloucy/ts-config",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    "./base": "./base.json",
+    "./expo-framework": "./expo-framework.json",
+    "./nestjs-framework": "./nestjs-framework.json",
+    "./react-library": "./react-library.json"
+  },
+  "files": [
+    "base.json",
+    "expo-framework.json",
+    "nestjs-framework.json",
+    "react-library.json"
+  ]
+}

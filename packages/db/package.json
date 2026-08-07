@@ -1,30 +1,39 @@
 {
   "name": "@kloucy/db",
+  "version": "0.0.0",
+  "private": true,
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
     },
-    "./*": {
-      "default": "./src/*.ts"
+    "./schema/*": {
+      "types": "./dist/schema/*.d.mts",
+      "import": "./dist/schema/*.mjs",
+      "default": "./dist/schema/*.mjs"
     }
   },
   "scripts": {
+    "build": "tsdown",
+    "check-types": "tsc --noEmit",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
     "@kloucy/env": "workspace:*",
-    "@neondatabase/serverless": "^1.1.0",
     "dotenv": "catalog:",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "^0.45.1",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@kloucy/config": "workspace:*",
-    "drizzle-kit": "^0.31.10",
-    "typescript": "^6.0.3"
+    "@kloucy/ts-config": "workspace:*",
+    "drizzle-kit": "^0.31.8",
+    "typescript": "catalog:"
   }
 }

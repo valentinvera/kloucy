@@ -1,34 +1,57 @@
-import { expo } from "@better-auth/expo";
-import { createDb } from "@kloucy/db";
-import * as schema from "@kloucy/db/schema/auth";
-import { env } from "@kloucy/env/server";
-import { betterAuth } from "better-auth";
-import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { expo } from "@better-auth/expo"
+import { createDb } from "@kloucy/db"
+import {
+  account,
+  accountRelations,
+  session,
+  sessionRelations,
+  user,
+  userRelations,
+  verification,
+} from "@kloucy/db/schema/auth"
+import { env } from "@kloucy/env/api"
+import { betterAuth } from "better-auth"
+import { drizzleAdapter } from "better-auth/adapters/drizzle"
+
+const authSchema = {
+  account,
+  accountRelations,
+  session,
+  sessionRelations,
+  user,
+  userRelations,
+  verification,
+}
 
 export function createAuth() {
-  const db = createDb();
+  const db = createDb()
 
   return betterAuth({
+    advanced: {
+      defaultCookieAttributes: {
+        httpOnly: true,
+        sameSite: "none",
+        secure: true,
+      },
+    },
+    baseURL: env.BETTER_AUTH_URL,
     database: drizzleAdapter(db, {
       provider: "pg",
 
-      schema: schema,
+      schema: authSchema,
     }),
-    trustedOrigins: [env.CORS_ORIGIN, "kloucy://", "exp://", "http://localhost:8081"],
     emailAndPassword: {
       enabled: true,
     },
-    secret: env.BETTER_AUTH_SECRET,
-    baseURL: env.BETTER_AUTH_URL,
-    advanced: {
-      defaultCookieAttributes: {
-        sameSite: "none",
-        secure: true,
-        httpOnly: true,
-      },
-    },
     plugins: [expo()],
-  });
+    secret: env.BETTER_AUTH_SECRET,
+    trustedOrigins: [
+      env.CORS_ORIGIN,
+      "kloucy://",
+      "exp://",
+      "http://localhost:8081",
+    ],
+  })
 }
 
-export const auth = createAuth();
+export const auth = createAuth()

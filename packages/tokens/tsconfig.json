@@ -1,0 +1,4 @@
+{
+  "extends": "@kloucy/ts-config/nestjs-framework",
+  "include": ["src/**/*.ts"]
+}

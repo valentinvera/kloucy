@@ -3,19 +3,26 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "sideEffects": false,
   "exports": {
-    "./server": "./src/server.ts",
-    "./web": "./src/web.ts",
-    "./native": "./src/native.ts"
+    "./*": {
+      "types": "./dist/*.d.mts",
+      "import": "./dist/*.mjs",
+      "default": "./dist/*.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "check-types": "tsc --noEmit"
   },
   "dependencies": {
-    "@t3-oss/env-core": "^0.13.11",
+    "@t3-oss/env-core": "^0.13.1",
     "dotenv": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@kloucy/config": "workspace:*",
+    "@kloucy/ts-config": "workspace:*",
     "@types/bun": "catalog:",
-    "typescript": "^6.0.3"
+    "typescript": "catalog:"
   }
 }

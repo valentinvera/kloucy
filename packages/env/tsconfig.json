@@ -1,6 +1,4 @@
 {
-  "extends": "@kloucy/config/tsconfig.base.json",
-  "compilerOptions": {
-    "strictNullChecks": true
-  }
+  "extends": "@kloucy/ts-config/nestjs-framework",
+  "include": ["src/**/*.ts"]
 }

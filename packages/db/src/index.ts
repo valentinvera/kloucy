@@ -1,12 +1,30 @@
-import { env } from "@kloucy/env/server";
-import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
+import { env } from "@kloucy/env/api"
+import { neon } from "@neondatabase/serverless"
+import { drizzle } from "drizzle-orm/neon-http"
 
-import * as schema from "./schema";
+import {
+  account,
+  accountRelations,
+  session,
+  sessionRelations,
+  user,
+  userRelations,
+  verification,
+} from "./schema/auth"
 
-export function createDb() {
-  const sql = neon(env.DATABASE_URL);
-  return drizzle(sql, { schema });
+const schema = {
+  account,
+  accountRelations,
+  session,
+  sessionRelations,
+  user,
+  userRelations,
+  verification,
 }
 
-export const db = createDb();
+export function createDb() {
+  const sql = neon(env.DATABASE_URL)
+  return drizzle(sql, { schema })
+}
+
+export const db = createDb()

@@ -1,60 +1,79 @@
-import type { AppRouter } from "@kloucy/api/routers/index";
-import { Toaster } from "@kloucy/ui/components/sonner";
-import type { QueryClient } from "@tanstack/react-query";
-import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
-import { HeadContent, Outlet, Scripts, createRootRouteWithContext } from "@tanstack/react-router";
-import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
-import type { TRPCOptionsProxy } from "@trpc/tanstack-react-query";
+import type { AppRouter } from "@kloucy/trpc/generated/server"
+import type { QueryClient } from "@tanstack/react-query"
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
+import {
+  createRootRouteWithContext,
+  HeadContent,
+  Outlet,
+  Scripts,
+} from "@tanstack/react-router"
+import { TanStackRouterDevtools } from "@tanstack/react-router-devtools"
+import type { TRPCOptionsProxy } from "@trpc/tanstack-react-query"
+import appCss from "../styles/globals.css?url"
 
-import Header from "../components/header";
-
-import appCss from "../index.css?url";
 export interface RouterAppContext {
-  trpc: TRPCOptionsProxy<AppRouter>;
-  queryClient: QueryClient;
+  queryClient: QueryClient
+  trpc: TRPCOptionsProxy<AppRouter>
 }
 
 export const Route = createRootRouteWithContext<RouterAppContext>()({
+  component: RootDocument,
   head: () => ({
+    links: [
+      {
+        href: appCss,
+        rel: "stylesheet",
+      },
+      {
+        href: "/manifest.webmanifest",
+        rel: "manifest",
+      },
+    ],
     meta: [
       {
         charSet: "utf-8",
       },
       {
-        name: "viewport",
         content: "width=device-width, initial-scale=1",
+        name: "viewport",
       },
       {
-        title: "My App",
+        title: "Kloucy",
       },
-    ],
-    links: [
       {
-        rel: "stylesheet",
-        href: appCss,
+        content: "Product clarity for focused builders.",
+        name: "description",
+      },
+      {
+        content: "#000000",
+        name: "theme-color",
+      },
+      {
+        content: "Kloucy",
+        name: "application-name",
+      },
+      {
+        content: "Kloucy",
+        name: "apple-mobile-web-app-title",
       },
     ],
   }),
-
-  component: RootDocument,
-});
+})
 
 function RootDocument() {
   return (
-    <html lang="en" className="dark">
+    <html className="dark" lang="en">
       <head>
         <HeadContent />
       </head>
       <body>
-        <div className="grid h-svh grid-rows-[auto_1fr]">
-          <Header />
+        <div className="min-h-svh">
           <Outlet />
         </div>
-        <Toaster richColors />
         <TanStackRouterDevtools position="bottom-left" />
-        <ReactQueryDevtools position="bottom" buttonPosition="bottom-right" />
+        <ReactQueryDevtools buttonPosition="bottom-right" position="bottom" />
         <Scripts />
       </body>
     </html>
-  );
+  )
 }

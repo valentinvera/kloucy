@@ -1,0 +1,12 @@
+{
+  "name": "desktop",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "cargo run",
+    "build": "cargo build",
+    "prod": "cargo run --release",
+    "check-types": "cargo check",
+    "format": "cargo fmt"
+  }
+}

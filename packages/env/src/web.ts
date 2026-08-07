@@ -1,12 +1,15 @@
-import { createEnv } from "@t3-oss/env-core";
-import { z } from "zod";
+import { createEnv } from "@t3-oss/env-core"
+import { z } from "zod"
+
+type ViteRuntimeEnv = Record<string, string | boolean | undefined>
 
 export const env = createEnv({
-  clientPrefix: "VITE_",
   client: {
-    VITE_SERVER_URL: z.url(),
+    VITE_API_URL: z.url(),
+    VITE_HOST: z.string().min(1),
+    VITE_PORT: z.coerce.number().int().positive(),
   },
-  runtimeEnv: (import.meta as any).env,
-  skipValidation: !!process.env.SKIP_ENV_VALIDATION,
+  clientPrefix: "VITE_",
   emptyStringAsUndefined: true,
-});
+  runtimeEnv: (import.meta as ImportMeta & { env: ViteRuntimeEnv }).env,
+})

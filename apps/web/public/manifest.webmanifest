@@ -1,0 +1,10 @@
+{
+  "name": "Kloucy",
+  "short_name": "Kloucy",
+  "description": "Product clarity for focused builders.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}

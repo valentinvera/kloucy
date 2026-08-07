@@ -1,15 +1,20 @@
 {
   "name": "@kloucy/auth",
+  "version": "0.0.0",
+  "private": true,
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
-      "default": "./src/index.ts"
-    },
-    "./*": {
-      "default": "./src/*.ts"
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
     }
   },
-  "scripts": {},
+  "scripts": {
+    "build": "tsdown",
+    "check-types": "tsc --noEmit"
+  },
   "dependencies": {
     "@better-auth/expo": "catalog:",
     "@kloucy/db": "workspace:*",
@@ -19,7 +24,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@kloucy/config": "workspace:*",
-    "typescript": "^6.0.3"
+    "@kloucy/ts-config": "workspace:*",
+    "typescript": "catalog:"
   }
 }

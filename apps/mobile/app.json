@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Kloucy",
+    "slug": "kloucy",
+    "version": "0.0.0",
+    "scheme": "kloucy",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "ios": {
+      "bundleIdentifier": "com.kloucy.app"
+    },
+    "android": {
+      "package": "com.kloucy.app"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": ["expo-font", "expo-updates", "expo-router"],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

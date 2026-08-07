@@ -1,0 +1,31 @@
+{
+  "name": "@kloucy/tokens",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "files": [
+    "dist",
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./tailwind.css": "./src/styles/tailwind.css",
+    "./uniwind.css": "./src/styles/uniwind.css",
+    "./tokens.css": "./src/styles/tailwind.css"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "check-types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@kloucy/ts-config": "workspace:*",
+    "typescript": "catalog:"
+  }
+}

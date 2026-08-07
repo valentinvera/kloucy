@@ -1,0 +1,61 @@
+{
+  "name": "@kloucy/trpc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./context": {
+      "types": "./dist/context.d.mts",
+      "import": "./dist/context.mjs",
+      "default": "./dist/context.mjs"
+    },
+    "./module": {
+      "types": "./dist/module.d.mts",
+      "import": "./dist/module.mjs",
+      "default": "./dist/module.mjs"
+    },
+    "./routers/*": {
+      "types": "./dist/routers/*.d.mts",
+      "import": "./dist/routers/*.mjs",
+      "default": "./dist/routers/*.mjs"
+    },
+    "./middleware/*": {
+      "types": "./dist/middleware/*.d.mts",
+      "import": "./dist/middleware/*.mjs",
+      "default": "./dist/middleware/*.mjs"
+    },
+    "./generated/*": {
+      "types": "./dist/generated/*.d.mts",
+      "import": "./dist/generated/*.mjs",
+      "default": "./dist/generated/*.mjs"
+    }
+  },
+  "scripts": {
+    "generate": "nestjs-trpc generate --entrypoint ./src/module.ts --router-pattern '**/*.router.ts' --output ./src/generated",
+    "build": "bun run generate && tsdown",
+    "check-types": "bun run generate && tsc --noEmit"
+  },
+  "dependencies": {
+    "@nestjs/common": "catalog:",
+    "@kloucy/auth": "workspace:*",
+    "@kloucy/db": "workspace:*",
+    "@kloucy/env": "workspace:*",
+    "@trpc/client": "catalog:",
+    "@trpc/server": "catalog:",
+    "better-auth": "catalog:",
+    "dotenv": "catalog:",
+    "nestjs-trpc": "catalog:",
+    "reflect-metadata": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@kloucy/ts-config": "workspace:*",
+    "typescript": "catalog:"
+  }
+}

@@ -1,14 +1,11 @@
 {
-  "extends": "@kloucy/config/tsconfig.base.json",
+  "extends": "@kloucy/ts-config/react-library",
   "compilerOptions": {
-    "jsx": "react-jsx",
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "types": [],
     "paths": {
+      "@kloucy/*": ["./src/*"],
       "@kloucy/ui/*": ["./src/*"]
-    },
-    "strictNullChecks": true
+    }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["node_modules"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

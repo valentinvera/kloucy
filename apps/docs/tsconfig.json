@@ -1,0 +1,10 @@
+{
+  "extends": "@kloucy/ts-config/react-library",
+  "include": ["**/*.ts", "**/*.tsx"],
+  "compilerOptions": {
+    "types": ["vite/client"],
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}

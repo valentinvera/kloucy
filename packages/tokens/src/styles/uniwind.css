@@ -1,0 +1,121 @@
+/* biome-ignore-all lint/suspicious/noDuplicateCustomProperties: Uniwind theme variants intentionally define the same token names for light and dark themes. */
+
+@import "./tailwind.css";
+
+@theme {
+  --font-sans: Inter_400Regular;
+  --font-inter-regular: Inter_400Regular;
+  --font-inter-medium: Inter_500Medium;
+  --font-inter-semibold: Inter_600SemiBold;
+  --font-inter-bold: Inter_700Bold;
+}
+
+@layer theme {
+  :root {
+    @variant light {
+      --background: hsl(0 0% 99.2%);
+      --foreground: hsl(0 0% 0%);
+      --card: hsl(0 0% 100%);
+      --card-foreground: hsl(0 0% 0%);
+      --popover: hsl(0 0% 100%);
+      --popover-foreground: hsl(0 0% 0%);
+      --primary: hsl(0 0% 0%);
+      --primary-foreground: hsl(0 0% 99.2%);
+      --secondary: hsl(240 5% 96%);
+      --secondary-foreground: hsl(0 0% 0%);
+      --muted: hsl(240 5% 96%);
+      --muted-foreground: hsl(222 5% 39%);
+      --accent: hsl(212 100% 50% / 0.23);
+      --accent-foreground: hsl(211 100% 37%);
+      --destructive: hsl(350 100% 55% / 0.18);
+      --destructive-foreground: hsl(350 82% 43%);
+      --warning: hsl(31 100% 49% / 0.13);
+      --warning-foreground: hsl(36 100% 30%);
+      --success: hsl(152 100% 57% / 0.12);
+      --success-foreground: hsl(155 71% 29%);
+      --info: hsl(212 100% 50% / 0.23);
+      --info-foreground: hsl(211 100% 37%);
+      --border: hsl(0 0% 0% / 0.12);
+      --input: hsl(0 0% 0% / 0.16);
+      --ring: hsl(209 100% 72%);
+      --color-background: var(--background);
+      --color-foreground: var(--foreground);
+      --color-card: var(--card);
+      --color-card-foreground: var(--card-foreground);
+      --color-popover: var(--popover);
+      --color-popover-foreground: var(--popover-foreground);
+      --color-primary: var(--primary);
+      --color-primary-foreground: var(--primary-foreground);
+      --color-secondary: var(--secondary);
+      --color-secondary-foreground: var(--secondary-foreground);
+      --color-muted: var(--muted);
+      --color-muted-foreground: var(--muted-foreground);
+      --color-accent: var(--accent);
+      --color-accent-foreground: var(--accent-foreground);
+      --color-destructive: var(--destructive);
+      --color-destructive-foreground: var(--destructive-foreground);
+      --color-warning: var(--warning);
+      --color-warning-foreground: var(--warning-foreground);
+      --color-success: var(--success);
+      --color-success-foreground: var(--success-foreground);
+      --color-info: var(--info);
+      --color-info-foreground: var(--info-foreground);
+      --color-border: var(--border);
+      --color-input: var(--input);
+      --color-ring: var(--ring);
+    }
+
+    @variant dark {
+      --background: hsl(0 0% 0%);
+      --foreground: hsl(0 0% 99.2%);
+      --card: hsl(225 8% 9% / 0.92);
+      --card-foreground: hsl(0 0% 99.2%);
+      --popover: hsl(225 8% 7%);
+      --popover-foreground: hsl(0 0% 99.2%);
+      --primary: hsl(0 0% 99.2%);
+      --primary-foreground: hsl(0 0% 0%);
+      --secondary: hsl(225 8% 9% / 0.92);
+      --secondary-foreground: hsl(0 0% 99.2%);
+      --muted: hsl(225 8% 9% / 0.6);
+      --muted-foreground: hsl(210 100% 99% / 0.65);
+      --accent: hsl(212 100% 50% / 0.23);
+      --accent-foreground: hsl(209 100% 72%);
+      --destructive: hsl(350 100% 55% / 0.18);
+      --destructive-foreground: hsl(1 100% 79%);
+      --warning: hsl(31 100% 49% / 0.13);
+      --warning-foreground: hsl(47 100% 54%);
+      --success: hsl(152 100% 57% / 0.12);
+      --success-foreground: hsl(153 99% 64% / 0.83);
+      --info: hsl(212 100% 50% / 0.23);
+      --info-foreground: hsl(209 100% 72%);
+      --border: hsl(0 0% 99.2% / 0.1);
+      --input: hsl(0 0% 99.2% / 0.15);
+      --ring: hsl(209 100% 72%);
+      --color-background: var(--background);
+      --color-foreground: var(--foreground);
+      --color-card: var(--card);
+      --color-card-foreground: var(--card-foreground);
+      --color-popover: var(--popover);
+      --color-popover-foreground: var(--popover-foreground);
+      --color-primary: var(--primary);
+      --color-primary-foreground: var(--primary-foreground);
+      --color-secondary: var(--secondary);
+      --color-secondary-foreground: var(--secondary-foreground);
+      --color-muted: var(--muted);
+      --color-muted-foreground: var(--muted-foreground);
+      --color-accent: var(--accent);
+      --color-accent-foreground: var(--accent-foreground);
+      --color-destructive: var(--destructive);
+      --color-destructive-foreground: var(--destructive-foreground);
+      --color-warning: var(--warning);
+      --color-warning-foreground: var(--warning-foreground);
+      --color-success: var(--success);
+      --color-success-foreground: var(--success-foreground);
+      --color-info: var(--info);
+      --color-info-foreground: var(--info-foreground);
+      --color-border: var(--border);
+      --color-input: var(--input);
+      --color-ring: var(--ring);
+    }
+  }
+}
