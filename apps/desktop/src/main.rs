@@ -13,24 +13,25 @@ impl Render for DesktopShell {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x0d0f12))
+            .bg(rgb(0x000000))
             .size(px(520.0))
             .justify_center()
             .items_center()
             .shadow_lg()
             .border_1()
-            .border_color(rgb(0x27313d))
+            .border_color(rgb(0x2d2e32))
+            .font_family("Geist")
             .text_xl()
-            .text_color(rgb(0xf5f7fa))
+            .text_color(rgb(0xfdfdfd))
             .child(format!("{} Desktop", &self.product_name))
             .child(
                 div()
                     .flex()
                     .gap_3()
-                    .child(div().size_8().bg(rgb(0x7dd3fc)))
-                    .child(div().size_8().bg(rgb(0xa7f3d0)))
-                    .child(div().size_8().bg(rgb(0xfde68a)))
-                    .child(div().size_8().bg(rgb(0xfca5a5))),
+                    .child(div().size_8().bg(rgb(0x70b8ff)))
+                    .child(div().size_8().bg(rgb(0x46fea5)))
+                    .child(div().size_8().bg(rgb(0xffca16)))
+                    .child(div().size_8().bg(rgb(0xff9592))),
             )
     }
 }

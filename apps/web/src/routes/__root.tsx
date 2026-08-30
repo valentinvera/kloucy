@@ -41,7 +41,7 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         title: "Kloucy",
       },
       {
-        content: "Product clarity for focused builders.",
+        content: "Run local agents, see what changed, and stay in control.",
         name: "description",
       },
       {

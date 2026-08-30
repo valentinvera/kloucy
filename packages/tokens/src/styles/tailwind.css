@@ -94,15 +94,15 @@
 @theme {
   --spacing: 0.25rem;
 
-  --font-sans: "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif;
-  --font-inter-regular:
-    "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif;
-  --font-inter-medium:
-    "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif;
-  --font-inter-semibold:
-    "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif;
-  --font-inter-bold:
-    "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+  --font-geist-regular:
+    "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+  --font-geist-medium:
+    "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+  --font-geist-semibold:
+    "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+  --font-geist-bold:
+    "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
   --font-mono:
     ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 
@@ -111,20 +111,68 @@
   --font-weight-semibold: 600;
   --font-weight-bold: 700;
 
+  --text-micro: 0.625rem;
+  --text-micro--line-height: 0.9375rem;
+  --text-compact: 0.6875rem;
+  --text-compact--line-height: 0.9625rem;
   --text-caption: 0.75rem;
-  --text-caption--line-height: 1rem;
-  --text-small: 0.875rem;
-  --text-small--line-height: 1.25rem;
-  --text-medium: 1rem;
-  --text-medium--line-height: 1.5rem;
-  --text-large: 1.125rem;
-  --text-large--line-height: 1.75rem;
-  --text-xlarge: 1.5rem;
-  --text-xlarge--line-height: 2rem;
-  --text-title: 3.5rem;
-  --text-title--line-height: 4rem;
-  --text-display: 5.5rem;
-  --text-display--line-height: 5.75rem;
+  --text-caption--line-height: 1.05rem;
+  --text-small: 0.8125rem;
+  --text-small--line-height: 1.21875rem;
+  --text-medium: 0.875rem;
+  --text-medium--line-height: 1.3125rem;
+  --text-nav: 0.875rem;
+  --text-nav--line-height: 1.25rem;
+  --text-action: 0.875rem;
+  --text-action--line-height: 1.25rem;
+  --text-control: 0.875rem;
+  --text-control--line-height: 1.25rem;
+  --text-footer: 0.875rem;
+  --text-footer--line-height: 1.25rem;
+  --text-demo-metadata: 0.75rem;
+  --text-demo-metadata--line-height: 1.125rem;
+  --text-demo-control: 0.875rem;
+  --text-demo-control--line-height: 1.25rem;
+  --text-demo-body: 1rem;
+  --text-demo-body--line-height: 1.5rem;
+  --text-demo-title: 1.25rem;
+  --text-demo-title--line-height: 1.75rem;
+  --text-demo-stat: 1.5rem;
+  --text-demo-stat--line-height: 2rem;
+  --text-demo-score: 3.5rem;
+  --text-demo-score--line-height: 4rem;
+  --text-large: 0.9375rem;
+  --text-large--line-height: 1.5rem;
+  --text-body: 1rem;
+  --text-body--line-height: 1.5rem;
+  --text-emphasis: 1.0625rem;
+  --text-emphasis--line-height: 1.7rem;
+  --text-paragraph-md: 1.125rem;
+  --text-paragraph-md--line-height: 1.75rem;
+  --text-xlarge: 1.25rem;
+  --text-xlarge--line-height: 1.6625rem;
+  --text-paragraph-xl: 1.25rem;
+  --text-paragraph-xl--line-height: 1.875rem;
+  --text-section: 1.5rem;
+  --text-section--line-height: 1.995rem;
+  --text-subtitle: 2rem;
+  --text-subtitle--line-height: 2.25rem;
+  --text-hero: 2.375rem;
+  --text-hero--line-height: 2.6125rem;
+  --text-section-lg: 2.5rem;
+  --text-section-lg--line-height: 2.75rem;
+  --text-hero-title: 2.875rem;
+  --text-hero-title--line-height: 3.1875rem;
+  --text-title: 3rem;
+  --text-title--line-height: 3rem;
+  --text-display: 3.5rem;
+  --text-display--line-height: 3.875rem;
+  --text-display-lg: 4rem;
+  --text-display-lg--line-height: 4rem;
+  --text-display-xl: 4.5rem;
+  --text-display-xl--line-height: 4.5rem;
+  --text-hero-title-xl: 6rem;
+  --text-hero-title-xl--line-height: 6rem;
 
   --tracking-normal: 0;
 

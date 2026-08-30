@@ -3,7 +3,7 @@ import { Text, View } from "react-native"
 export default function Home() {
   return (
     <View className="flex-1 items-center justify-center bg-background">
-      <Text className="font-inter-bold text-3xl text-foreground">
+      <Text className="font-geist-bold text-3xl text-foreground">
         Hello World
       </Text>
     </View>

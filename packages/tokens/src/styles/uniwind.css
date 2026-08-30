@@ -3,11 +3,11 @@
 @import "./tailwind.css";
 
 @theme {
-  --font-sans: Inter_400Regular;
-  --font-inter-regular: Inter_400Regular;
-  --font-inter-medium: Inter_500Medium;
-  --font-inter-semibold: Inter_600SemiBold;
-  --font-inter-bold: Inter_700Bold;
+  --font-sans: Geist_400Regular;
+  --font-geist-regular: Geist_400Regular;
+  --font-geist-medium: Geist_500Medium;
+  --font-geist-semibold: Geist_600SemiBold;
+  --font-geist-bold: Geist_700Bold;
 }
 
 @layer theme {
