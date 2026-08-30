@@ -1,327 +1,518 @@
 ---
 name: kloucy-brand
-description: "Use when applying Kloucy visual identity: colors, typography, logo policy, effects, textures, backgrounds, layout patterns, and product UI rules."
+description: Use when creating or reviewing Kloucy brand, product UI, landing pages, docs, marketing materials, visual identity, UX writing, color usage, typography, layout, or design-system decisions. Triggers for Kloucy brand, Kloucy style, agent orchestration, local-agent control, session state, review, pairing, and command-center work.
 metadata:
   author: kloucy
-  version: "1.0.0"
+  version: "2.0.0"
 ---
 
 # Kloucy Brand Guidelines
 
-Kloucy uses a dark, precise product visual system: layered product surfaces, measured typography, restrained indigo accents, compact controls, subtle borders, and real product UI as the main visual signal.
+Kloucy is an Agent Development Environment for developers turning scattered local-agent work into controlled, reviewable sessions.
+
+Use this skill to keep Kloucy sharp, calm, pragmatic, and product-led. Kloucy should feel like a focused command center that helps a developer know what agents are available, what each session is doing, what changed, what needs approval, and what action comes next.
+
+## Brand Core
+
+| Area | Direction |
+| ---- | --------- |
+| Positioning | The orchestration layer for local AI agents |
+| Short promise | Agent control for focused developers |
+| Product promise | Run local agents, see what changed, and stay in control |
+| Audience | Developers, technical founders, indie hackers, agent power users, and small technical teams |
+| Primary feeling | Open scattered work; leave with agents under control |
 
 ## Core Colors
 
-Use dark mode as the default Kloucy brand surface.
+| Name | Hex |
+| ---- | --- |
+| Kloucy Black | `#000000` |
+| Kloucy White | `#FDFDFD` |
 
-| Color | Value | Usage |
-|-------|-------|-------|
-| Background Primary | `#08090A` | App/page canvas |
-| Background Secondary | `#1C1C1F` | Secondary bands and elevated dark areas |
-| Background Tertiary | `#232326` | Hover states and low emphasis controls |
-| Background Quaternary | `#28282C` | Active states and stronger fills |
-| Marketing Background | `#010102` | Marketing hero and high contrast sections |
-| Panel | `#0F1011` | App panels, command menus, framed product surfaces |
-| Level 0 | `#08090A` | Base app level |
-| Level 1 | `#0F1011` | Primary panel level |
-| Level 2 | `#141516` | Nested panel level |
-| Level 3 | `#191A1B` | Selected and hover row level |
-| Text Primary | `#F7F8F8` | Primary headings and active labels |
-| Text Secondary | `#D0D6E0` | Body copy and normal labels |
-| Text Tertiary | `#8A8F98` | Metadata, helper text, secondary navigation |
-| Text Quaternary | `#62666D` | Disabled text, separators, timestamps |
-| Border Primary | `#23252A` | Primary panel borders |
-| Border Secondary | `#34343A` | Stronger separators |
-| Border Tertiary | `#3E3E44` | Highest emphasis border |
-| Border Translucent | `#FFFFFF0D` | Hairline overlays |
-| Border Translucent Strong | `#FFFFFF14` | Visible translucent rules |
-| Brand | `#5E6AD2` | Primary actions and Kloucy brand accent |
-| Accent | `#7170FF` | Focus rings, links, selection accents |
-| Accent Hover | `#828FFF` | Hovered links and active accents |
-| Accent Tint | `#18182F` | Indigo-tinted backgrounds |
-| Link Primary | `#828FFF` | Text links on dark surfaces |
-| Link Hover | `#FFFFFF` | Link hover on dark surfaces |
-| Brand Text | `#FFFFFF` | Text on brand backgrounds |
-| Invert Button | `#E5E5E6` | Inverted primary surfaces |
+Black and near-white carry the identity. Accent colors communicate state or interaction; they are not decorative brand fills.
 
-## Light Mode Colors
+Technical source of truth: use `@kloucy/tokens` in code. Web, docs, and Tailwind import `@kloucy/tokens/tailwind.css`; mobile and Uniwind import `@kloucy/tokens/uniwind.css`.
 
-Only use light mode when the target surface requires it. Kloucy should still feel product-focused and quiet.
+### Semantic Colors
 
-| Color | Value |
-|-------|-------|
-| Background Primary | `#FFFFFF` |
-| Background Secondary | `#F9F8F9` |
-| Background Tertiary | `#F4F2F4` |
-| Background Quaternary | `#EEEDEF` |
-| Background Quinary | `#E9E8EA` |
-| Text Primary | `#282A30` |
-| Text Secondary | `#3C4149` |
-| Text Tertiary | `#6F6E77` |
-| Text Quaternary | `#86848D` |
-| Border Primary | `#E9E8EA` |
-| Border Secondary | `#E4E2E4` |
-| Border Tertiary | `#DCDBDD` |
-| Brand | `#7070FF` |
-| Accent | `#7170FF` |
-| Accent Hover | `#8989F0` |
-| Accent Tint | `#F1F1FF` |
+| Scale | Background | Foreground | Usage |
+| ----- | ---------- | ---------- | ----- |
+| Gray | `#16171AEB` | `#FDFEFFA6` | Structure, hierarchy, inactive agents, and subtle separation |
+| Red | `#FF173F2D` | `#FF9592` | Failed sessions, destructive actions, rejected changes, and critical risk |
+| Amber | `#FA820022` | `#FFCA16` | Waiting sessions, approvals, caution, degraded state, and uncertainty |
+| Green | `#22FF991E` | `#46FEA5D4` | Completed runs, healthy connections, successful pairing, and approved changes |
+| Blue | `#0077FF3A` | `#70B8FF` | Interactive focus, links, informational state, and the current selection |
 
-## Semantic Colors
-
-Keep semantic states muted and compatible with the dark Kloucy surface.
-
-| Semantic | Foreground | Background | Border | Usage |
-|----------|------------|------------|--------|-------|
-| Info | `#AAB1FF` | `#18182F` | `#5E6AD2` | Agent status, neutral notices, selected states |
-| Success | `#6DD19B` | `#10251A` | `#2F8A58` | Completed runs, healthy checks |
-| Warning | `#F0B864` | `#2B2111` | `#A36A1D` | Requires attention, degraded status |
-| Critical | `#FF8F92` | `#2A1114` | `#C43B40` | Failed runs, destructive actions |
-| Pending | `#8A8F98` | `#141516` | `#34343A` | Queued or idle states |
+Never use blue as a decorative brand wash. Kloucy remains monochrome-first; blue appears where it explains interaction or information.
 
 ## Typography
 
-Use the same typographic stance across web, mobile, desktop, docs, and generated visuals.
+Use **Geist Variable for everything** in Kloucy: product UI, marketing, docs, headings, body text, labels, buttons, and technical product surfaces unless the content is literal code or terminal output. Native surfaces may use equivalent static Geist cuts when a variable file is unavailable.
 
-| Role | Font |
-|------|------|
-| UI and body | `"Inter Variable", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` |
-| Code and terminal | `"Berkeley Mono", ui-monospace, "SF Mono", Menlo, monospace` |
-| Emoji fallback | `"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"` |
+| Font | Role |
+| ---- | ---- |
+| **Geist Variable** | Display, headings, titles, body, labels, navigation, product UI, docs, and marketing copy |
+| **System monospace** | Literal code, CLI commands, terminal output, file paths, environment variables, IDs, and agent traces |
 
-## Typography Rules
+### Typography Rules
 
-- Use Inter Variable for all product UI, marketing UI, docs UI, and body text.
-- Use Berkeley Mono or the platform monospace stack only for code, logs, terminal output, IDs, keyboard shortcuts, and agent traces.
-- Use sentence case for headings, labels, buttons, and navigation.
-- Keep letter spacing at `0` for normal UI text. Use the negative tracking values below only for display/title tokens.
-- Use weights `400`, `510`, `590`, and `680`. Avoid heavier decorative weights.
-- Keep copy short, precise, and operational. Kloucy should feel like software, not a brochure.
-- Do not use decorative serif display type unless the user explicitly asks for a one-off marketing exploration.
+- Use sentence case for headings, buttons, labels, and navigation.
+- Use Geist Variable weights intentionally: Regular, Medium, Semi Bold, and Bold.
+- Use Bold only for strong hierarchy, not decoration.
+- Never use decorative display fonts, multiple brand fonts, or novelty typefaces.
+- Never use monospace for titles, ordinary body copy, labels, or marketing copy.
+- Keep letter spacing at `0` unless a specific production asset requires otherwise.
+- Prefer concise, stable text that fits compact product UI.
+- Do not reduce important text to make an overcrowded layout fit; recompose the layout first.
 
-## Typography Scale
+### Typography Scale
 
-| Token | Size | Line Height | Letter Spacing | Usage |
-|-------|------|-------------|----------------|-------|
-| Tiny | `10px` | `1.5` | `-0.015em` | Dense metadata and graph labels |
-| Micro | `12px` | `1.4` | `0` | Captions, badges, secondary table labels |
-| Mini | `13px` | `1.5` | `-0.01em` | Navigation, sidebars, footer links |
-| Small | `14px` | `21px` | `-0.013em` | Form labels, menu items, helper text |
-| Regular | `15px` | `1.6` | `-0.011em` | Default body and product UI text |
-| Large | `17px` | `1.6` | `0` | Intro copy and roomy body text |
-| Title 1 | `17px` | `1.4` | `-0.012em` | Compact panel titles |
-| Title 2 | `20px` | `1.33` | `-0.012em` | Card and section titles |
-| Title 3 | `24px` | `1.33` | `-0.012em` | Page subheadings |
-| Title 4 | `32px` | `1.125` | `-0.022em` | Page headings |
-| Title 5 | `40px` | `1.1` | `-0.022em` | Marketing section headings |
-| Title 6 | `48px` | `1` | `-0.022em` | Small hero headings |
-| Title 7 | `56px` | `1.1` | `-0.022em` | Hero headings |
-| Title 8 | `64px` | `1.06` | `-0.022em` | Large desktop hero headings |
-| Title 9 | `72px` | `1` | `-0.022em` | Rare oversized launch moments |
+Use named tokens from `@kloucy/tokens`. Avoid raw `text-[...]` values unless measuring a one-off visual proof before promoting it to a token.
 
-## Radius, Borders, Shadows
+#### Dense Product UI
 
-| Token | Value | Usage |
-|-------|-------|-------|
-| Radius 4 | `4px` | Keyboard keys, tiny controls |
-| Radius 6 | `6px` | Menu items, compact rows |
-| Radius 8 | `8px` | Buttons, cards, selected rows |
-| Radius 12 | `12px` | Dialogs, command menu, major panels |
-| Radius 16 | `16px` | Large framed product previews only |
-| Radius 24 | `24px` | Rare marketing/device frames |
-| Rounded | `9999px` | Pills and circular controls |
-| Hairline | `1px` | Standard borders |
-| Low Shadow | `0px 2px 4px #0000001A` | Low elevation |
-| Medium Shadow | `0px 4px 24px #0003` | Popovers and menus |
-| High Shadow | `0px 7px 32px #00000059` | Dialogs and command palette |
+| Style | Weight | Size/line | Use |
+| ----- | ------ | --------- | --- |
+| `micro` | Regular/Medium | 10/15 | Dense graph ticks, tiny metadata, compact IDs |
+| `compact` | Regular/Medium | 11/15.4 | Timestamps, secondary sidebar metadata, line markers |
+| `caption` | Regular/Medium | 12/16.8 | Tables, helper text, run metadata, compact product copy |
+| `small` | Regular/Medium | 13/19.5 | Navigation, badges, buttons, interactive labels |
+| `medium` | Regular/Medium/Semi Bold | 14/21 | Row titles, panel titles, section labels |
+| `nav` | Regular/Medium | 14/20 | Desktop navigation links |
+| `action` | Medium | 14/20 | Compact actions and primary controls |
+| `control` | Regular/Medium | 14/20 | Inputs and placeholders |
+| `footer` | Regular/Medium | 14/20 | Footer descriptions and links |
+| `large` | Regular/Medium | 15/24 | Mobile paragraphs and standard landing body |
+| `body` | Regular/Medium/Semi Bold | 16/24 | Product body where more readability is needed |
+| `emphasis` | Medium/Semi Bold | 17/27.2 | Emphasized state or approval copy |
 
-## Components
+#### Landing Product Demos
 
-### Buttons
+Product demos use a stable interface scale at every breakpoint. Responsive behavior recomposes or hides secondary content instead of scaling the UI typography.
 
-- Mini: `24px` height, `12px` text, `12px` icon, `0 10px` padding, `4px` gap.
-- Small: `32px` height, `13px` text, `16px` icon, `0 12px` padding, `8px` gap.
-- Medium: `40px` height, `13px` text, `16px` icon, `0 14px` padding, `8px` gap.
-- Default: `40px` height, `15px` text, `18px` icon, `0 16px` padding, `6px` gap.
-- Large: `44px` height, `16px` text, `18px` icon, `0 20px` padding, `6px` gap.
-- Primary buttons use `#5E6AD2` with white text.
-- Secondary buttons use translucent dark fills with inset hairlines.
-- Ghost buttons start tertiary and become primary on hover.
-- Active press should scale to `0.97` with a short `160ms` ease.
+| Style | Weight | Size/line | Use |
+| ----- | ------ | --------- | --- |
+| `demo-metadata` | Regular/Medium | 12/18 | Session IDs, context, badges, and supporting metadata |
+| `demo-control` | Medium/Semi Bold | 14/20 | Buttons, inputs, navigation, and row titles |
+| `demo-body` | Regular/Medium | 16/24 | Agent explanations and review copy |
+| `demo-title` | Semi Bold | 20/28 | Primary title inside a demo surface |
+| `demo-stat` | Semi Bold | 24/32 | Supporting run or review metrics |
+| `demo-score` | Bold | 56/64 | Primary readiness score |
 
-### Command Menus
+#### Marketing And Editorial
 
-- Max width: `720px`.
-- Top position: about `13vh`.
-- Input height: `46px`.
-- Border radius: `12px`.
-- Background: `#0F1011`.
-- Border: `#FFFFFF0D` or `#23252A`.
-- Overlay: `#000000D9`.
-- Selected item: `#191A1B`, `8px` radius.
+| Style | Weight | Size/line | Use |
+| ----- | ------ | --------- | --- |
+| `paragraph-md` | Regular/Medium | 18/28 | Landing paragraphs on medium and large viewports |
+| `xlarge` | Regular/Medium | 20/26.6 | Tablet or desktop intro paragraphs |
+| `paragraph-xl` | Regular/Medium | 20/30 | Landing paragraphs on wide viewports |
+| `section` | Regular/Medium/Semi Bold | 24/31.92 | Mobile section titles or large desktop body |
+| `subtitle` | Regular/Medium/Semi Bold | 32/36 | Supporting headlines and quote-scale text |
+| `hero` | Medium | 38/41.8 | Compact mobile hero headlines |
+| `section-lg` | Medium/Semi Bold/Bold | 40/44 | Tablet section titles |
+| `hero-title` | Medium | 46/51 | Landing hero title on mobile and small viewports |
+| `title` | Medium/Semi Bold/Bold | 48/48 | Desktop section titles |
+| `display` | Medium/Bold | 56/62 | Tablet or desktop hero headlines and large values |
+| `display-lg` | Medium/Bold | 64/64 | Wide hero headlines and primary display moments |
+| `display-xl` | Bold | 72/72 | Rare maximum-impact desktop headline |
+| `hero-title-xl` | Medium | 96/96 | Landing hero title on wide viewports |
 
-### Keyboard Shortcuts
+#### Responsive Landing Roles
 
-- Small: `16px` min size, `10px` text.
-- Normal: `20px` min size, `13px` text.
-- Radius: `4px`.
-- Use muted text and subtle border on normal keys.
+| Role | Base | Medium | Wide |
+| ---- | ---- | ------ | ---- |
+| Hero title | `hero-title` 46/51 | `display-lg` 64/64 | `hero-title-xl` 96/96 |
+| Hero subtitle | `body` 16/24 | `paragraph-md` 18/28 | `paragraph-xl` 20/30 |
+| Section title | `subtitle` 32/36 | `section-lg` 40/44 | `title` 48/48 |
+| Section paragraph | `body` 16/24 | `paragraph-md` 18/28 | `paragraph-xl` 20/30 |
+| Closing title | `section-lg` 40/44 | `title` 48/48 | `display` 56/62 |
+
+Badge, button, navigation, form-control, and footer typography remains stable at its named product token across breakpoints.
 
 ## Logo
 
+Do not transfer, derive, or imitate Mavry logo geometry, wordmarks, symbols, favicons, app icons, or naming rules.
+
 There are no approved Kloucy logo, icon, or favicon assets in the repo right now.
 
-Until official assets exist:
+Until official Kloucy assets exist:
 
 - Use a text-only wordmark: `Kloucy`.
-- Set the wordmark in Inter Variable, semibold `590`.
-- Use `#F7F8F8` on dark backgrounds and `#282A30` on light backgrounds.
+- Keep the existing wordmark treatment in Inter Variable, semibold `590`; Geist applies to the surrounding product, not retroactively to the logo.
+- Use `#FDFDFD` on dark backgrounds and `#000000` on light backgrounds.
 - Do not invent logos, icons, favicons, mascots, or abstract symbols.
-- Do not reintroduce deleted logo/icon/favicon files unless the user explicitly provides or requests official assets.
+- Do not reintroduce deleted logo, icon, or favicon files unless the user explicitly provides or requests official assets.
 
-## Clearspace
+### Clearspace
 
 - Leave at least the wordmark cap height around all sides of the text wordmark.
 - Do not place the wordmark inside busy UI screenshots.
 - Keep it aligned to product chrome, not floating decoratively.
 
-## Minimum Size
+### Minimum Size
 
 - Web header wordmark: minimum `72px` wide.
 - Mobile wordmark: minimum `64px` wide.
 - Footer or metadata wordmark: minimum `56px` wide.
 
-## Logo Restrictions
+### Logo Restrictions
 
 - Do not stretch, skew, rotate, outline, gradient-fill, or texture-fill the wordmark.
 - Do not combine the wordmark with unapproved symbols.
-- Do not place it on low contrast backgrounds.
+- Do not place it on low-contrast backgrounds.
 - Do not animate it unless the user explicitly asks for a motion identity exploration.
 
-## Product UI Element
+## Radius, Spacing, And Effects
 
-The main Kloucy visual asset is the product interface itself:
+### Radius
 
-- Agent sessions
-- System-installed agents
-- QR pairing between desktop and mobile
-- Live terminal/log output
-- Task state transitions
-- Workspace, inbox, reviews, and orchestration panes
+| Token | Value |
+| ----- | ----- |
+| `xs` | `2px` |
+| `sm` | `4px` |
+| `md` | `6px` |
+| `lg` | `8px` |
+| `xl` | `12px` |
+| `2xl` | `16px` |
+| `3xl` | `24px` |
+| `4xl` | `32px` |
 
-Use real UI states over abstract illustrations.
+Use restrained radii. A radius expresses an interaction boundary or grouping; it is not a default decoration for every object.
+
+### Spacing
+
+Use a `4px` base unit. Build spacing from relationships rather than applying one uniform gap across every section.
+
+### Shadows And Blur
+
+| Token | Value |
+| ----- | ----- |
+| `shadow-xs` | `0 1px 2px 0 rgb(0 0 0 / 0.24)` |
+| `shadow-sm` | `0 8px 24px -16px rgb(0 0 0 / 0.4)` |
+| `shadow-md` | `0 16px 48px -28px rgb(0 0 0 / 0.55)` |
+| `shadow-lg` | `0 24px 72px -36px rgb(0 0 0 / 0.7)` |
+| `blur-glass` | `25px` |
+
+Use blur only when a floating overlay requires context separation. Do not use glass, shadows, or fake depth as general page decoration.
 
 ## Gradients
 
-Use gradients sparingly and functionally.
+The transferred system includes these production recipes, but they are exceptional utilities rather than a default visual language:
 
-| Gradient | Value | Usage |
-|----------|-------|-------|
-| Brand Glow | `radial-gradient(circle, rgba(94, 106, 210, 0.22) 0%, transparent 56%)` | Focused hero or product glow |
-| White Edge | `radial-gradient(circle, rgba(247, 248, 248, 0.08) 0%, transparent 50%)` | Panel highlight |
-| Panel Fade | `background: #0F1011; box-shadow: inset 0 -80px 120px #08090A;` | Background depth |
-| Border Fade | `border-color: #FFFFFF0D; box-shadow: inset 0 1px #FFFFFF14;` | Thin panel borders |
+| Name | Value |
+| ---- | ----- |
+| Font gradient | `linear-gradient(97deg, #ffffff 30%, rgba(255,255,255,0.50) 100%)` |
+| Smooth gradient | `linear-gradient(96deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.10) 100%)` |
+| Border gradient | `linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.05) 100%)` |
+| Rainbow border | `linear-gradient(90deg, rgba(2,252,239,0.44) 0%, rgba(255,181,43,0.44) 50%, rgba(160,43,254,0.44) 100%)` |
 
-Do not use colorful gradient blobs, bokeh, or decorative orbs.
+Do not use gradient text, rainbow borders, glows, blobs, or bokeh in routine product or marketing UI. Use a recipe only for a specific production asset where it communicates hierarchy and the user has approved the direction.
 
-## Effects
+## Design Tokens
 
-### Glass
+Shared product tokens live in `packages/tokens`.
 
-- Use `backdrop-filter: blur(4px)` for secondary controls.
-- Use `backdrop-filter: blur(8px)` for glass hover states.
-- Use `backdrop-filter: blur(24px)` only for floating tooltips or overlays.
-- Pair glass with `#FFFFFF0D` border or `#FFFFFF1A` for strong glass.
+- TypeScript tokens: `@kloucy/tokens`
+- Tailwind CSS v4 tokens: `@kloucy/tokens/tailwind.css`
+- Uniwind and Expo tokens: `@kloucy/tokens/uniwind.css`
 
-### Edge Highlights
+Do not redefine Kloucy colors, typography, radius, spacing, shadows, blur, or semantic states inside apps. Change shared visual decisions in `@kloucy/tokens`, then consume them from web, docs, mobile, desktop adapters, and future surfaces.
 
-- Add a subtle top-left or top-edge highlight to framed product surfaces.
-- Use translucent white at `#FFFFFF0F` or lower.
-- Keep highlights tied to the border geometry.
+## Textures And Background Assets
 
-### Motion
+No approved Kloucy texture, wallpaper, or decorative background assets exist. Do not invent asset URLs or import Mavry assets.
 
-- Default transition duration: `160ms`.
-- Dialog scale/fade: `175ms`.
-- Tooltip open/close: `120ms`.
-- Preferred easing: `cubic-bezier(.25, .46, .45, .94)` for standard UI and `cubic-bezier(.23, 1, .32, 1)` for entrances.
-- Press interactions may scale to `0.97`.
+Use black, near-black semantic surfaces, spacing, alignment, and content hierarchy for depth. Light mode may be supported where the product context requires it, but formal Kloucy marketing remains dark-first.
 
-## Textures
+## Reference Quality Bar
 
-- Avoid visible paper, grain, fabric, or decorative textures.
-- If texture is needed, use only extremely subtle noise over dark product screenshots.
-- Prefer borders, shadows, and depth layers over texture.
+Kloucy should reach the product and brand quality level of Vercel, Linear, Resend, and Raycast without copying their logos, exact layouts, claims, colors, animations, or component silhouettes.
 
-## Backgrounds
+- Vercel: crisp hierarchy, technical confidence, restrained surfaces, fast scanning, and product-led proof.
+- Linear: focused workflows, calm density, explicit state, strong alignment, and operational elegance.
+- Resend: monochrome discipline, sharp typography, clear developer positioning, and minimal ornament.
+- Raycast: compact productivity surfaces, decisive shortcuts and actions, polished details, and strong brand memory.
 
-- Default app background: `#08090A`.
-- Marketing background: `#010102`.
-- Product preview panels: `#0F1011`.
-- Nested rows and selected states: `#191A1B`.
-- Use masks or fades only to guide attention to real UI.
+Interpret these as a quality threshold:
+
+- Every screen needs a clear operational idea, not merely a beautiful arrangement.
+- Every visual object should explain agent state, progress, risk, review, pairing, or the next action.
+- Every section should have a distinct composition instead of repeated cards with different copy.
+- Every component should feel precise, quiet, and necessary.
+- Kloucy should look intentional beside those products without becoming a clone.
 
 ## Layout Patterns
 
-### Product App Shell
+| Name | Description |
+| ---- | ----------- |
+| Right object scene | Small label and two-line title on the left; a real agent-control object on the right |
+| Interface scene | Small label top-left, title bottom-left, real Kloucy UI as the main surface |
+| Text-only scene | Short title aligned to the grid with quiet black space |
+| Text-only background | Large centered title with restrained monochrome depth |
+| Text-only subtle | Small centered statement on a minimal dark background |
+| Big number | Large readiness or run value centered with a small explanatory label |
 
-- Left sidebar, main work area, right detail panel when needed.
-- Dense but readable spacing.
-- Primary navigation uses `13px` text and muted tertiary color.
-- Selected rows use level 3 background with 6-8px radius.
-- Keep dividers hairline and low contrast.
+Common patterns:
 
-### Agent Orchestration View
+- Labels remain small and align top-left or top-center.
+- Marketing titles use deliberate two-line breaks and never exceed three lines.
+- Real session UI, logs, review surfaces, agent registries, and pairing states take priority over abstract art.
+- Objects align left, right, or fill the background according to the product story.
+- Dark backgrounds use subtle depth and strong alignment rather than ornamental effects.
 
-- Show agents, sessions, tasks, logs, and connection state as first-class entities.
-- Use split panes for conversation, terminal output, file changes, and run metadata.
-- Preserve scanability with compact tables, status chips, and consistent timestamps.
-- Use indigo only for focus, active state, primary action, or selected agent.
+## Layout And Composition Rules
 
-### Landing Pages
+Kloucy screens are control workspaces, not decorative SaaS pages. Design every screen around the operational question it answers: what agents are doing, what is blocked, what changed, what requires approval, or what action comes next.
 
-- Make the product UI the first-viewport signal.
-- Use a dark hero with concise copy and a visible, inspectable product surface.
-- Keep hero type restrained: `56px` to `72px` desktop, `40px` to `48px` mobile.
-- Avoid decorative abstract art when product screenshots or realistic UI can carry the message.
+### Composition Before Components
 
-### Docs
+- Start with the user question before choosing components.
+- Do not default to a heading plus card grid unless the information truly contains peer items.
+- Give each important screen one dominant object:
+  - Workspace Home: current agent activity, blocked sessions, and the next action.
+  - Agent Registry: availability, capability, command, and permission state.
+  - Session Board: Ready, Running, Waiting, and Done relationships.
+  - Session Timeline: Now, Next, Later, and Not doing sequence.
+  - Review: changed files, risk, and explicit approval or rejection.
+  - Readiness: blockers, safety state, and what is not required yet.
+  - Pairing: QR trust state and the connected mobile device.
+- Surround the dominant object with only the context needed to act.
+- If every section has equal visual weight, redesign the hierarchy before adding surfaces, color, icons, or borders.
 
-- Use light text on dark surfaces by default.
-- Keep prose widths near `624px`.
-- Use code blocks in the monospace stack with `14px` text and `24px` line height.
-- Prefer precise navigation and clear section hierarchy over marketing visuals.
+### Operational Geometry
 
-### Mobile
+Use geometry to communicate product meaning:
 
-- Maintain the same dark palette.
-- Respect minimum tap size `44px`.
-- Prefer compact native lists, bottom sheets, and segmented controls.
-- Pairing flows should make the QR/session state visually central.
+- Agent availability or session state -> explicit position, label, and state marker.
+- Execution sequence -> ordered lanes, timeline, or clear vertical progression.
+- Readiness -> distance from a threshold plus visible blockers.
+- Risk -> proximity to the affected action and stronger semantic contrast.
+- Review decisions -> visible separation between proposed, approved, and rejected output.
+- Pairing or dependencies -> connection, sequence, or grouped adjacency.
 
-### Desktop
+Do not add charts, bars, or diagrams only because data exists. Use them only when they make a control decision faster to understand.
 
-- Use command menu, split panes, side panels, and keyboard-first interaction.
-- Make app chrome quiet and predictable.
-- Use subtle elevation for windows, dialogs, and panels.
+### Grid And Alignment
 
-## Common Patterns
+- Use a consistent page grid across web and desktop product surfaces.
+- Align objects to shared edges, baselines, grid lines, or deliberate optical centers.
+- Equivalent items share label position, value position, action alignment, row rhythm, and type role.
+- Do not strand boards, logs, tables, or diffs in narrow tracks when available width improves scanning.
+- Let dense tools use the full content width when lookup, comparison, or live output benefits from it.
+- On mobile, recompose before shrinking text or hiding essential state.
 
-- Dark sidebars with muted navigation and active indigo accents.
-- Command palette centered over a dim overlay.
-- Framed product previews with thin translucent borders and slight inner shadow.
-- Compact buttons with icons and short labels.
-- Status chips using muted semantic backgrounds.
-- Tables and lists with row hover at `#191A1B`.
-- Code/log panels with line numbers in `#62666D`.
+### Surfaces And Boundaries
+
+- Treat the page as one continuous workspace by default.
+- Use a card, panel, border, or separate surface only when it communicates a real grouping, selected state, warning, interaction zone, or contrast that spacing cannot express.
+- Do not wrap every section, metric, session, or artifact in a card.
+- Do not put cards inside cards or panels inside panels.
+- Do not use borders to compensate for weak hierarchy.
+- Prefer spacing, alignment, density shifts, and typography before boxes.
+- Keep radii restrained and consistent with Kloucy tokens.
+
+### Rhythm And Density
+
+- Build spacing from relationships rather than one uniform gap.
+- Keep headings close to the content they introduce.
+- Align labels, values, details, timestamps, and actions consistently across peer rows.
+- Use larger separation only when the user moves to a different control area.
+- Empty space must help the dominant object stand out; accidental holes and underfilled split layouts are failures.
+- Kloucy can be dense because it is operational, but density must stay scannable and calm.
+
+### Screen Structure
+
+- Every section answers a different operational question.
+- Remove summaries that repeat the same session state or recommendation.
+- Keep one home for each state, decision, or review reason.
+- End flows with a clear implication, saved decision, next action, or unresolved blocker.
+- Mobile optimizes for pairing, awareness, approval, and short instructions.
+- Desktop optimizes for orchestration, logs, diffs, command control, and deep review.
+- Web explains the product and shows credible product proof.
+- Docs optimize for setup, supported agents, security, pairing, and troubleshooting.
+
+### Responsive Behavior
+
+- Preserve readable type and tappable controls.
+- Give grid and flex children `min-width: 0` so content can reflow safely.
+- Reflow before truncating or shrinking important text.
+- Long logs, diffs, tables, and boards may scroll locally when lookup matters more than stacking everything into cards.
+- Light and dark modes preserve the same hierarchy rather than merely inverting colors.
+
+### Motion
+
+- Default to stillness.
+- Use motion only to explain a state change, preserve continuity, or confirm an action.
+- Do not use motion as decoration, suspense, or personality.
+- Never gate reading behind animation.
+- Respect reduced-motion preferences.
+
+## Web UI Construction Rules
+
+In `apps/web`, use shadcn/ui through `packages/ui` as the default component foundation. Compose Kloucy-specific screens from shadcn primitives and shared tokens before creating custom generic markup.
+
+### shadcn First
+
+- Use the `shadcn` skill with this Kloucy skill before editing visible web UI.
+- Inspect `components.json` when aliases, install paths, base primitives, or monorepo behavior matter.
+- Check existing components in `packages/ui/src/components` first.
+- Add missing components from `apps/web` with `bunx --bun shadcn@latest add <component>`.
+- Import primitives from `@kloucy/ui/components/*` and helpers from `@kloucy/ui/lib/utils`.
+- Use semantic CSS variables from `@kloucy/tokens`; do not write raw colors or app-local design variables.
+
+### Component Selection
+
+| Need | Use |
+| ---- | --- |
+| Primary or secondary action | `Button` |
+| Workspace intake, instructions, settings, or auth | `Field`, `Input`, `Textarea`, `Select`, `Checkbox`, `Switch`, `Button` |
+| Blocker, failure, risk, or review rationale | `Alert` |
+| Session, agent, pairing, or approval state | `Badge` only when the compact boundary adds meaning |
+| Agent rows, file changes, reviews, and decision logs | `Table`, `Item`, or composed rows from shadcn primitives |
+| A product region with a real boundary | `Card` only when the boundary communicates grouping |
+| Unrelated regions | `Separator` |
+| Session lanes or product views | `Tabs` or `ToggleGroup` |
+| Empty workspace, no agents, no sessions, or no reviews | `Empty` |
+| Loading | `Skeleton` or `Spinner` |
+| Command flows and confirmation | `Dialog`, `AlertDialog`, `Sheet`, or `Command` |
+| Explanatory hover affordance | `Tooltip`, `HoverCard`, or `Popover` |
+
+Custom web components are appropriate for agent orchestration panes, session timelines, log viewers, diff review, QR pairing, readiness objects, and workspace-specific compositions. Do not hand-roll generic buttons, inputs, cards, badges, alerts, dialogs, tabs, tables, forms, skeletons, or tooltips when shadcn provides them.
+
+## Mobile UI Construction Rules
+
+- Use HeroUI Native through semantic variants and compound components.
+- Keep native dependencies in `apps/mobile` so Expo autolinking can resolve them.
+- Use Uniwind tokens from `@kloucy/tokens/uniwind.css`; do not add raw platform colors.
+- Use `onPress`, native navigation, safe-area-aware layouts, and minimum `44px` touch targets.
+- Make pairing, active sessions, blockers, and approval actions visually central.
+- Mobile continues desktop work; it does not duplicate the complete desktop command center.
+
+## Docs And Desktop Rules
+
+- Docs use the same Geist typography and semantic palette, with prose widths that remain comfortable for setup and security guidance.
+- Code and terminal examples use the system monospace stack; prose does not.
+- Desktop keeps app chrome quiet and gives logs, session state, diffs, and commands the dominant width.
+- Desktop dialogs and overlays may use semantic elevation, but permanent workspace structure should rely on alignment and boundaries rather than shadows.
+
+## AI Design Workflow
+
+Treat the first generated result as a structure draft. Before handing off UI, run these passes:
+
+1. Product pass: name the control question each section or screen answers.
+2. Composition pass: remove repeated card grids, equal-weight sections, generic heroes, and fake product visuals.
+3. Component pass: replace hand-rolled web primitives with shadcn and mobile primitives with HeroUI Native.
+4. Token pass: remove raw colors, one-off spacing, one-off radii, and app-local design variables.
+5. Density pass: adjust alignment, rhythm, hierarchy, and whitespace so the screen feels designed rather than evenly distributed.
+6. Responsive pass: verify web at desktop, tablet, and mobile widths; verify mobile on representative native sizes.
+
+## AI Generic Detection Checklist
+
+Revise the UI if any of these are true:
+
+- The page could work unchanged for any AI productivity SaaS.
+- The hero makes a broad promise but does not show sessions, logs, review, control, or pairing.
+- The page is mostly a centered headline, email box, logo row, feature cards, and FAQ.
+- Every section uses the same card or grid silhouette.
+- The design relies on gradients, glow, blur, icon tiles, pills, or a decorative dashboard to feel polished.
+- A product preview looks impressive but does not encode a real agent state or user decision.
+- Web code creates local primitives instead of using components already available in `packages/ui`.
+- The screen copies a reference brand instead of expressing Kloucy's own product loop.
+- The design works in one viewport but loses hierarchy or useful state elsewhere.
+
+## Reject Patterns
+
+Do not ship these patterns in Kloucy:
+
+- Generic centered hero copy followed by a card grid.
+- Cards inside cards, panels inside panels, or nested bordered boxes.
+- Decorative gradient text, rainbow borders, glows, blobs, bokeh, glass, fake depth, or ornamental textures.
+- Decorative grids, stripes, side rails, or noisy abstract backgrounds.
+- Repeated metric cards when one composed relationship explains the session state better.
+- Pills or rounded capsules for ordinary labels, metadata, or every status.
+- Icons as decoration, oversized icons, mixed icon styles, or arbitrary icon tiles.
+- A dark rounded rectangle around every chart, log, board, or tool.
+- Identical section silhouettes across unrelated product questions.
+- Tiny muted copy used to make overcrowded UI fit.
+- Logs, tables, or boards compressed into narrow columns while useful width remains empty.
+- Color-only meaning for session status, risk, approval, or readiness.
+- Fake screenshots, stock imagery, generic AI illustrations, or visuals that do not explain the product.
+- Repeated recommendation, summary, rationale, and conclusion blocks that say the same thing.
+- Authoring-process copy such as "this section shows" or "we organized this by".
+- Visible theme toggles in formal marketing unless the product context requires one.
+- Hand-rolled generic primitives when the platform's component system already provides them.
+- Marketing that directly imitates Vercel, Linear, Resend, Raycast, or Mavry.
 
 ## Design Principles
 
-1. Product first: show the real Kloucy workflow before decorative branding.
-2. Precision over decoration: rely on alignment, spacing, contrast, and type.
-3. Dark by default: Kloucy should feel like focused development software.
-4. Indigo with restraint: brand color marks focus and action, not every surface.
-5. Compact and scannable: optimize for repeated use by builders.
-6. Quiet confidence: avoid loud palettes, oversized cards, and ornamental effects.
-7. Agent-native: make human and agent activity visible, traceable, and controllable.
-8. Cross-surface consistency: web, docs, mobile, and desktop should share tokens and behavior.
+1. Dark-first design philosophy.
+2. Sharp contrast between black and light.
+3. Precision and focus over decoration.
+4. Accent colors communicate state, not style.
+5. Simple, stable, intentional forms.
+6. Composition before components.
+7. Real product state before abstract visuals.
+8. Cross-surface consistency through shared tokens.
+
+## Product Principles
+
+1. Visibility creates trust.
+2. Control comes before autonomy.
+3. Local workflows are first-class.
+4. Sessions are execution, output, changes, approvals, and history—not just chat.
+5. Mobile is continuation, not a desktop replacement.
+6. Agents work for the user; final control remains with the developer.
+
+## Voice And Tone
+
+Kloucy writes directly, calmly, and without hype.
+
+Use:
+
+- Clear, short operational language.
+- Firm guidance without arrogance.
+- Practical language for developers.
+- Technical specificity when it helps.
+- No emojis by default.
+- Minimal humor.
+- Explicit state, reason, and next action.
+
+Avoid:
+
+- "Unlock limitless AI productivity."
+- "AI-powered productivity."
+- Motivational filler, vague startup language, or generic autonomy claims.
+- Infantilized, overly colorful, corporate, or cold copy.
+
+Preferred copy examples:
+
+```text
+This agent is waiting for approval.
+```
+
+```text
+Three files changed. Review before applying.
+```
+
+```text
+Mobile paired.
+```
+
+```text
+This session failed before writing files.
+```
+
+## Experience Direction
+
+Kloucy should feel operational and focused:
+
+- Workspace Home answers what agents are doing now.
+- Agent detection and capabilities remain explicit.
+- Tasks can be captured without automatic execution.
+- Running sessions expose live logs and output.
+- Waiting sessions explain the required approval or input.
+- Reviews preserve what changed and why a decision was made.
+- QR pairing feels immediate, legible, and trustworthy.
+- Mobile supports awareness, approvals, and short follow-up instructions.
+- Desktop remains the command center for deep supervision.
+- Dashboards stay useful rather than decorative.

@@ -1,5 +1,4 @@
 interface:
   display_name: "Kloucy Design"
-  short_description: "Dark Kloucy visual system"
-  brand_color: "#5E6AD2"
+  short_description: "Monochrome Kloucy product design system"
   default_prompt: "Use $kloucy-design to design a Kloucy product interface with the Kloucy visual system."

@@ -9,9 +9,10 @@ Prompt: "Create a Kloucy dashboard mockup for agent orchestration."
 Expected:
 
 - Loads `kloucy-brand`.
-- Uses dark `#08090A` background and `#0F1011` panels.
-- Uses Inter Variable for UI and monospace for logs/code.
-- Uses indigo only for focus, active states, and primary actions.
+- Uses `#000000` and `#FDFDFD` as the core identity.
+- Uses Geist Variable for UI and system monospace only for literal logs/code.
+- Uses semantic blue only for interaction and information, not decoration.
+- Uses red, amber, and green to communicate explicit session states.
 - Shows product UI, not decorative abstract art.
 
 ## Logo Policy
@@ -30,5 +31,5 @@ Prompt: "Review this Kloucy command palette design."
 
 Expected:
 
-- Checks max width, input height, radius, overlay, selected row treatment, typography, and motion.
-- Flags noisy decoration, incorrect accent overuse, weak contrast, or non-product-first composition.
+- Checks the dominant control question, hierarchy, semantic state, typography, density, and motion.
+- Flags nested cards, repeated equal-weight sections, decorative gradients, weak contrast, or generic SaaS composition.
