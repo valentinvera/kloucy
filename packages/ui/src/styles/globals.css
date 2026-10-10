@@ -1,4 +1,5 @@
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/inter";
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "@kloucy/tokens/tailwind.css";
@@ -16,5 +17,13 @@
   }
   html {
     @apply font-sans;
+  }
+}
+
+@layer utilities {
+  .font-logo {
+    font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+    font-weight: 590;
+    letter-spacing: 0;
   }
 }
