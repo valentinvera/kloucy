@@ -11,6 +11,7 @@ import {
   userRelations,
   verification,
 } from "./schema/auth"
+import { workspace, workspaceRelations } from "./schema/workspace"
 
 const schema = {
   account,
@@ -20,6 +21,8 @@ const schema = {
   user,
   userRelations,
   verification,
+  workspace,
+  workspaceRelations,
 }
 
 export function createDb() {
