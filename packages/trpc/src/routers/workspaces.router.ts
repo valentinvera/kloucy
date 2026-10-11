@@ -72,6 +72,17 @@ const workspaceUpdateInputSchema = z.object({
   stage: workspaceStageSchema.optional(),
 })
 
+const workspaceIntakeInputSchema = z.object({
+  defaultAgentId: z.string().min(1).nullable().optional(),
+  id: z.string().min(1),
+  ignoredPaths: z.array(z.string()).optional(),
+  mobilePairingEnabled: z.boolean().optional(),
+  packageManager: z.string().min(1).optional(),
+  projectType: z.string().min(1).optional(),
+  runtime: z.string().min(1).optional(),
+  safeCommands: z.array(z.string()).optional(),
+})
+
 function requireUserId(ctx: Context): string {
   if (!ctx.session?.user) {
     throw new TRPCError({
@@ -85,6 +96,22 @@ function requireUserId(ctx: Context): string {
 
 function notFound(): TRPCError {
   return new TRPCError({ code: "NOT_FOUND", message: "Workspace not found" })
+}
+
+async function assertAgentOwned(
+  agentId: string,
+  ownerId: string
+): Promise<void> {
+  const found = await db.query.agent.findFirst({
+    where: (table) => and(eq(table.id, agentId), eq(table.ownerId, ownerId)),
+  })
+
+  if (!found) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Default agent not found",
+    })
+  }
 }
 
 @Router({ alias: "workspaces" })
@@ -238,5 +265,54 @@ export class WorkspacesRouter {
     }
 
     return archived
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Mutation({ input: workspaceIntakeInputSchema, output: workspaceSchema })
+  async completeIntake(
+    @Ctx() ctx: Context,
+    @Input() input: z.infer<typeof workspaceIntakeInputSchema>
+  ) {
+    const ownerId = requireUserId(ctx)
+
+    if (input.defaultAgentId) {
+      await assertAgentOwned(input.defaultAgentId, ownerId)
+    }
+
+    const changes: Partial<typeof workspace.$inferInsert> = { stage: "ready" }
+
+    if (input.defaultAgentId !== undefined) {
+      changes.defaultAgentId = input.defaultAgentId
+    }
+    if (input.projectType !== undefined) {
+      changes.projectType = input.projectType
+    }
+    if (input.packageManager !== undefined) {
+      changes.packageManager = input.packageManager
+    }
+    if (input.runtime !== undefined) {
+      changes.runtime = input.runtime
+    }
+    if (input.safeCommands !== undefined) {
+      changes.safeCommands = input.safeCommands
+    }
+    if (input.ignoredPaths !== undefined) {
+      changes.ignoredPaths = input.ignoredPaths
+    }
+    if (input.mobilePairingEnabled !== undefined) {
+      changes.mobilePairingEnabled = input.mobilePairingEnabled
+    }
+
+    const [updated] = await db
+      .update(workspace)
+      .set(changes)
+      .where(and(eq(workspace.id, input.id), eq(workspace.ownerId, ownerId)))
+      .returning()
+
+    if (!updated) {
+      throw notFound()
+    }
+
+    return updated
   }
 }
