@@ -1,11 +1,14 @@
 mod api;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, FontWeight, Hsla, IntoElement, Render, Window,
-    WindowBounds, WindowOptions, div, prelude::*, px, size,
+    AnyElement, App, Application, Bounds, Context, Entity, FontWeight, Hsla, IntoElement, Render,
+    Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Root, Theme, ThemeMode, h_flex,
+    ActiveTheme as _, Disableable as _, Root, Theme, ThemeMode,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    input::{Input, InputState},
     sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
@@ -83,22 +86,42 @@ fn load_workspaces(client: &KloucyClient, session: &SessionStatus) -> LoadState<
     }
 }
 
+fn error_message(error: &ApiError) -> String {
+    match error {
+        ApiError::Unauthorized => "Invalid email or password.".to_string(),
+        ApiError::Unreachable => "API offline.".to_string(),
+        ApiError::Message(message) => message.clone(),
+    }
+}
+
 struct DesktopShell {
     section: Section,
+    client: KloucyClient,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
+    email: Entity<InputState>,
+    password: Entity<InputState>,
+    signing_in: bool,
+    sign_in_error: Option<String>,
 }
 
 impl DesktopShell {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let client = KloucyClient::new();
+        let email = cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
+        let password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("Password")
+        });
 
+        let task_client = client.clone();
         cx.spawn(async move |this, cx| {
             let (session, workspaces) = cx
                 .background_executor()
                 .spawn(async move {
-                    let session = client.session();
-                    let workspaces = load_workspaces(&client, &session);
+                    let session = task_client.session();
+                    let workspaces = load_workspaces(&task_client, &session);
                     (session, workspaces)
                 })
                 .await;
@@ -113,10 +136,54 @@ impl DesktopShell {
         .detach();
 
         Self {
+            client,
+            email,
+            password,
             section: Section::Workspaces,
             session: SessionStatus::Checking,
+            sign_in_error: None,
+            signing_in: false,
             workspaces: LoadState::Loading,
         }
+    }
+
+    fn submit_sign_in(&mut self, cx: &mut Context<Self>) {
+        let email = self.email.read(cx).value().to_string();
+        let password = self.password.read(cx).unmask_value().to_string();
+
+        self.sign_in_error = None;
+        self.signing_in = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.sign_in(&email, &password)?;
+                    let session = client.session();
+                    let workspaces = load_workspaces(&client, &session);
+                    Ok::<_, ApiError>((session, workspaces))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.signing_in = false;
+
+                match result {
+                    Ok((session, workspaces)) => {
+                        this.session = session;
+                        this.workspaces = workspaces;
+                    }
+                    Err(error) => {
+                        this.sign_in_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -260,15 +327,79 @@ impl DesktopShell {
                     .child(body),
             )
     }
-}
 
-impl Render for DesktopShell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_shell(&self, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
             .size_full()
             .child(self.render_nav(cx))
             .child(self.render_content(cx))
+            .into_any_element()
     }
+
+    fn render_sign_in(&self, cx: &mut Context<Self>) -> AnyElement {
+        let submit = Button::new("sign-in")
+            .primary()
+            .label(if self.signing_in {
+                "Signing in…"
+            } else {
+                "Sign in"
+            })
+            .disabled(self.signing_in)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_sign_in(cx)));
+
+        let mut form = v_flex()
+            .w(px(320.0))
+            .gap_4()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Sign in to Kloucy"),
+            )
+            .child(Input::new(&self.email))
+            .child(Input::new(&self.password));
+
+        if let Some(error) = &self.sign_in_error {
+            form = form.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .child(form.child(submit))
+            .into_any_element()
+    }
+}
+
+impl Render for DesktopShell {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match &self.session {
+            SessionStatus::Checking => centered("Checking API…", cx),
+            SessionStatus::Unreachable => centered("API offline.", cx),
+            SessionStatus::SignedOut => self.render_sign_in(cx),
+            SessionStatus::SignedIn(_) => self.render_shell(cx),
+        }
+    }
+}
+
+fn centered(label: &str, cx: &App) -> AnyElement {
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(label.to_string()),
+        )
+        .into_any_element()
 }
 
 fn main() {
@@ -284,7 +415,7 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(DesktopShell::new);
+                let view = cx.new(|cx| DesktopShell::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )
