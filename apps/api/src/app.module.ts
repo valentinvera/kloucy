@@ -7,8 +7,10 @@ import {
   RequestMethod,
 } from "@nestjs/common"
 import { toNodeHandler } from "better-auth/node"
+import { UsersController } from "./users/users.controller"
 
 @Module({
+  controllers: [UsersController],
   imports: [TrpcModule],
 })
 export class AppModule implements NestModule {
