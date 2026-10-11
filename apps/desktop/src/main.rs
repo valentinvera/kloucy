@@ -1,8 +1,8 @@
 mod api;
 
 use gpui::{
-    App, Application, Bounds, Context, FontWeight, Hsla, IntoElement, Render, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, size,
+    AnyElement, App, Application, Bounds, Context, FontWeight, Hsla, IntoElement, Render, Window,
+    WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
     ActiveTheme as _, Root, Theme, ThemeMode, h_flex,
@@ -10,7 +10,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::api::SessionStatus;
+use crate::api::{ApiError, KloucyClient, SessionStatus, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -61,22 +61,51 @@ impl Section {
     }
 }
 
+enum LoadState<T> {
+    Loading,
+    Loaded(T),
+    Failed(String),
+}
+
+fn load_workspaces(client: &KloucyClient, session: &SessionStatus) -> LoadState<Vec<Workspace>> {
+    if !matches!(session, SessionStatus::SignedIn(_)) {
+        return LoadState::Failed(match session {
+            SessionStatus::Unreachable => "API offline.".to_string(),
+            _ => "Sign in to load workspaces.".to_string(),
+        });
+    }
+
+    match client.query::<Vec<Workspace>>("workspaces.list", None) {
+        Ok(workspaces) => LoadState::Loaded(workspaces),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load workspaces.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
 struct DesktopShell {
     section: Section,
     session: SessionStatus,
+    workspaces: LoadState<Vec<Workspace>>,
 }
 
 impl DesktopShell {
     fn new(cx: &mut Context<Self>) -> Self {
+        let client = KloucyClient::new();
+
         cx.spawn(async move |this, cx| {
-            let base_url = api::base_url();
-            let status = cx
+            let (session, workspaces) = cx
                 .background_executor()
-                .spawn(async move { api::fetch_session(&base_url) })
+                .spawn(async move {
+                    let session = client.session();
+                    let workspaces = load_workspaces(&client, &session);
+                    (session, workspaces)
+                })
                 .await;
 
             this.update(cx, |this, cx| {
-                this.session = status;
+                this.session = session;
+                this.workspaces = workspaces;
                 cx.notify();
             })
             .ok();
@@ -86,6 +115,7 @@ impl DesktopShell {
         Self {
             section: Section::Workspaces,
             session: SessionStatus::Checking,
+            workspaces: LoadState::Loading,
         }
     }
 
@@ -140,7 +170,69 @@ impl DesktopShell {
             .child(menu)
     }
 
+    fn render_workspaces(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        match &self.workspaces {
+            LoadState::Loading => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Loading workspaces…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(workspaces) if workspaces.is_empty() => v_flex()
+                .gap_1()
+                .child(div().text_sm().child("Open your first workspace."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Create a workspace to run and supervise local agents."),
+                )
+                .into_any_element(),
+            LoadState::Loaded(workspaces) => {
+                let mut list = v_flex().gap_3();
+
+                for workspace in workspaces {
+                    list = list.child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().text_sm().child(workspace.name.clone()))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(workspace.stage.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(workspace.local_path.clone()),
+                            ),
+                    );
+                }
+
+                list.into_any_element()
+            }
+        }
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let body: AnyElement = match self.section {
+            Section::Workspaces => self.render_workspaces(cx).into_any_element(),
+            _ => div()
+                .text_sm()
+                .child(self.section.empty())
+                .into_any_element(),
+        };
+
         v_flex()
             .flex_1()
             .min_w_0()
@@ -165,8 +257,7 @@ impl DesktopShell {
                     .pt_6()
                     .border_t_1()
                     .border_color(cx.theme().border)
-                    .text_sm()
-                    .child(self.section.empty()),
+                    .child(body),
             )
     }
 }
