@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common"
 import { TRPCModule } from "nestjs-trpc"
 import { AppContext } from "./context"
 import { ProtectedMiddleware } from "./middleware/protected"
+import { AgentTasksRouter } from "./routers/agent-tasks.router"
 import { AgentsRouter } from "./routers/agents.router"
 import { TrpcRouter } from "./routers/app.router"
 import { WorkspacesRouter } from "./routers/workspaces.router"
@@ -10,6 +11,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
   exports: [
     AppContext,
     ProtectedMiddleware,
+    AgentTasksRouter,
     AgentsRouter,
     TrpcRouter,
     WorkspacesRouter,
@@ -23,6 +25,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
   providers: [
     AppContext,
     ProtectedMiddleware,
+    AgentTasksRouter,
     AgentsRouter,
     TrpcRouter,
     WorkspacesRouter,
