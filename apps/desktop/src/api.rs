@@ -17,6 +17,14 @@ pub struct Workspace {
     pub stage: String,
 }
 
+/// An agent as returned by the `agents.list` tRPC procedure.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Agent {
+    pub name: String,
+    pub provider: String,
+    pub status: String,
+}
+
 /// The connection and authentication state against the Kloucy API.
 #[derive(Clone, Debug)]
 pub enum SessionStatus {
