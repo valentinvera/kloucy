@@ -12,9 +12,18 @@ pub struct CurrentUser {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
+    pub id: String,
     pub local_path: String,
     pub name: String,
     pub stage: String,
+}
+
+/// An agent task as returned by the `agentTasks.list` tRPC procedure.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AgentTask {
+    pub source: String,
+    pub status: String,
+    pub title: String,
 }
 
 /// An agent as returned by the `agents.list` tRPC procedure.
