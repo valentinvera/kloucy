@@ -3,6 +3,7 @@ import { neon } from "@neondatabase/serverless"
 import { drizzle } from "drizzle-orm/neon-http"
 
 import { agent, agentRelations } from "./schema/agent"
+import { agentSession, agentSessionRelations } from "./schema/agent-session"
 import { agentTask, agentTaskRelations } from "./schema/agent-task"
 import {
   account,
@@ -20,6 +21,8 @@ const schema = {
   accountRelations,
   agent,
   agentRelations,
+  agentSession,
+  agentSessionRelations,
   agentTask,
   agentTaskRelations,
   session,
