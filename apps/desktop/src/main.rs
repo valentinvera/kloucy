@@ -5,7 +5,7 @@ use gpui::{
     Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Root, Theme, ThemeMode,
+    ActiveTheme as _, Disableable as _, Root, Sizable as _, Theme, ThemeMode,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -118,6 +118,11 @@ struct DesktopShell {
     agents: LoadState<Vec<Agent>>,
     email: Entity<InputState>,
     password: Entity<InputState>,
+    workspace_name: Entity<InputState>,
+    workspace_path: Entity<InputState>,
+    create_error: Option<String>,
+    creating_workspace: bool,
+    show_create_form: bool,
     signing_in: bool,
     sign_in_error: Option<String>,
 }
@@ -131,6 +136,9 @@ impl DesktopShell {
                 .masked(true)
                 .placeholder("Password")
         });
+        let workspace_name = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
+        let workspace_path =
+            cx.new(|cx| InputState::new(window, cx).placeholder("/Users/you/project"));
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
@@ -157,12 +165,17 @@ impl DesktopShell {
         Self {
             agents: LoadState::Loading,
             client,
+            create_error: None,
+            creating_workspace: false,
             email,
             password,
             section: Section::Workspaces,
             session: SessionStatus::Checking,
+            show_create_form: false,
             sign_in_error: None,
             signing_in: false,
+            workspace_name,
+            workspace_path,
             workspaces: LoadState::Loading,
         }
     }
@@ -198,6 +211,48 @@ impl DesktopShell {
                     }
                     Err(error) => {
                         this.sign_in_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn submit_create_workspace(&mut self, cx: &mut Context<Self>) {
+        let name = self.workspace_name.read(cx).value().to_string();
+        let local_path = self.workspace_path.read(cx).value().to_string();
+
+        self.create_error = None;
+        self.creating_workspace = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.create_workspace(&name, &local_path)?;
+                    let session = client.session();
+                    Ok::<_, ApiError>(load_workspaces(&client, &session))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.creating_workspace = false;
+
+                match result {
+                    Ok(LoadState::Loaded(workspaces)) => {
+                        this.workspaces = LoadState::Loaded(workspaces);
+                        this.show_create_form = false;
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.create_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.create_error = Some(error_message(&error));
                     }
                 }
 
@@ -259,8 +314,21 @@ impl DesktopShell {
             .child(menu)
     }
 
-    fn render_workspaces(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        match &self.workspaces {
+    fn render_workspaces(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.show_create_form {
+            return self.render_create_workspace(cx);
+        }
+
+        let new_button = Button::new("new-workspace")
+            .small()
+            .label("New workspace")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_create_form = true;
+                this.create_error = None;
+                cx.notify();
+            }));
+
+        let content: AnyElement = match &self.workspaces {
             LoadState::Loading => div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
@@ -282,10 +350,10 @@ impl DesktopShell {
                 )
                 .into_any_element(),
             LoadState::Loaded(workspaces) => {
-                let mut list = v_flex().gap_3();
+                let mut rows = v_flex().gap_3();
 
                 for workspace in workspaces {
-                    list = list.child(
+                    rows = rows.child(
                         v_flex()
                             .gap_1()
                             .child(
@@ -308,9 +376,54 @@ impl DesktopShell {
                     );
                 }
 
-                list.into_any_element()
+                rows.into_any_element()
             }
+        };
+
+        v_flex()
+            .gap_4()
+            .child(new_button)
+            .child(content)
+            .into_any_element()
+    }
+
+    fn render_create_workspace(&self, cx: &mut Context<Self>) -> AnyElement {
+        let submit = Button::new("create-workspace")
+            .primary()
+            .label(if self.creating_workspace {
+                "Creating…"
+            } else {
+                "Create workspace"
+            })
+            .disabled(self.creating_workspace)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_create_workspace(cx)));
+
+        let cancel = Button::new("cancel-create")
+            .label("Cancel")
+            .disabled(self.creating_workspace)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_create_form = false;
+                this.create_error = None;
+                cx.notify();
+            }));
+
+        let mut form = v_flex()
+            .w(px(360.0))
+            .gap_3()
+            .child(Input::new(&self.workspace_name))
+            .child(Input::new(&self.workspace_path))
+            .child(h_flex().gap_2().child(submit).child(cancel));
+
+        if let Some(error) = &self.create_error {
+            form = form.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
         }
+
+        form.into_any_element()
     }
 
     fn render_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -366,7 +479,7 @@ impl DesktopShell {
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.section {
             Section::Agents => self.render_agents(cx).into_any_element(),
-            Section::Workspaces => self.render_workspaces(cx).into_any_element(),
+            Section::Workspaces => self.render_workspaces(cx),
             _ => div()
                 .text_sm()
                 .child(self.section.empty())
