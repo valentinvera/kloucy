@@ -13,7 +13,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::api::{Agent, ApiError, KloucyClient, SessionStatus, Workspace};
+use crate::api::{Agent, AgentTask, ApiError, KloucyClient, SessionStatus, Workspace};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -102,6 +102,17 @@ fn load_agents(client: &KloucyClient, session: &SessionStatus) -> LoadState<Vec<
     }
 }
 
+fn load_tasks(client: &KloucyClient, workspace_id: &str) -> LoadState<Vec<AgentTask>> {
+    let input = serde_json::json!({ "workspaceId": workspace_id });
+
+    match client.query::<Vec<AgentTask>>("agentTasks.list", Some(input)) {
+        Ok(tasks) => LoadState::Loaded(tasks),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load tasks.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
 fn error_message(error: &ApiError) -> String {
     match error {
         ApiError::Unauthorized => "Invalid email or password.".to_string(),
@@ -116,6 +127,8 @@ struct DesktopShell {
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
     agents: LoadState<Vec<Agent>>,
+    selected_workspace: Option<String>,
+    tasks: LoadState<Vec<AgentTask>>,
     email: Entity<InputState>,
     password: Entity<InputState>,
     workspace_name: Entity<InputState>,
@@ -170,10 +183,12 @@ impl DesktopShell {
             email,
             password,
             section: Section::Workspaces,
+            selected_workspace: None,
             session: SessionStatus::Checking,
             show_create_form: false,
             sign_in_error: None,
             signing_in: false,
+            tasks: LoadState::Loading,
             workspace_name,
             workspace_path,
             workspaces: LoadState::Loading,
@@ -275,7 +290,33 @@ impl DesktopShell {
             this.update(cx, |this, cx| {
                 this.session = SessionStatus::SignedOut;
                 this.create_error = None;
+                this.selected_workspace = None;
                 this.show_create_form = false;
+                this.tasks = LoadState::Loading;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn select_workspace(&mut self, workspace_id: String, cx: &mut Context<Self>) {
+        if self.selected_workspace.as_deref() == Some(workspace_id.as_str()) {
+            return;
+        }
+
+        self.selected_workspace = Some(workspace_id.clone());
+        self.tasks = LoadState::Loading;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let tasks = cx
+                .background_executor()
+                .spawn(async move { load_tasks(&client, &workspace_id) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.tasks = tasks;
                 cx.notify();
             })
             .ok();
@@ -383,12 +424,24 @@ impl DesktopShell {
                 )
                 .into_any_element(),
             LoadState::Loaded(workspaces) => {
-                let mut rows = v_flex().gap_3();
+                let mut rows = v_flex().gap_1();
 
-                for workspace in workspaces {
+                for (index, workspace) in workspaces.iter().enumerate() {
+                    let workspace_id = workspace.id.clone();
+                    let is_selected =
+                        self.selected_workspace.as_deref() == Some(workspace_id.as_str());
+
                     rows = rows.child(
                         v_flex()
+                            .id(("workspace", index))
                             .gap_1()
+                            .p_2()
+                            .rounded(px(6.0))
+                            .when(is_selected, |element| element.bg(cx.theme().list_active))
+                            .hover(|element| element.bg(cx.theme().list_hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_workspace(workspace_id.clone(), cx);
+                            }))
                             .child(
                                 h_flex()
                                     .gap_2()
@@ -509,9 +562,68 @@ impl DesktopShell {
         }
     }
 
+    fn render_inbox(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_workspace.is_none() {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Select a workspace to see its captured tasks.")
+                .into_any_element();
+        }
+
+        match &self.tasks {
+            LoadState::Loading => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Loading tasks…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(tasks) if tasks.is_empty() => v_flex()
+                .gap_1()
+                .child(div().text_sm().child("No captured tasks yet."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Capture a task to assign it to an agent."),
+                )
+                .into_any_element(),
+            LoadState::Loaded(tasks) => {
+                let mut list = v_flex().gap_3();
+
+                for task in tasks {
+                    list = list.child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().text_sm().child(task.title.clone()))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(task.status.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(task.source.clone()),
+                            ),
+                    );
+                }
+
+                list.into_any_element()
+            }
+        }
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.section {
             Section::Agents => self.render_agents(cx).into_any_element(),
+            Section::Inbox => self.render_inbox(cx),
             Section::Workspaces => self.render_workspaces(cx),
             _ => div()
                 .text_sm()
