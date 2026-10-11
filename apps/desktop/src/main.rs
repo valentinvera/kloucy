@@ -3,9 +3,9 @@ use gpui::{
     WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Root, Selectable as _, Theme, ThemeMode,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    ActiveTheme as _, Root, Theme, ThemeMode, h_flex,
+    sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
+    v_flex,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -26,16 +26,6 @@ const SECTIONS: [Section; 5] = [
 ];
 
 impl Section {
-    fn id(self) -> &'static str {
-        match self {
-            Section::Workspaces => "nav-workspaces",
-            Section::Agents => "nav-agents",
-            Section::Inbox => "nav-inbox",
-            Section::Sessions => "nav-sessions",
-            Section::Reviews => "nav-reviews",
-        }
-    }
-
     fn label(self) -> &'static str {
         match self {
             Section::Workspaces => "Workspaces",
@@ -79,25 +69,12 @@ impl DesktopShell {
     }
 
     fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut nav = v_flex()
-            .w(px(240.0))
-            .h_full()
-            .flex_shrink_0()
-            .gap_1()
-            .p_3()
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
-            .text_color(cx.theme().sidebar_foreground);
+        let mut menu = SidebarMenu::new();
 
         for section in SECTIONS {
-            nav = nav.child(
-                Button::new(section.id())
-                    .ghost()
-                    .w_full()
-                    .justify_start()
-                    .label(section.label())
-                    .selected(self.section == section)
+            menu = menu.child(
+                SidebarMenuItem::new(section.label())
+                    .active(self.section == section)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.section = section;
                         cx.notify();
@@ -105,7 +82,14 @@ impl DesktopShell {
             );
         }
 
-        nav
+        Sidebar::left()
+            .header(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Kloucy"),
+            )
+            .child(menu)
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
