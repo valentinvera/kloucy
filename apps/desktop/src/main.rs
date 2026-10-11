@@ -1,5 +1,7 @@
+mod api;
+
 use gpui::{
-    App, Application, Bounds, Context, FontWeight, IntoElement, Render, Window, WindowBounds,
+    App, Application, Bounds, Context, FontWeight, Hsla, IntoElement, Render, Window, WindowBounds,
     WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{
@@ -7,6 +9,8 @@ use gpui_component::{
     sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
+
+use crate::api::SessionStatus;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -59,13 +63,54 @@ impl Section {
 
 struct DesktopShell {
     section: Section,
+    session: SessionStatus,
 }
 
 impl DesktopShell {
-    fn new() -> Self {
+    fn new(cx: &mut Context<Self>) -> Self {
+        cx.spawn(async move |this, cx| {
+            let base_url = api::base_url();
+            let status = cx
+                .background_executor()
+                .spawn(async move { api::fetch_session(&base_url) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.session = status;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+
         Self {
             section: Section::Workspaces,
+            session: SessionStatus::Checking,
         }
+    }
+
+    fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (label, color): (String, Hsla) = match &self.session {
+            SessionStatus::Checking => ("Checking API…".to_string(), cx.theme().muted_foreground),
+            SessionStatus::SignedIn(user) => (
+                format!("{} ({})", user.name, user.email),
+                cx.theme().success_foreground,
+            ),
+            SessionStatus::SignedOut => {
+                ("Not signed in".to_string(), cx.theme().warning_foreground)
+            }
+            SessionStatus::Unreachable => ("API offline".to_string(), cx.theme().danger_foreground),
+        };
+
+        h_flex()
+            .gap_2()
+            .child(div().size(px(8.0)).rounded(px(4.0)).bg(color))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label),
+            )
     }
 
     fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -82,6 +127,8 @@ impl DesktopShell {
             );
         }
 
+        let status = self.render_status(cx);
+
         Sidebar::left()
             .header(
                 div()
@@ -89,6 +136,7 @@ impl DesktopShell {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Kloucy"),
             )
+            .footer(status)
             .child(menu)
     }
 
@@ -145,7 +193,7 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|_| DesktopShell::new());
+                let view = cx.new(DesktopShell::new);
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )
