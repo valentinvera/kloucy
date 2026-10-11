@@ -107,6 +107,38 @@ impl KloucyClient {
         Err(ApiError::Message(message))
     }
 
+    /// Run a tRPC mutation procedure and deserialize its `result.data`.
+    pub fn mutation<T: DeserializeOwned>(&self, path: &str, input: Value) -> Result<T, ApiError> {
+        let url = format!("{}/api/trpc/{}", self.base_url, path);
+        let body = input.to_string();
+
+        let response = self
+            .http
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .map_err(|_| ApiError::Unreachable)?;
+
+        let value = read_value(response)?;
+        let data = value
+            .get("result")
+            .and_then(|result| result.get("data"))
+            .cloned()
+            .unwrap_or(Value::Null);
+
+        serde_json::from_value(data).map_err(|error| ApiError::Message(error.to_string()))
+    }
+
+    /// Create a workspace owned by the signed-in user.
+    pub fn create_workspace(&self, name: &str, local_path: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>(
+            "workspaces.create",
+            serde_json::json!({ "name": name, "localPath": local_path }),
+        )
+        .map(|_| ())
+    }
+
     /// Run a tRPC query procedure and deserialize its `result.data`.
     pub fn query<T: DeserializeOwned>(
         &self,
