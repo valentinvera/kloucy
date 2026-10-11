@@ -68,6 +68,37 @@ impl KloucyClient {
         }
     }
 
+    /// Sign in with email and password, storing the session cookie.
+    pub fn sign_in(&self, email: &str, password: &str) -> Result<(), ApiError> {
+        let url = format!("{}/api/auth/sign-in/email", self.base_url);
+        let body = serde_json::json!({ "email": email, "password": password }).to_string();
+
+        let response = self
+            .http
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .map_err(|_| ApiError::Unreachable)?;
+
+        if response.status().is_success() {
+            return Ok(());
+        }
+
+        let text = response.text().unwrap_or_default();
+        let message = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| "Sign in failed".to_string());
+
+        Err(ApiError::Message(message))
+    }
+
     /// Run a tRPC query procedure and deserialize its `result.data`.
     pub fn query<T: DeserializeOwned>(
         &self,
