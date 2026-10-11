@@ -263,6 +263,26 @@ impl DesktopShell {
         .detach();
     }
 
+    fn submit_sign_out(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .spawn(async move {
+                    let _ = client.sign_out();
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.session = SessionStatus::SignedOut;
+                this.create_error = None;
+                this.show_create_form = false;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (label, color): (String, Hsla) = match &self.session {
             SessionStatus::Checking => ("Checking API…".to_string(), cx.theme().muted_foreground),
@@ -301,7 +321,20 @@ impl DesktopShell {
             );
         }
 
-        let status = self.render_status(cx);
+        let mut footer = h_flex()
+            .gap_3()
+            .items_center()
+            .child(self.render_status(cx));
+
+        if matches!(self.session, SessionStatus::SignedIn(_)) {
+            footer = footer.child(
+                Button::new("sign-out")
+                    .ghost()
+                    .small()
+                    .label("Sign out")
+                    .on_click(cx.listener(|this, _, _, cx| this.submit_sign_out(cx))),
+            );
+        }
 
         Sidebar::left()
             .header(
@@ -310,7 +343,7 @@ impl DesktopShell {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Kloucy"),
             )
-            .footer(status)
+            .footer(footer)
             .child(menu)
     }
 

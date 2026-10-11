@@ -107,6 +107,25 @@ impl KloucyClient {
         Err(ApiError::Message(message))
     }
 
+    /// Sign out the current session.
+    pub fn sign_out(&self) -> Result<(), ApiError> {
+        let url = format!("{}/api/auth/sign-out", self.base_url);
+
+        let response = self
+            .http
+            .post(&url)
+            .header("content-type", "application/json")
+            .body("{}")
+            .send()
+            .map_err(|_| ApiError::Unreachable)?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(ApiError::Message("Sign out failed".to_string()))
+        }
+    }
+
     /// Run a tRPC mutation procedure and deserialize its `result.data`.
     pub fn mutation<T: DeserializeOwned>(&self, path: &str, input: Value) -> Result<T, ApiError> {
         let url = format!("{}/api/trpc/{}", self.base_url, path);
