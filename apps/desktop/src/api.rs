@@ -72,6 +72,18 @@ pub struct ReadinessSnapshot {
     pub status: String,
 }
 
+/// A weekly review as returned by the `weeklyReviews.latest` tRPC procedure.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklyReview {
+    pub blockers: Option<Vec<String>>,
+    pub next_actions: Option<Vec<String>>,
+    pub rejected_changes: Option<Vec<String>>,
+    pub risky_patterns: Option<Vec<String>>,
+    pub shipped: Option<Vec<String>>,
+    pub summary: Option<String>,
+}
+
 /// The connection and authentication state against the Kloucy API.
 #[derive(Clone, Debug)]
 pub enum SessionStatus {
@@ -223,6 +235,30 @@ impl KloucyClient {
     pub fn reject_review(&self, id: &str) -> Result<(), ApiError> {
         self.mutation::<Value>("reviews.reject", serde_json::json!({ "id": id }))
             .map(|_| ())
+    }
+
+    /// Save a weekly review for a workspace.
+    pub fn create_weekly_review(
+        &self,
+        workspace_id: &str,
+        summary: &str,
+        shipped: &[String],
+        blockers: &[String],
+        rejected_changes: &[String],
+        next_actions: &[String],
+    ) -> Result<(), ApiError> {
+        self.mutation::<Value>(
+            "weeklyReviews.create",
+            serde_json::json!({
+                "workspaceId": workspace_id,
+                "summary": summary,
+                "shipped": shipped,
+                "blockers": blockers,
+                "rejectedChanges": rejected_changes,
+                "nextActions": next_actions,
+            }),
+        )
+        .map(|_| ())
     }
 
     /// Recalculate readiness for a workspace.

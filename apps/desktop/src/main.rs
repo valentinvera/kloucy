@@ -15,7 +15,7 @@ use gpui_component::{
 
 use crate::api::{
     Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, ReadinessSnapshot, Review,
-    SessionStatus, Workspace,
+    SessionStatus, WeeklyReview, Workspace,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -27,9 +27,10 @@ enum Section {
     Reviews,
     Decisions,
     Readiness,
+    WeeklyReview,
 }
 
-const SECTIONS: [Section; 7] = [
+const SECTIONS: [Section; 8] = [
     Section::Workspaces,
     Section::Agents,
     Section::Inbox,
@@ -37,6 +38,7 @@ const SECTIONS: [Section; 7] = [
     Section::Reviews,
     Section::Decisions,
     Section::Readiness,
+    Section::WeeklyReview,
 ];
 
 impl Section {
@@ -49,6 +51,7 @@ impl Section {
             Section::Reviews => "Reviews",
             Section::Decisions => "Decisions",
             Section::Readiness => "Readiness",
+            Section::WeeklyReview => "Weekly review",
         }
     }
 
@@ -61,6 +64,7 @@ impl Section {
             Section::Reviews => "Changed files and artifacts awaiting a decision.",
             Section::Decisions => "Control decisions and their reasons.",
             Section::Readiness => "Whether this workspace is ready to run agents.",
+            Section::WeeklyReview => "What shipped, what was blocked, and what comes next.",
         }
     }
 }
@@ -167,6 +171,22 @@ fn load_readiness(
     }
 }
 
+fn load_weekly_review(
+    client: &KloucyClient,
+    workspace_id: &str,
+) -> LoadState<Option<WeeklyReview>> {
+    let input = serde_json::json!({ "workspaceId": workspace_id });
+
+    match client.query::<Option<WeeklyReview>>("weeklyReviews.latest", Some(input)) {
+        Ok(review) => LoadState::Loaded(review),
+        Err(ApiError::Unauthorized) => {
+            LoadState::Failed("Sign in to load weekly reviews.".to_string())
+        }
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
 enum ReviewAction {
     Approve(String),
     Reject(String),
@@ -192,6 +212,7 @@ struct DesktopShell {
     reviews: LoadState<Vec<Review>>,
     decisions: LoadState<Vec<Decision>>,
     readiness: LoadState<Option<ReadinessSnapshot>>,
+    weekly_review: LoadState<Option<WeeklyReview>>,
     email: Entity<InputState>,
     password: Entity<InputState>,
     workspace_name: Entity<InputState>,
@@ -273,6 +294,7 @@ impl DesktopShell {
             selected_workspace: None,
             session: SessionStatus::Checking,
             sessions: LoadState::Loading,
+            weekly_review: LoadState::Loading,
             show_create_form: false,
             show_decision_form: false,
             show_task_form: false,
@@ -386,6 +408,7 @@ impl DesktopShell {
                 this.decisions = LoadState::Loading;
                 this.readiness = LoadState::Loading;
                 this.reviews = LoadState::Loading;
+                this.weekly_review = LoadState::Loading;
                 this.selected_workspace = None;
                 this.sessions = LoadState::Loading;
                 this.show_create_form = false;
@@ -408,10 +431,11 @@ impl DesktopShell {
         self.reviews = LoadState::Loading;
         self.sessions = LoadState::Loading;
         self.tasks = LoadState::Loading;
+        self.weekly_review = LoadState::Loading;
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let (tasks, sessions, reviews, decisions, readiness) = cx
+            let (tasks, sessions, reviews, decisions, readiness, weekly_review) = cx
                 .background_executor()
                 .spawn(async move {
                     let tasks = load_tasks(&client, &workspace_id);
@@ -419,7 +443,15 @@ impl DesktopShell {
                     let reviews = load_reviews(&client, &workspace_id);
                     let decisions = load_decisions(&client, &workspace_id);
                     let readiness = load_readiness(&client, &workspace_id);
-                    (tasks, sessions, reviews, decisions, readiness)
+                    let weekly_review = load_weekly_review(&client, &workspace_id);
+                    (
+                        tasks,
+                        sessions,
+                        reviews,
+                        decisions,
+                        readiness,
+                        weekly_review,
+                    )
                 })
                 .await;
 
@@ -429,6 +461,7 @@ impl DesktopShell {
                 this.reviews = reviews;
                 this.sessions = sessions;
                 this.tasks = tasks;
+                this.weekly_review = weekly_review;
                 cx.notify();
             })
             .ok();
@@ -642,6 +675,112 @@ impl DesktopShell {
             .ok();
         })
         .detach();
+    }
+
+    fn generate_review(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        let mut shipped: Vec<String> = Vec::new();
+        let mut blockers: Vec<String> = Vec::new();
+        let mut done = 0usize;
+        let mut running = 0usize;
+        let mut waiting = 0usize;
+
+        if let LoadState::Loaded(sessions) = &self.sessions {
+            for session in sessions {
+                let label = session
+                    .prompt
+                    .clone()
+                    .unwrap_or_else(|| "Untitled session".to_string());
+                match session.status.as_str() {
+                    "done" => {
+                        done += 1;
+                        shipped.push(label);
+                    }
+                    "running" => running += 1,
+                    "waiting" => {
+                        waiting += 1;
+                        blockers.push(label);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut rejected_changes: Vec<String> = Vec::new();
+        if let LoadState::Loaded(reviews) = &self.reviews {
+            for review in reviews {
+                if review.action == "rejected" {
+                    rejected_changes.push(
+                        review
+                            .artifact_id
+                            .clone()
+                            .unwrap_or_else(|| "Changed files".to_string()),
+                    );
+                }
+            }
+        }
+
+        let summary = format!("{done} done, {running} running, {waiting} waiting");
+        let next_actions = vec![
+            "Review waiting sessions".to_string(),
+            "Start a task from the inbox".to_string(),
+        ];
+
+        self.weekly_review = LoadState::Loading;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let review = cx
+                .background_executor()
+                .spawn(async move {
+                    let _ = client.create_weekly_review(
+                        &workspace_id,
+                        &summary,
+                        &shipped,
+                        &blockers,
+                        &rejected_changes,
+                        &next_actions,
+                    );
+                    load_weekly_review(&client, &workspace_id)
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.weekly_review = review;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn review_list(
+        &self,
+        label: &str,
+        items: &Option<Vec<String>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entries = items.clone().unwrap_or_default();
+
+        if entries.is_empty() {
+            return div().into_any_element();
+        }
+
+        let mut list = v_flex().gap_1().child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(label.to_string()),
+        );
+
+        for entry in entries {
+            list = list.child(div().text_sm().child(entry));
+        }
+
+        list.into_any_element()
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1414,6 +1553,66 @@ impl DesktopShell {
             .into_any_element()
     }
 
+    fn render_weekly_review(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_workspace.is_none() {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Select a workspace to review its week.")
+                .into_any_element();
+        }
+
+        let generate = Button::new("generate-review")
+            .small()
+            .label("Generate review")
+            .on_click(cx.listener(|this, _, _, cx| this.generate_review(cx)));
+
+        let content: AnyElement = match &self.weekly_review {
+            LoadState::Loading => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Loading weekly review…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(None) => v_flex()
+                .gap_1()
+                .child(div().text_sm().child("No weekly review yet."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Generate a review from this week's sessions and reviews."),
+                )
+                .into_any_element(),
+            LoadState::Loaded(Some(review)) => {
+                let mut body = v_flex().gap_3();
+
+                if let Some(summary) = &review.summary {
+                    body = body.child(div().text_sm().child(summary.clone()));
+                }
+
+                body = body
+                    .child(self.review_list("Shipped", &review.shipped, cx))
+                    .child(self.review_list("Blockers", &review.blockers, cx))
+                    .child(self.review_list("Rejected changes", &review.rejected_changes, cx))
+                    .child(self.review_list("Risky patterns", &review.risky_patterns, cx))
+                    .child(self.review_list("Next actions", &review.next_actions, cx));
+
+                body.into_any_element()
+            }
+        };
+
+        v_flex()
+            .gap_4()
+            .child(generate)
+            .child(content)
+            .into_any_element()
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.section {
             Section::Agents => self.render_agents(cx).into_any_element(),
@@ -1422,6 +1621,7 @@ impl DesktopShell {
             Section::Readiness => self.render_readiness(cx),
             Section::Reviews => self.render_reviews(cx),
             Section::Sessions => self.render_sessions(cx),
+            Section::WeeklyReview => self.render_weekly_review(cx),
             Section::Workspaces => self.render_workspaces(cx),
         };
 
