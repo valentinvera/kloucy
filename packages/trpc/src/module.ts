@@ -6,6 +6,7 @@ import { AgentTasksRouter } from "./routers/agent-tasks.router"
 import { AgentsRouter } from "./routers/agents.router"
 import { TrpcRouter } from "./routers/app.router"
 import { DecisionsRouter } from "./routers/decisions.router"
+import { PairingRouter } from "./routers/pairing.router"
 import { ReadinessRouter } from "./routers/readiness.router"
 import { ReviewsRouter } from "./routers/reviews.router"
 import { SessionsRouter } from "./routers/sessions.router"
@@ -20,6 +21,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     AgentsRouter,
     TrpcRouter,
     DecisionsRouter,
+    PairingRouter,
     ReadinessRouter,
     ReviewsRouter,
     SessionsRouter,
@@ -39,6 +41,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     AgentsRouter,
     TrpcRouter,
     DecisionsRouter,
+    PairingRouter,
     ReadinessRouter,
     ReviewsRouter,
     SessionsRouter,
