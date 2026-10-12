@@ -1,4 +1,5 @@
 mod api;
+mod runner;
 
 use gpui::{
     AnyElement, App, Application, Bounds, Context, Entity, FontWeight, Hsla, IntoElement, Render,
@@ -526,9 +527,46 @@ impl DesktopShell {
         .detach();
     }
 
+    fn agent_command(&self, agent_id: &str) -> Option<String> {
+        let LoadState::Loaded(agents) = &self.agents else {
+            return None;
+        };
+
+        let agent = agents.iter().find(|agent| agent.id == agent_id)?;
+
+        agent
+            .command_template
+            .clone()
+            .or_else(|| agent.executable_path.clone())
+    }
+
     fn session_action(&mut self, action: SessionAction, cx: &mut Context<Self>) {
         let Some(workspace_id) = self.selected_workspace.clone() else {
             return;
+        };
+
+        let (command, cwd) = match &action {
+            SessionAction::Start(id) => {
+                let agent_id = match &self.sessions {
+                    LoadState::Loaded(sessions) => sessions
+                        .iter()
+                        .find(|session| &session.id == id)
+                        .and_then(|session| session.agent_id.clone()),
+                    _ => None,
+                };
+
+                let command = agent_id.and_then(|agent_id| self.agent_command(&agent_id));
+                let cwd = match &self.workspaces {
+                    LoadState::Loaded(workspaces) => workspaces
+                        .iter()
+                        .find(|workspace| workspace.id == workspace_id)
+                        .map(|workspace| workspace.local_path.clone()),
+                    _ => None,
+                };
+
+                (command, cwd)
+            }
+            _ => (None, None),
         };
 
         let client = self.client.clone();
@@ -536,15 +574,23 @@ impl DesktopShell {
             let sessions = cx
                 .background_executor()
                 .spawn(async move {
-                    match action {
+                    match &action {
                         SessionAction::Start(id) => {
-                            let _ = client.start_session(&id);
+                            let _ = client.start_session(id);
+
+                            if let (Some(command), Some(cwd)) = (command, cwd) {
+                                let runner_client = client.clone();
+                                let session_id = id.clone();
+                                std::thread::spawn(move || {
+                                    runner::run_agent(runner_client, session_id, command, cwd);
+                                });
+                            }
                         }
                         SessionAction::Stop(id) => {
-                            let _ = client.stop_session(&id);
+                            let _ = client.stop_session(id);
                         }
                         SessionAction::Retry(id) => {
-                            let _ = client.retry_session(&id);
+                            let _ = client.retry_session(id);
                         }
                     }
 
