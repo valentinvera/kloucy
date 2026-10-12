@@ -1,112 +1,100 @@
-# kloucy
+# Kloucy
 
-This project was created with [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), a modern TypeScript stack that combines React, TanStack Start, Hono, TRPC, and more.
+Kloucy is an Agent Development Environment and orchestration layer for developers who run local AI coding agents. It helps you discover available agents, start a real session in a project, watch progress and output, review what changed, and keep control from a phone.
 
-## Features
+- **Desktop** is the command center for agent orchestration.
+- **Web** is the public and account surface.
+- **Mobile** is the continuation and supervision surface.
+- **Docs** is the setup and trust surface.
 
-- **TypeScript** - For type safety and improved developer experience
-- **TanStack Start** - SSR framework with TanStack Router
-- **React Native** - Build mobile apps using React
-- **Expo** - Tools for React Native development
-- **TailwindCSS** - Utility-first CSS for rapid UI development
-- **Shared UI package** - shadcn/ui primitives live in `packages/ui`
-- **Hono** - Lightweight, performant server framework
-- **tRPC** - End-to-end type-safe APIs
-- **Bun** - Runtime environment
-- **Drizzle** - TypeScript-first ORM
-- **PostgreSQL** - Database engine
-- **Authentication** - Better-Auth
-- **Biome** - Linting and formatting
-- **Turborepo** - Optimized monorepo build system
+See `PRODUCT_PLAN.md` for the MVP scope and `BRAND_FOUNDATION.md` for the brand intent.
 
-## Getting Started
+## Applications
 
-First, install the dependencies:
+- `apps/desktop` — GPUI (Rust) desktop command center.
+- `apps/web` — TanStack Start (React) web app.
+- `apps/api` — NestJS API: Better Auth, tRPC, and REST, all under `/api`.
+- `apps/mobile` — Expo/React Native app (HeroUI Native, Uniwind).
+- `apps/docs` — TanStack Start + Fumadocs documentation site.
+
+## Packages
+
+- `packages/db` — Drizzle/Neon schema, migrations, and database client.
+- `packages/auth` — Better Auth setup shared by the API and clients.
+- `packages/trpc` — NestJS tRPC module, routers, context, and generated server types.
+- `packages/ui` — shared web UI (shadcn/Tailwind) primitives and styles.
+- `packages/tokens` — shared Kloucy design tokens (Tailwind and Uniwind).
+- `packages/env` — typed environment validation for API, web, and mobile runtimes.
+
+## Requirements
+
+- [Bun](https://bun.sh)
+- A PostgreSQL database (for example, [Neon](https://neon.tech))
+
+## Setup
 
 ```bash
 bun install
 ```
 
-## Database Setup
+Create the environment files each app needs (`apps/api/.env`, `apps/web/.env`, `apps/docs/.env`, `apps/mobile/.env`). The API reads `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `CORS_ORIGIN`, `HOST`, and `PORT`. See `packages/env` for the exact variables.
 
-This project uses PostgreSQL with Drizzle ORM.
+## Database
 
-1. Make sure you have a PostgreSQL database set up.
-2. Update your `apps/api/.env` file with your PostgreSQL connection details.
-
-3. Apply the schema to your database:
+Apply the committed migrations, or push the current schema directly:
 
 ```bash
-bun run db:push
+cd packages/db
+bun run db:migrate   # apply migrations
+# or
+bun run db:push      # push the current schema
 ```
 
-Then, run the development server:
+`bun run db:generate` creates a new migration from schema changes, and `bun run db:studio` opens Drizzle Studio.
+
+## Development
+
+Run only what you need from the repository root (Turbo):
 
 ```bash
-bun run dev
+bun run dev:api
+bun run dev:web
+bun run dev:docs
+bun run dev:mobile
+bun run dev:desktop
 ```
 
-Open [http://localhost:3001](http://localhost:3001) in your browser to see the web application.
-Use the Expo Go app to run the mobile application.
-The API is running at [http://localhost:3000](http://localhost:3000).
+Each app reads its host and port from its own `.env`. The API serves every route under `/api`.
 
-## UI Customization
-
-React web apps in this stack share shadcn/ui primitives through `packages/ui`.
-
-- Change design tokens and global styles in `packages/ui/src/styles/globals.css`
-- Update shared primitives in `packages/ui/src/components/*`
-- Adjust shadcn aliases or style config in `packages/ui/components.json` and `apps/web/components.json`
-
-### Add more shared components
-
-Run this from the project root to add more primitives to the shared UI package:
+## Checks
 
 ```bash
-npx shadcn@latest add accordion dialog popover sheet table -c packages/ui
+bun run check                                # Biome formatting and linting
+bun run check-types                          # TypeScript types across JS apps
+cd apps/desktop && cargo check               # desktop
 ```
 
-Import shared components like this:
+## Repository Structure
 
-```tsx
-import { Button } from "@kloucy/ui/components/button";
-```
-
-### Add app-specific blocks
-
-If you want to add app-specific blocks instead of shared primitives, run the shadcn CLI from `apps/web`.
-
-## Git Hooks and Formatting
-
-- Run checks: `bun run check`
-
-## Project Structure
-
-```
+```text
 kloucy/
 ├── apps/
-│   ├── web/         # Frontend application (React + TanStack Start)
-│   ├── mobile/      # Mobile application (React Native, Expo)
-│   ├── api/         # Backend API (Hono, TRPC)
-│   ├── docs/        # Documentation site (Fumadocs)
-│   └── desktop/     # Desktop application
+│   ├── desktop/   # GPUI (Rust) command center
+│   ├── web/       # TanStack Start web app
+│   ├── api/       # NestJS API (auth, tRPC, REST)
+│   ├── mobile/    # Expo / React Native app
+│   └── docs/      # Fumadocs documentation site
 ├── packages/
-│   ├── ui/          # Shared shadcn/ui components and styles
-│   ├── trpc/        # tRPC layer / business logic
-│   ├── auth/        # Authentication configuration & logic
-│   └── db/          # Database schema & queries
+│   ├── db/        # Drizzle schema, migrations, client
+│   ├── auth/      # Better Auth setup
+│   ├── trpc/      # tRPC module, routers, generated types
+│   ├── ui/        # shared web UI primitives and styles
+│   ├── tokens/    # shared design tokens
+│   └── env/       # typed environment validation
+└── ...
 ```
 
-## Available Scripts
+## Contributing
 
-- `bun run dev`: Start all applications in development mode
-- `bun run build`: Build all applications
-- `bun run dev:web`: Start only the web application
-- `bun run dev:api`: Start only the API
-- `bun run check-types`: Check TypeScript types across all apps
-- `bun run dev:mobile`: Start the React Native/Expo development server
-- `bun run db:push`: Push schema changes to database
-- `bun run db:generate`: Generate database client/types
-- `bun run db:migrate`: Run database migrations
-- `bun run db:studio`: Open database studio UI
-- `bun run check`: Run Biome formatting and linting
+- Use Conventional Commits and one objective per pull request.
+- Run `bun run check` and the relevant `check-types` before committing.
