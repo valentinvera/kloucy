@@ -15,7 +15,7 @@ use gpui_component::{
 
 use crate::api::{
     Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, PairingSession,
-    ReadinessSnapshot, Review, SessionStatus, WeeklyReview, Workspace,
+    ReadinessSnapshot, Review, SessionLog, SessionStatus, WeeklyReview, Workspace,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,6 +133,17 @@ fn load_sessions(client: &KloucyClient, workspace_id: &str) -> LoadState<Vec<Age
     }
 }
 
+fn load_session_logs(client: &KloucyClient, session_id: &str) -> LoadState<Vec<SessionLog>> {
+    let input = serde_json::json!({ "sessionId": session_id });
+
+    match client.query::<Vec<SessionLog>>("sessions.logs", Some(input)) {
+        Ok(logs) => LoadState::Loaded(logs),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load logs.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
 enum SessionAction {
     Start(String),
     Stop(String),
@@ -211,6 +222,8 @@ struct DesktopShell {
     workspaces: LoadState<Vec<Workspace>>,
     agents: LoadState<Vec<Agent>>,
     selected_workspace: Option<String>,
+    selected_session: Option<String>,
+    session_logs: LoadState<Vec<SessionLog>>,
     tasks: LoadState<Vec<AgentTask>>,
     sessions: LoadState<Vec<AgentSession>>,
     reviews: LoadState<Vec<Review>>,
@@ -297,8 +310,10 @@ impl DesktopShell {
             readiness: LoadState::Loading,
             pairing: LoadState::Loaded(None),
             section: Section::Workspaces,
+            selected_session: None,
             selected_workspace: None,
             session: SessionStatus::Checking,
+            session_logs: LoadState::Loading,
             sessions: LoadState::Loading,
             weekly_review: LoadState::Loading,
             show_create_form: false,
@@ -413,6 +428,7 @@ impl DesktopShell {
                 this.create_error = None;
                 this.decisions = LoadState::Loading;
                 this.pairing = LoadState::Loaded(None);
+                this.selected_session = None;
                 this.readiness = LoadState::Loading;
                 this.reviews = LoadState::Loading;
                 this.weekly_review = LoadState::Loading;
@@ -433,6 +449,8 @@ impl DesktopShell {
         }
 
         self.selected_workspace = Some(workspace_id.clone());
+        self.selected_session = None;
+        self.session_logs = LoadState::Loading;
         self.decisions = LoadState::Loading;
         self.readiness = LoadState::Loading;
         self.reviews = LoadState::Loading;
@@ -843,6 +861,30 @@ impl DesktopShell {
         grid.into_any_element()
     }
 
+    fn select_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+        if self.selected_session.as_deref() == Some(session_id.as_str()) {
+            return;
+        }
+
+        self.selected_session = Some(session_id.clone());
+        self.session_logs = LoadState::Loading;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let logs = cx
+                .background_executor()
+                .spawn(async move { load_session_logs(&client, &session_id) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.session_logs = logs;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (label, color): (String, Hsla) = match &self.session {
             SessionStatus::Checking => ("Checking API…".to_string(), cx.theme().muted_foreground),
@@ -1217,7 +1259,7 @@ impl DesktopShell {
                 .into_any_element();
         }
 
-        match &self.sessions {
+        let content: AnyElement = match &self.sessions {
             LoadState::Loading => div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
@@ -1245,6 +1287,7 @@ impl DesktopShell {
                     let start_id = session.id.clone();
                     let stop_id = session.id.clone();
                     let retry_id = session.id.clone();
+                    let logs_id = session.id.clone();
 
                     list = list.child(
                         h_flex()
@@ -1299,6 +1342,14 @@ impl DesktopShell {
                                                     cx,
                                                 );
                                             })),
+                                    )
+                                    .child(
+                                        Button::new(("session-logs", index))
+                                            .small()
+                                            .label("Logs")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.select_session(logs_id.clone(), cx);
+                                            })),
                                     ),
                             ),
                     );
@@ -1306,7 +1357,67 @@ impl DesktopShell {
 
                 list.into_any_element()
             }
+        };
+
+        v_flex()
+            .gap_6()
+            .child(content)
+            .child(self.render_session_logs(cx))
+            .into_any_element()
+    }
+
+    fn render_session_logs(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_session.is_none() {
+            return div().into_any_element();
         }
+
+        let title = div()
+            .text_sm()
+            .font_weight(FontWeight::SEMIBOLD)
+            .child("Session logs");
+
+        let content: AnyElement = match &self.session_logs {
+            LoadState::Loading => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Loading logs…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(logs) if logs.is_empty() => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("No output yet.")
+                .into_any_element(),
+            LoadState::Loaded(logs) => {
+                let mut list = v_flex().gap_1();
+
+                for (index, log) in logs.iter().enumerate() {
+                    let color = if log.stream == "stderr" {
+                        cx.theme().danger_foreground
+                    } else {
+                        cx.theme().muted_foreground
+                    };
+
+                    list = list.child(div().text_xs().text_color(color).child(format!(
+                        "{} {}",
+                        index + 1,
+                        log.message
+                    )));
+                }
+
+                list.into_any_element()
+            }
+        };
+
+        v_flex()
+            .gap_3()
+            .child(title)
+            .child(content)
+            .into_any_element()
     }
 
     fn render_reviews(&self, cx: &mut Context<Self>) -> AnyElement {
