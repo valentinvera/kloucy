@@ -9,6 +9,7 @@ import { DecisionsRouter } from "./routers/decisions.router"
 import { PairingRouter } from "./routers/pairing.router"
 import { ReadinessRouter } from "./routers/readiness.router"
 import { ReviewsRouter } from "./routers/reviews.router"
+import { SessionStepsRouter } from "./routers/session-steps.router"
 import { SessionsRouter } from "./routers/sessions.router"
 import { WeeklyReviewsRouter } from "./routers/weekly-reviews.router"
 import { WorkspacesRouter } from "./routers/workspaces.router"
@@ -24,6 +25,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     PairingRouter,
     ReadinessRouter,
     ReviewsRouter,
+    SessionStepsRouter,
     SessionsRouter,
     WeeklyReviewsRouter,
     WorkspacesRouter,
@@ -44,6 +46,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     PairingRouter,
     ReadinessRouter,
     ReviewsRouter,
+    SessionStepsRouter,
     SessionsRouter,
     WeeklyReviewsRouter,
     WorkspacesRouter,
