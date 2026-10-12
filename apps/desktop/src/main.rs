@@ -601,9 +601,16 @@ impl DesktopShell {
 
                             if let (Some(command), Some(cwd)) = (command, cwd) {
                                 let runner_client = client.clone();
+                                let runner_workspace_id = workspace_id.clone();
                                 let session_id = id.clone();
                                 std::thread::spawn(move || {
-                                    runner::run_agent(runner_client, session_id, command, cwd);
+                                    runner::run_agent(
+                                        runner_client,
+                                        runner_workspace_id,
+                                        session_id,
+                                        command,
+                                        cwd,
+                                    );
                                 });
                             }
                         }
