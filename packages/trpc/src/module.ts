@@ -5,6 +5,7 @@ import { ProtectedMiddleware } from "./middleware/protected"
 import { AgentTasksRouter } from "./routers/agent-tasks.router"
 import { AgentsRouter } from "./routers/agents.router"
 import { TrpcRouter } from "./routers/app.router"
+import { DecisionsRouter } from "./routers/decisions.router"
 import { ReviewsRouter } from "./routers/reviews.router"
 import { SessionsRouter } from "./routers/sessions.router"
 import { WorkspacesRouter } from "./routers/workspaces.router"
@@ -16,6 +17,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     AgentTasksRouter,
     AgentsRouter,
     TrpcRouter,
+    DecisionsRouter,
     ReviewsRouter,
     SessionsRouter,
     WorkspacesRouter,
@@ -32,6 +34,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     AgentTasksRouter,
     AgentsRouter,
     TrpcRouter,
+    DecisionsRouter,
     ReviewsRouter,
     SessionsRouter,
     WorkspacesRouter,
