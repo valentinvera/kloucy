@@ -19,6 +19,8 @@ use crate::api::{
     ReadinessSnapshot, Review, SessionLog, SessionStatus, SessionStep, WeeklyReview, Workspace,
 };
 
+use std::sync::Arc;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Home,
@@ -262,6 +264,7 @@ fn session_titles(sessions: &LoadState<Vec<AgentSession>>, status: &str) -> Vec<
 struct DesktopShell {
     section: Section,
     client: KloucyClient,
+    registry: Arc<runner::RunRegistry>,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
     agents: LoadState<Vec<Agent>>,
@@ -315,6 +318,7 @@ struct DesktopShell {
 impl DesktopShell {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let client = KloucyClient::new();
+        let registry = runner::RunRegistry::new();
         let email = cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
         let password = cx.new(|cx| {
             InputState::new(window, cx)
@@ -378,6 +382,7 @@ impl DesktopShell {
         Self {
             agents: LoadState::Loading,
             client,
+            registry,
             agent_command,
             agent_error: None,
             agent_name,
@@ -670,6 +675,7 @@ impl DesktopShell {
         };
 
         let client = self.client.clone();
+        let registry = self.registry.clone();
         cx.spawn(async move |this, cx| {
             let sessions = cx
                 .background_executor()
@@ -680,10 +686,12 @@ impl DesktopShell {
 
                             if let (Some(command), Some(cwd)) = (command, cwd) {
                                 let runner_client = client.clone();
+                                let runner_registry = registry.clone();
                                 let runner_workspace_id = workspace_id.clone();
                                 let session_id = id.clone();
                                 std::thread::spawn(move || {
                                     runner::run_agent(
+                                        runner_registry,
                                         runner_client,
                                         runner_workspace_id,
                                         session_id,
@@ -695,6 +703,7 @@ impl DesktopShell {
                         }
                         SessionAction::Stop(id) => {
                             let _ = client.stop_session(id);
+                            registry.stop(id);
                         }
                         SessionAction::Retry(id) => {
                             let _ = client.retry_session(id);
