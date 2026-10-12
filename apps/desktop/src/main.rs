@@ -14,7 +14,7 @@ use gpui_component::{
 };
 
 use crate::api::{
-    Agent, AgentSession, AgentTask, ApiError, KloucyClient, SessionStatus, Workspace,
+    Agent, AgentSession, AgentTask, ApiError, KloucyClient, Review, SessionStatus, Workspace,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -52,16 +52,6 @@ impl Section {
             Section::Inbox => "Tasks captured before they run.",
             Section::Sessions => "Running, waiting, and finished agent work.",
             Section::Reviews => "Changed files and artifacts awaiting a decision.",
-        }
-    }
-
-    fn empty(self) -> &'static str {
-        match self {
-            Section::Workspaces => "Open your first workspace.",
-            Section::Agents => "No agents configured yet.",
-            Section::Inbox => "No captured tasks yet.",
-            Section::Sessions => "No sessions yet.",
-            Section::Reviews => "Nothing to review yet.",
         }
     }
 }
@@ -132,6 +122,22 @@ enum SessionAction {
     Retry(String),
 }
 
+fn load_reviews(client: &KloucyClient, workspace_id: &str) -> LoadState<Vec<Review>> {
+    let input = serde_json::json!({ "workspaceId": workspace_id });
+
+    match client.query::<Vec<Review>>("reviews.list", Some(input)) {
+        Ok(reviews) => LoadState::Loaded(reviews),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load reviews.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
+enum ReviewAction {
+    Approve(String),
+    Reject(String),
+}
+
 fn error_message(error: &ApiError) -> String {
     match error {
         ApiError::Unauthorized => "Invalid email or password.".to_string(),
@@ -149,6 +155,7 @@ struct DesktopShell {
     selected_workspace: Option<String>,
     tasks: LoadState<Vec<AgentTask>>,
     sessions: LoadState<Vec<AgentSession>>,
+    reviews: LoadState<Vec<Review>>,
     email: Entity<InputState>,
     password: Entity<InputState>,
     workspace_name: Entity<InputState>,
@@ -211,6 +218,7 @@ impl DesktopShell {
             creating_workspace: false,
             email,
             password,
+            reviews: LoadState::Loading,
             section: Section::Workspaces,
             selected_workspace: None,
             session: SessionStatus::Checking,
@@ -324,6 +332,7 @@ impl DesktopShell {
             this.update(cx, |this, cx| {
                 this.session = SessionStatus::SignedOut;
                 this.create_error = None;
+                this.reviews = LoadState::Loading;
                 this.selected_workspace = None;
                 this.sessions = LoadState::Loading;
                 this.show_create_form = false;
@@ -341,23 +350,58 @@ impl DesktopShell {
         }
 
         self.selected_workspace = Some(workspace_id.clone());
+        self.reviews = LoadState::Loading;
         self.sessions = LoadState::Loading;
         self.tasks = LoadState::Loading;
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let (tasks, sessions) = cx
+            let (tasks, sessions, reviews) = cx
                 .background_executor()
                 .spawn(async move {
                     let tasks = load_tasks(&client, &workspace_id);
                     let sessions = load_sessions(&client, &workspace_id);
-                    (tasks, sessions)
+                    let reviews = load_reviews(&client, &workspace_id);
+                    (tasks, sessions, reviews)
                 })
                 .await;
 
             this.update(cx, |this, cx| {
+                this.reviews = reviews;
                 this.sessions = sessions;
                 this.tasks = tasks;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn review_action(&mut self, action: ReviewAction, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let reviews = cx
+                .background_executor()
+                .spawn(async move {
+                    match action {
+                        ReviewAction::Approve(id) => {
+                            let _ = client.approve_review(&id);
+                        }
+                        ReviewAction::Reject(id) => {
+                            let _ = client.reject_review(&id);
+                        }
+                    }
+
+                    load_reviews(&client, &workspace_id)
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.reviews = reviews;
                 cx.notify();
             })
             .ok();
@@ -936,16 +980,102 @@ impl DesktopShell {
         }
     }
 
+    fn render_reviews(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_workspace.is_none() {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Select a workspace to see its reviews.")
+                .into_any_element();
+        }
+
+        match &self.reviews {
+            LoadState::Loading => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Loading reviews…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(reviews) if reviews.is_empty() => v_flex()
+                .gap_1()
+                .child(div().text_sm().child("Nothing to review yet."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Completed sessions with changes appear here."),
+                )
+                .into_any_element(),
+            LoadState::Loaded(reviews) => {
+                let mut list = v_flex().gap_3();
+
+                for (index, review) in reviews.iter().enumerate() {
+                    let approve_id = review.id.clone();
+                    let reject_id = review.id.clone();
+
+                    list = list.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div().text_sm().child(
+                                    review
+                                        .artifact_id
+                                        .clone()
+                                        .unwrap_or_else(|| "Changed files".to_string()),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(review.action.clone()),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(
+                                        Button::new(("review-approve", index))
+                                            .small()
+                                            .label("Approve")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.review_action(
+                                                    ReviewAction::Approve(approve_id.clone()),
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(("review-reject", index))
+                                            .small()
+                                            .label("Reject")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.review_action(
+                                                    ReviewAction::Reject(reject_id.clone()),
+                                                    cx,
+                                                );
+                                            })),
+                                    ),
+                            ),
+                    );
+                }
+
+                list.into_any_element()
+            }
+        }
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.section {
             Section::Agents => self.render_agents(cx).into_any_element(),
             Section::Inbox => self.render_inbox(cx),
+            Section::Reviews => self.render_reviews(cx),
             Section::Sessions => self.render_sessions(cx),
             Section::Workspaces => self.render_workspaces(cx),
-            _ => div()
-                .text_sm()
-                .child(self.section.empty())
-                .into_any_element(),
         };
 
         v_flex()
