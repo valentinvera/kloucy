@@ -2,7 +2,7 @@ mod api;
 
 use gpui::{
     AnyElement, App, Application, Bounds, Context, Entity, FontWeight, Hsla, IntoElement, Render,
-    Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Root, Sizable as _, Theme, ThemeMode,
@@ -14,8 +14,8 @@ use gpui_component::{
 };
 
 use crate::api::{
-    Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, ReadinessSnapshot, Review,
-    SessionStatus, WeeklyReview, Workspace,
+    Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, PairingSession,
+    ReadinessSnapshot, Review, SessionStatus, WeeklyReview, Workspace,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,9 +28,10 @@ enum Section {
     Decisions,
     Readiness,
     WeeklyReview,
+    Pairing,
 }
 
-const SECTIONS: [Section; 8] = [
+const SECTIONS: [Section; 9] = [
     Section::Workspaces,
     Section::Agents,
     Section::Inbox,
@@ -39,6 +40,7 @@ const SECTIONS: [Section; 8] = [
     Section::Decisions,
     Section::Readiness,
     Section::WeeklyReview,
+    Section::Pairing,
 ];
 
 impl Section {
@@ -52,6 +54,7 @@ impl Section {
             Section::Decisions => "Decisions",
             Section::Readiness => "Readiness",
             Section::WeeklyReview => "Weekly review",
+            Section::Pairing => "Pairing",
         }
     }
 
@@ -65,6 +68,7 @@ impl Section {
             Section::Decisions => "Control decisions and their reasons.",
             Section::Readiness => "Whether this workspace is ready to run agents.",
             Section::WeeklyReview => "What shipped, what was blocked, and what comes next.",
+            Section::Pairing => "Pair a phone to keep control away from the desk.",
         }
     }
 }
@@ -213,6 +217,7 @@ struct DesktopShell {
     decisions: LoadState<Vec<Decision>>,
     readiness: LoadState<Option<ReadinessSnapshot>>,
     weekly_review: LoadState<Option<WeeklyReview>>,
+    pairing: LoadState<Option<PairingSession>>,
     email: Entity<InputState>,
     password: Entity<InputState>,
     workspace_name: Entity<InputState>,
@@ -290,6 +295,7 @@ impl DesktopShell {
             password,
             reviews: LoadState::Loading,
             readiness: LoadState::Loading,
+            pairing: LoadState::Loaded(None),
             section: Section::Workspaces,
             selected_workspace: None,
             session: SessionStatus::Checking,
@@ -406,6 +412,7 @@ impl DesktopShell {
                 this.session = SessionStatus::SignedOut;
                 this.create_error = None;
                 this.decisions = LoadState::Loading;
+                this.pairing = LoadState::Loaded(None);
                 this.readiness = LoadState::Loading;
                 this.reviews = LoadState::Loading;
                 this.weekly_review = LoadState::Loading;
@@ -781,6 +788,59 @@ impl DesktopShell {
         }
 
         list.into_any_element()
+    }
+
+    fn create_pairing(&mut self, cx: &mut Context<Self>) {
+        self.pairing = LoadState::Loading;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let pairing = cx
+                .background_executor()
+                .spawn(async move {
+                    match client.create_qr_session() {
+                        Ok(session) => LoadState::Loaded(Some(session)),
+                        Err(ApiError::Unauthorized) => {
+                            LoadState::Failed("Sign in to pair a device.".to_string())
+                        }
+                        Err(ApiError::Message(message)) => LoadState::Failed(message),
+                        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+                    }
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.pairing = pairing;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_qr(&self, value: &str) -> AnyElement {
+        let Ok(code) = qrcode::QrCode::new(value.as_bytes()) else {
+            return div()
+                .text_sm()
+                .child("Could not render pairing code")
+                .into_any_element();
+        };
+
+        let width = code.width();
+        let colors = code.to_colors();
+        let mut grid = v_flex();
+
+        for row in 0..width {
+            let mut line = h_flex();
+            for col in 0..width {
+                let dark = colors[row * width + col] == qrcode::Color::Dark;
+                let color = if dark { rgb(0x000000) } else { rgb(0xffffff) };
+                line = line.child(div().size(px(6.0)).bg(color));
+            }
+            grid = grid.child(line);
+        }
+
+        grid.into_any_element()
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1613,11 +1673,58 @@ impl DesktopShell {
             .into_any_element()
     }
 
+    fn render_pairing(&self, cx: &mut Context<Self>) -> AnyElement {
+        let new_code = Button::new("new-pairing-code")
+            .small()
+            .label("New pairing code")
+            .on_click(cx.listener(|this, _, _, cx| this.create_pairing(cx)));
+
+        let content: AnyElement = match &self.pairing {
+            LoadState::Loading => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Creating pairing code…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(None) => v_flex()
+                .gap_1()
+                .child(div().text_sm().child("No pairing code yet."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Scan the code from the Kloucy mobile app to pair a phone."),
+                )
+                .into_any_element(),
+            LoadState::Loaded(Some(session)) => v_flex()
+                .gap_3()
+                .child(self.render_qr(&format!("kloucy://pair?token={}", session.token)))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("Status: {}", session.status)),
+                )
+                .into_any_element(),
+        };
+
+        v_flex()
+            .gap_4()
+            .child(new_code)
+            .child(content)
+            .into_any_element()
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.section {
             Section::Agents => self.render_agents(cx).into_any_element(),
             Section::Decisions => self.render_decisions(cx),
             Section::Inbox => self.render_inbox(cx),
+            Section::Pairing => self.render_pairing(cx),
             Section::Readiness => self.render_readiness(cx),
             Section::Reviews => self.render_reviews(cx),
             Section::Sessions => self.render_sessions(cx),

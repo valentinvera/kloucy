@@ -84,6 +84,13 @@ pub struct WeeklyReview {
     pub summary: Option<String>,
 }
 
+/// A pairing session as returned by `pairing.createQrSession`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct PairingSession {
+    pub status: String,
+    pub token: String,
+}
+
 /// The connection and authentication state against the Kloucy API.
 #[derive(Clone, Debug)]
 pub enum SessionStatus {
@@ -235,6 +242,26 @@ impl KloucyClient {
     pub fn reject_review(&self, id: &str) -> Result<(), ApiError> {
         self.mutation::<Value>("reviews.reject", serde_json::json!({ "id": id }))
             .map(|_| ())
+    }
+
+    /// Create a pairing session for the signed-in owner.
+    pub fn create_qr_session(&self) -> Result<PairingSession, ApiError> {
+        let url = format!("{}/api/trpc/pairing.createQrSession", self.base_url);
+
+        let response = self
+            .http
+            .post(&url)
+            .send()
+            .map_err(|_| ApiError::Unreachable)?;
+
+        let value = read_value(response)?;
+        let data = value
+            .get("result")
+            .and_then(|result| result.get("data"))
+            .cloned()
+            .unwrap_or(Value::Null);
+
+        serde_json::from_value(data).map_err(|error| ApiError::Message(error.to_string()))
     }
 
     /// Save a weekly review for a workspace.
