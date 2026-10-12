@@ -44,6 +44,15 @@ pub struct AgentSession {
     pub status: String,
 }
 
+/// A review as returned by the `reviews.list` tRPC procedure.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Review {
+    pub action: String,
+    pub artifact_id: Option<String>,
+    pub id: String,
+}
+
 /// The connection and authentication state against the Kloucy API.
 #[derive(Clone, Debug)]
 pub enum SessionStatus {
@@ -182,6 +191,18 @@ impl KloucyClient {
         }
 
         self.mutation::<Value>("agentTasks.create", input)
+            .map(|_| ())
+    }
+
+    /// Approve a review.
+    pub fn approve_review(&self, id: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>("reviews.approve", serde_json::json!({ "id": id }))
+            .map(|_| ())
+    }
+
+    /// Reject a review.
+    pub fn reject_review(&self, id: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>("reviews.reject", serde_json::json!({ "id": id }))
             .map(|_| ())
     }
 
