@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query"
+import { Link } from "expo-router"
 import { Button, Spinner } from "heroui-native"
 import { useCallback } from "react"
-import { Text, View } from "react-native"
+import { Pressable, Text, View } from "react-native"
 import { authClient } from "@/lib/auth-client"
 import { trpc } from "@/utils/trpc"
 
@@ -43,14 +44,23 @@ export function WorkspacesScreen() {
       ) : null}
 
       {data?.map((workspace) => (
-        <View className="gap-1" key={workspace.id}>
-          <Text className="font-geist text-base text-foreground">
-            {workspace.name}
-          </Text>
-          <Text className="font-geist text-muted text-xs">
-            {workspace.localPath}
-          </Text>
-        </View>
+        <Link
+          asChild
+          href={{
+            params: { workspaceId: workspace.id },
+            pathname: "/workspace/[workspaceId]",
+          }}
+          key={workspace.id}
+        >
+          <Pressable className="gap-1 py-3">
+            <Text className="font-geist text-base text-foreground">
+              {workspace.name}
+            </Text>
+            <Text className="font-geist text-muted text-xs">
+              {workspace.localPath}
+            </Text>
+          </Pressable>
+        </Link>
       ))}
     </View>
   )
