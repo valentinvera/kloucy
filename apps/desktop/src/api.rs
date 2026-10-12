@@ -91,6 +91,13 @@ pub struct PairingSession {
     pub token: String,
 }
 
+/// A session log line as returned by the `sessions.logs` tRPC procedure.
+#[derive(Clone, Debug, Deserialize)]
+pub struct SessionLog {
+    pub message: String,
+    pub stream: String,
+}
+
 /// The connection and authentication state against the Kloucy API.
 #[derive(Clone, Debug)]
 pub enum SessionStatus {
