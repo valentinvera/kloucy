@@ -14,6 +14,7 @@ import {
   userRelations,
   verification,
 } from "./schema/auth"
+import { review, reviewRelations } from "./schema/review"
 import { workspace, workspaceRelations } from "./schema/workspace"
 
 const schema = {
@@ -25,6 +26,8 @@ const schema = {
   agentSessionRelations,
   agentTask,
   agentTaskRelations,
+  review,
+  reviewRelations,
   session,
   sessionRelations,
   user,
