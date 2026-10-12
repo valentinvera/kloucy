@@ -74,6 +74,11 @@ const sessionLogAppendInputSchema = z.object({
   stream: sessionLogStreamSchema.optional(),
 })
 
+const sessionFinishInputSchema = z.object({
+  id: z.string().min(1),
+  status: z.enum(["done", "failed"]),
+})
+
 function requireUserId(ctx: Context): string {
   if (!ctx.session?.user) {
     throw new TRPCError({
@@ -344,5 +349,28 @@ export class SessionsRouter {
     }
 
     return created
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Mutation({ input: sessionFinishInputSchema, output: agentSessionSchema })
+  async finish(
+    @Ctx() ctx: Context,
+    @Input() input: z.infer<typeof sessionFinishInputSchema>
+  ) {
+    const ownerId = requireUserId(ctx)
+
+    await assertSessionOwned(input.id, ownerId)
+
+    const [updated] = await db
+      .update(agentSession)
+      .set({ endedAt: new Date(), status: input.status })
+      .where(eq(agentSession.id, input.id))
+      .returning()
+
+    if (!updated) {
+      throw notFound()
+    }
+
+    return updated
   }
 }
