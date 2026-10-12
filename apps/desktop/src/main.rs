@@ -21,6 +21,7 @@ use crate::api::{
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
+    Home,
     Workspaces,
     Agents,
     Inbox,
@@ -32,7 +33,8 @@ enum Section {
     Pairing,
 }
 
-const SECTIONS: [Section; 9] = [
+const SECTIONS: [Section; 10] = [
+    Section::Home,
     Section::Workspaces,
     Section::Agents,
     Section::Inbox,
@@ -47,6 +49,7 @@ const SECTIONS: [Section; 9] = [
 impl Section {
     fn label(self) -> &'static str {
         match self {
+            Section::Home => "Home",
             Section::Workspaces => "Workspaces",
             Section::Agents => "Agents",
             Section::Inbox => "Inbox",
@@ -61,6 +64,7 @@ impl Section {
 
     fn description(self) -> &'static str {
         match self {
+            Section::Home => "What your agents are doing right now.",
             Section::Workspaces => "Local projects Kloucy can supervise.",
             Section::Agents => "Local agents available to run tasks.",
             Section::Inbox => "Tasks captured before they run.",
@@ -239,6 +243,22 @@ fn split_list(value: &str) -> Vec<String> {
         .collect()
 }
 
+fn session_titles(sessions: &LoadState<Vec<AgentSession>>, status: &str) -> Vec<String> {
+    match sessions {
+        LoadState::Loaded(list) => list
+            .iter()
+            .filter(|session| session.status == status)
+            .map(|session| {
+                session
+                    .prompt
+                    .clone()
+                    .unwrap_or_else(|| "Untitled session".to_string())
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 struct DesktopShell {
     section: Section,
     client: KloucyClient,
@@ -339,6 +359,17 @@ impl DesktopShell {
                 this.workspaces = workspaces;
                 this.agents = agents;
                 cx.notify();
+
+                let first = match &this.workspaces {
+                    LoadState::Loaded(list) => list.first().map(|workspace| workspace.id.clone()),
+                    _ => None,
+                };
+
+                if this.selected_workspace.is_none() {
+                    if let Some(id) = first {
+                        this.select_workspace(id, cx);
+                    }
+                }
             })
             .ok();
         })
@@ -375,7 +406,7 @@ impl DesktopShell {
             reviews: LoadState::Loading,
             readiness: LoadState::Loading,
             pairing: LoadState::Loaded(None),
-            section: Section::Workspaces,
+            section: Section::Home,
             selected_session: None,
             selected_workspace: None,
             session: SessionStatus::Checking,
@@ -2356,10 +2387,117 @@ impl DesktopShell {
             .into_any_element()
     }
 
+    fn meta_item(&self, label: &str, value: String, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label.to_string()),
+            )
+            .child(div().text_sm().child(value))
+            .into_any_element()
+    }
+
+    fn render_home(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_workspace.is_none() {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Select a workspace to see what its agents are doing.")
+                .into_any_element();
+        }
+
+        let waiting = session_titles(&self.sessions, "waiting");
+        let running = session_titles(&self.sessions, "running");
+
+        let agent_count = match &self.agents {
+            LoadState::Loaded(agents) => agents.len(),
+            _ => 0,
+        };
+        let task_count = match &self.tasks {
+            LoadState::Loaded(tasks) => tasks.len(),
+            _ => 0,
+        };
+        let pairing = match &self.pairing {
+            LoadState::Loaded(Some(session)) => session.status.clone(),
+            _ => "not paired".to_string(),
+        };
+
+        let next_action = if !waiting.is_empty() {
+            format!("Review {} waiting session(s)", waiting.len())
+        } else if agent_count == 0 {
+            "Register an agent".to_string()
+        } else if task_count == 0 {
+            "Capture a task".to_string()
+        } else {
+            "All clear".to_string()
+        };
+
+        let mut body = v_flex().gap_6().child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Next action"),
+                )
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(next_action),
+                ),
+        );
+
+        if !waiting.is_empty() {
+            let mut list = v_flex().gap_1().child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Waiting"),
+            );
+            for item in waiting {
+                list = list.child(div().text_sm().child(item));
+            }
+            body = body.child(list);
+        }
+
+        if !running.is_empty() {
+            let mut list = v_flex().gap_1().child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Running"),
+            );
+            for item in running {
+                list = list.child(div().text_sm().child(item));
+            }
+            body = body.child(list);
+        }
+
+        let agents_meta = self.meta_item("Agents", agent_count.to_string(), cx);
+        let tasks_meta = self.meta_item("Captured tasks", task_count.to_string(), cx);
+        let pairing_meta = self.meta_item("Pairing", pairing, cx);
+
+        body = body.child(
+            h_flex()
+                .gap_6()
+                .child(agents_meta)
+                .child(tasks_meta)
+                .child(pairing_meta),
+        );
+
+        body.into_any_element()
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.section {
             Section::Agents => self.render_agents(cx).into_any_element(),
             Section::Decisions => self.render_decisions(cx),
+            Section::Home => self.render_home(cx),
             Section::Inbox => self.render_inbox(cx),
             Section::Pairing => self.render_pairing(cx),
             Section::Readiness => self.render_readiness(cx),
