@@ -255,6 +255,30 @@ impl KloucyClient {
             .map(|_| ())
     }
 
+    /// Record the intake context for a workspace.
+    pub fn complete_workspace_intake(
+        &self,
+        workspace_id: &str,
+        project_type: &str,
+        safe_commands: &[String],
+        ignored_paths: &[String],
+    ) -> Result<(), ApiError> {
+        let mut input = serde_json::json!({ "id": workspace_id });
+
+        if !project_type.is_empty() {
+            input["projectType"] = Value::String(project_type.to_string());
+        }
+        if !safe_commands.is_empty() {
+            input["safeCommands"] = serde_json::json!(safe_commands);
+        }
+        if !ignored_paths.is_empty() {
+            input["ignoredPaths"] = serde_json::json!(ignored_paths);
+        }
+
+        self.mutation::<Value>("workspaces.completeIntake", input)
+            .map(|_| ())
+    }
+
     /// Create a review for a session.
     pub fn create_review(
         &self,
