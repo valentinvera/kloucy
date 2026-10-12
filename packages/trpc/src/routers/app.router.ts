@@ -9,8 +9,21 @@ const privateDataSchema = z.object({
   user: z.unknown(),
 })
 
+const appStatusSchema = z.object({
+  name: z.string(),
+  status: z.string(),
+})
+
 @Router({ alias: "app" })
 export class TrpcRouter {
+  @Query({ output: appStatusSchema })
+  getStatus(): z.infer<typeof appStatusSchema> {
+    return {
+      name: "Kloucy",
+      status: "ok",
+    }
+  }
+
   @UseMiddlewares(ProtectedMiddleware)
   @Query({ output: privateDataSchema })
   privateData(@Ctx() ctx: Context): z.infer<typeof privateDataSchema> {
