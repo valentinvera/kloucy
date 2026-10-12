@@ -5,6 +5,7 @@ import { ProtectedMiddleware } from "./middleware/protected"
 import { AgentTasksRouter } from "./routers/agent-tasks.router"
 import { AgentsRouter } from "./routers/agents.router"
 import { TrpcRouter } from "./routers/app.router"
+import { SessionsRouter } from "./routers/sessions.router"
 import { WorkspacesRouter } from "./routers/workspaces.router"
 
 @Module({
@@ -14,6 +15,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     AgentTasksRouter,
     AgentsRouter,
     TrpcRouter,
+    SessionsRouter,
     WorkspacesRouter,
   ],
   imports: [
@@ -28,6 +30,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     AgentTasksRouter,
     AgentsRouter,
     TrpcRouter,
+    SessionsRouter,
     WorkspacesRouter,
   ],
 })
