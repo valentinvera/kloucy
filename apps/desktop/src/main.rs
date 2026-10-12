@@ -938,16 +938,46 @@ impl DesktopShell {
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let logs = cx
-                .background_executor()
-                .spawn(async move { load_session_logs(&client, &session_id) })
-                .await;
+            loop {
+                let is_active = this
+                    .update(cx, |this, _| {
+                        this.selected_session.as_deref() == Some(session_id.as_str())
+                    })
+                    .unwrap_or(false);
 
-            this.update(cx, |this, cx| {
-                this.session_logs = logs;
-                cx.notify();
-            })
-            .ok();
+                if !is_active {
+                    break;
+                }
+
+                let logs = cx
+                    .background_executor()
+                    .spawn({
+                        let client = client.clone();
+                        let session_id = session_id.clone();
+                        async move { load_session_logs(&client, &session_id) }
+                    })
+                    .await;
+
+                let still_active = this
+                    .update(cx, |this, cx| {
+                        if this.selected_session.as_deref() == Some(session_id.as_str()) {
+                            this.session_logs = logs;
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+
+                if !still_active {
+                    break;
+                }
+
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+            }
         })
         .detach();
     }
