@@ -34,6 +34,15 @@ pub struct Agent {
     pub status: String,
 }
 
+/// An agent session as returned by the `sessions.list` tRPC procedure.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSession {
+    pub id: String,
+    pub prompt: Option<String>,
+    pub status: String,
+}
+
 /// The connection and authentication state against the Kloucy API.
 #[derive(Clone, Debug)]
 pub enum SessionStatus {
@@ -156,6 +165,24 @@ impl KloucyClient {
             .unwrap_or(Value::Null);
 
         serde_json::from_value(data).map_err(|error| ApiError::Message(error.to_string()))
+    }
+
+    /// Start a session.
+    pub fn start_session(&self, id: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>("sessions.start", serde_json::json!({ "id": id }))
+            .map(|_| ())
+    }
+
+    /// Stop a session.
+    pub fn stop_session(&self, id: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>("sessions.stop", serde_json::json!({ "id": id }))
+            .map(|_| ())
+    }
+
+    /// Retry a session.
+    pub fn retry_session(&self, id: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>("sessions.retry", serde_json::json!({ "id": id }))
+            .map(|_| ())
     }
 
     /// Create a workspace owned by the signed-in user.

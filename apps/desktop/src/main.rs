@@ -13,7 +13,9 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::api::{Agent, AgentTask, ApiError, KloucyClient, SessionStatus, Workspace};
+use crate::api::{
+    Agent, AgentSession, AgentTask, ApiError, KloucyClient, SessionStatus, Workspace,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -113,6 +115,23 @@ fn load_tasks(client: &KloucyClient, workspace_id: &str) -> LoadState<Vec<AgentT
     }
 }
 
+fn load_sessions(client: &KloucyClient, workspace_id: &str) -> LoadState<Vec<AgentSession>> {
+    let input = serde_json::json!({ "workspaceId": workspace_id });
+
+    match client.query::<Vec<AgentSession>>("sessions.list", Some(input)) {
+        Ok(sessions) => LoadState::Loaded(sessions),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load sessions.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
+enum SessionAction {
+    Start(String),
+    Stop(String),
+    Retry(String),
+}
+
 fn error_message(error: &ApiError) -> String {
     match error {
         ApiError::Unauthorized => "Invalid email or password.".to_string(),
@@ -129,6 +148,7 @@ struct DesktopShell {
     agents: LoadState<Vec<Agent>>,
     selected_workspace: Option<String>,
     tasks: LoadState<Vec<AgentTask>>,
+    sessions: LoadState<Vec<AgentSession>>,
     email: Entity<InputState>,
     password: Entity<InputState>,
     workspace_name: Entity<InputState>,
@@ -185,6 +205,7 @@ impl DesktopShell {
             section: Section::Workspaces,
             selected_workspace: None,
             session: SessionStatus::Checking,
+            sessions: LoadState::Loading,
             show_create_form: false,
             sign_in_error: None,
             signing_in: false,
@@ -291,6 +312,7 @@ impl DesktopShell {
                 this.session = SessionStatus::SignedOut;
                 this.create_error = None;
                 this.selected_workspace = None;
+                this.sessions = LoadState::Loading;
                 this.show_create_form = false;
                 this.tasks = LoadState::Loading;
                 cx.notify();
@@ -306,17 +328,58 @@ impl DesktopShell {
         }
 
         self.selected_workspace = Some(workspace_id.clone());
+        self.sessions = LoadState::Loading;
         self.tasks = LoadState::Loading;
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let tasks = cx
+            let (tasks, sessions) = cx
                 .background_executor()
-                .spawn(async move { load_tasks(&client, &workspace_id) })
+                .spawn(async move {
+                    let tasks = load_tasks(&client, &workspace_id);
+                    let sessions = load_sessions(&client, &workspace_id);
+                    (tasks, sessions)
+                })
                 .await;
 
             this.update(cx, |this, cx| {
+                this.sessions = sessions;
                 this.tasks = tasks;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn session_action(&mut self, action: SessionAction, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let sessions = cx
+                .background_executor()
+                .spawn(async move {
+                    match action {
+                        SessionAction::Start(id) => {
+                            let _ = client.start_session(&id);
+                        }
+                        SessionAction::Stop(id) => {
+                            let _ = client.stop_session(&id);
+                        }
+                        SessionAction::Retry(id) => {
+                            let _ = client.retry_session(&id);
+                        }
+                    }
+
+                    load_sessions(&client, &workspace_id)
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.sessions = sessions;
                 cx.notify();
             })
             .ok();
@@ -620,10 +683,112 @@ impl DesktopShell {
         }
     }
 
+    fn render_sessions(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_workspace.is_none() {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Select a workspace to see its sessions.")
+                .into_any_element();
+        }
+
+        match &self.sessions {
+            LoadState::Loading => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Loading sessions…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(sessions) if sessions.is_empty() => v_flex()
+                .gap_1()
+                .child(div().text_sm().child("No sessions yet."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Start a task to run an agent session."),
+                )
+                .into_any_element(),
+            LoadState::Loaded(sessions) => {
+                let mut list = v_flex().gap_3();
+
+                for (index, session) in sessions.iter().enumerate() {
+                    let start_id = session.id.clone();
+                    let stop_id = session.id.clone();
+                    let retry_id = session.id.clone();
+
+                    list = list.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div().text_sm().child(
+                                    session
+                                        .prompt
+                                        .clone()
+                                        .unwrap_or_else(|| "Untitled session".to_string()),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(session.status.clone()),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(
+                                        Button::new(("session-start", index))
+                                            .small()
+                                            .label("Start")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.session_action(
+                                                    SessionAction::Start(start_id.clone()),
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(("session-stop", index))
+                                            .small()
+                                            .label("Stop")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.session_action(
+                                                    SessionAction::Stop(stop_id.clone()),
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(("session-retry", index))
+                                            .small()
+                                            .label("Retry")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.session_action(
+                                                    SessionAction::Retry(retry_id.clone()),
+                                                    cx,
+                                                );
+                                            })),
+                                    ),
+                            ),
+                    );
+                }
+
+                list.into_any_element()
+            }
+        }
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.section {
             Section::Agents => self.render_agents(cx).into_any_element(),
             Section::Inbox => self.render_inbox(cx),
+            Section::Sessions => self.render_sessions(cx),
             Section::Workspaces => self.render_workspaces(cx),
             _ => div()
                 .text_sm()
