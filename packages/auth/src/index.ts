@@ -9,7 +9,7 @@ import {
   userRelations,
   verification,
 } from "@kloucy/db/schema/auth"
-import { env } from "@kloucy/env/api"
+import { env, getCorsOrigins } from "@kloucy/env/api"
 import { betterAuth } from "better-auth"
 import { drizzleAdapter } from "better-auth/adapters/drizzle"
 
@@ -45,12 +45,7 @@ export function createAuth() {
     },
     plugins: [expo()],
     secret: env.BETTER_AUTH_SECRET,
-    trustedOrigins: [
-      env.CORS_ORIGIN,
-      "kloucy://",
-      "exp://",
-      "http://localhost:8081",
-    ],
+    trustedOrigins: [...getCorsOrigins(), "kloucy://", "exp://"],
   })
 }
 
