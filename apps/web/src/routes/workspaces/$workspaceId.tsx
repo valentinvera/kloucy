@@ -8,6 +8,7 @@ import { WorkspaceIntake } from "@/components/workspace-intake"
 import { WorkspaceReadiness } from "@/components/workspace-readiness"
 import { WorkspaceReviews } from "@/components/workspace-reviews"
 import { WorkspaceSessions } from "@/components/workspace-sessions"
+import { WorkspaceWeeklyReview } from "@/components/workspace-weekly-review"
 import { formatDate, stageClass, stageLabel } from "@/lib/workspace-display"
 import { useTRPC } from "@/utils/trpc"
 
@@ -93,6 +94,7 @@ function WorkspaceDetailComponent() {
           <WorkspaceInbox workspaceId={workspaceId} />
           <WorkspaceReviews workspaceId={workspaceId} />
           <WorkspaceDecisions workspaceId={workspaceId} />
+          <WorkspaceWeeklyReview workspaceId={workspaceId} />
         </div>
       ) : null}
     </section>
