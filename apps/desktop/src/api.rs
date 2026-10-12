@@ -62,6 +62,16 @@ pub struct Decision {
     pub decision_type: String,
 }
 
+/// A readiness snapshot as returned by the `readiness.latest` tRPC procedure.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadinessSnapshot {
+    pub blockers: Option<Vec<String>>,
+    pub not_required_yet: Option<Vec<String>>,
+    pub score: i64,
+    pub status: String,
+}
+
 /// The connection and authentication state against the Kloucy API.
 #[derive(Clone, Debug)]
 pub enum SessionStatus {
@@ -213,6 +223,15 @@ impl KloucyClient {
     pub fn reject_review(&self, id: &str) -> Result<(), ApiError> {
         self.mutation::<Value>("reviews.reject", serde_json::json!({ "id": id }))
             .map(|_| ())
+    }
+
+    /// Recalculate readiness for a workspace.
+    pub fn calculate_readiness(&self, workspace_id: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>(
+            "readiness.calculate",
+            serde_json::json!({ "workspaceId": workspace_id }),
+        )
+        .map(|_| ())
     }
 
     /// Record a decision in a workspace.
