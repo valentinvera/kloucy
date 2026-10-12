@@ -21,7 +21,8 @@
     "eas:update": "bun run eas -- update",
     "eas:update:preview": "bun run eas -- update --channel preview --environment preview",
     "eas:update:production": "bun run eas -- update --channel production --environment production",
-    "check-types": "tsc --noEmit"
+    "generate": "uniwind generate-artifacts --css ./styles/globals.css --dts ./uniwind-env.d.ts && node scripts/generate-expo-env.mjs",
+    "check-types": "bun run generate && tsc --noEmit"
   },
   "dependencies": {
     "@better-auth/expo": "catalog:",
