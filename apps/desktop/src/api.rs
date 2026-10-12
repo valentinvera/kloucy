@@ -21,6 +21,7 @@ pub struct Workspace {
 /// An agent task as returned by the `agentTasks.list` tRPC procedure.
 #[derive(Clone, Debug, Deserialize)]
 pub struct AgentTask {
+    pub id: String,
     pub source: String,
     pub status: String,
     pub title: String,
@@ -165,6 +166,15 @@ impl KloucyClient {
             .unwrap_or(Value::Null);
 
         serde_json::from_value(data).map_err(|error| ApiError::Message(error.to_string()))
+    }
+
+    /// Create a session for a task.
+    pub fn create_session(&self, workspace_id: &str, task_id: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>(
+            "sessions.create",
+            serde_json::json!({ "workspaceId": workspace_id, "taskId": task_id }),
+        )
+        .map(|_| ())
     }
 
     /// Start a session.
