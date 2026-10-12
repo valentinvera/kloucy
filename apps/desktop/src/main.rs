@@ -14,7 +14,8 @@ use gpui_component::{
 };
 
 use crate::api::{
-    Agent, AgentSession, AgentTask, ApiError, KloucyClient, Review, SessionStatus, Workspace,
+    Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, Review, SessionStatus,
+    Workspace,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -24,14 +25,16 @@ enum Section {
     Inbox,
     Sessions,
     Reviews,
+    Decisions,
 }
 
-const SECTIONS: [Section; 5] = [
+const SECTIONS: [Section; 6] = [
     Section::Workspaces,
     Section::Agents,
     Section::Inbox,
     Section::Sessions,
     Section::Reviews,
+    Section::Decisions,
 ];
 
 impl Section {
@@ -42,6 +45,7 @@ impl Section {
             Section::Inbox => "Inbox",
             Section::Sessions => "Sessions",
             Section::Reviews => "Reviews",
+            Section::Decisions => "Decisions",
         }
     }
 
@@ -52,6 +56,7 @@ impl Section {
             Section::Inbox => "Tasks captured before they run.",
             Section::Sessions => "Running, waiting, and finished agent work.",
             Section::Reviews => "Changed files and artifacts awaiting a decision.",
+            Section::Decisions => "Control decisions and their reasons.",
         }
     }
 }
@@ -133,6 +138,17 @@ fn load_reviews(client: &KloucyClient, workspace_id: &str) -> LoadState<Vec<Revi
     }
 }
 
+fn load_decisions(client: &KloucyClient, workspace_id: &str) -> LoadState<Vec<Decision>> {
+    let input = serde_json::json!({ "workspaceId": workspace_id });
+
+    match client.query::<Vec<Decision>>("decisions.list", Some(input)) {
+        Ok(decisions) => LoadState::Loaded(decisions),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load decisions.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
 enum ReviewAction {
     Approve(String),
     Reject(String),
@@ -156,16 +172,22 @@ struct DesktopShell {
     tasks: LoadState<Vec<AgentTask>>,
     sessions: LoadState<Vec<AgentSession>>,
     reviews: LoadState<Vec<Review>>,
+    decisions: LoadState<Vec<Decision>>,
     email: Entity<InputState>,
     password: Entity<InputState>,
     workspace_name: Entity<InputState>,
     workspace_path: Entity<InputState>,
     task_title: Entity<InputState>,
     task_prompt: Entity<InputState>,
+    decision_title: Entity<InputState>,
+    decision_summary: Entity<InputState>,
     create_error: Option<String>,
+    creating_decision: bool,
     creating_task: bool,
     creating_workspace: bool,
+    decision_error: Option<String>,
     show_create_form: bool,
+    show_decision_form: bool,
     show_task_form: bool,
     signing_in: bool,
     sign_in_error: Option<String>,
@@ -187,6 +209,9 @@ impl DesktopShell {
         let task_title = cx.new(|cx| InputState::new(window, cx).placeholder("Task title"));
         let task_prompt =
             cx.new(|cx| InputState::new(window, cx).placeholder("What should the agent do?"));
+        let decision_title = cx.new(|cx| InputState::new(window, cx).placeholder("Decision"));
+        let decision_summary =
+            cx.new(|cx| InputState::new(window, cx).placeholder("What changed and why"));
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
@@ -214,8 +239,13 @@ impl DesktopShell {
             agents: LoadState::Loading,
             client,
             create_error: None,
+            creating_decision: false,
             creating_task: false,
             creating_workspace: false,
+            decision_error: None,
+            decision_summary,
+            decision_title,
+            decisions: LoadState::Loading,
             email,
             password,
             reviews: LoadState::Loading,
@@ -224,6 +254,7 @@ impl DesktopShell {
             session: SessionStatus::Checking,
             sessions: LoadState::Loading,
             show_create_form: false,
+            show_decision_form: false,
             show_task_form: false,
             sign_in_error: None,
             signing_in: false,
@@ -332,6 +363,7 @@ impl DesktopShell {
             this.update(cx, |this, cx| {
                 this.session = SessionStatus::SignedOut;
                 this.create_error = None;
+                this.decisions = LoadState::Loading;
                 this.reviews = LoadState::Loading;
                 this.selected_workspace = None;
                 this.sessions = LoadState::Loading;
@@ -350,23 +382,26 @@ impl DesktopShell {
         }
 
         self.selected_workspace = Some(workspace_id.clone());
+        self.decisions = LoadState::Loading;
         self.reviews = LoadState::Loading;
         self.sessions = LoadState::Loading;
         self.tasks = LoadState::Loading;
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let (tasks, sessions, reviews) = cx
+            let (tasks, sessions, reviews, decisions) = cx
                 .background_executor()
                 .spawn(async move {
                     let tasks = load_tasks(&client, &workspace_id);
                     let sessions = load_sessions(&client, &workspace_id);
                     let reviews = load_reviews(&client, &workspace_id);
-                    (tasks, sessions, reviews)
+                    let decisions = load_decisions(&client, &workspace_id);
+                    (tasks, sessions, reviews, decisions)
                 })
                 .await;
 
             this.update(cx, |this, cx| {
+                this.decisions = decisions;
                 this.reviews = reviews;
                 this.sessions = sessions;
                 this.tasks = tasks;
@@ -504,6 +539,51 @@ impl DesktopShell {
                     Ok(LoadState::Loading) => {}
                     Err(error) => {
                         this.task_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn submit_create_decision(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        let title = self.decision_title.read(cx).value().to_string();
+        let summary = self.decision_summary.read(cx).value().to_string();
+
+        self.decision_error = None;
+        self.creating_decision = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.create_decision(&workspace_id, &title, &summary)?;
+                    Ok::<_, ApiError>(load_decisions(&client, &workspace_id))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.creating_decision = false;
+
+                match result {
+                    Ok(LoadState::Loaded(decisions)) => {
+                        this.decisions = LoadState::Loaded(decisions);
+                        this.show_decision_form = false;
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.decision_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.decision_error = Some(error_message(&error));
                     }
                 }
 
@@ -1069,9 +1149,127 @@ impl DesktopShell {
         }
     }
 
+    fn render_create_decision(&self, cx: &mut Context<Self>) -> AnyElement {
+        let submit = Button::new("create-decision")
+            .primary()
+            .label(if self.creating_decision {
+                "Saving…"
+            } else {
+                "Add decision"
+            })
+            .disabled(self.creating_decision)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_create_decision(cx)));
+
+        let cancel = Button::new("cancel-decision")
+            .label("Cancel")
+            .disabled(self.creating_decision)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_decision_form = false;
+                this.decision_error = None;
+                cx.notify();
+            }));
+
+        let mut form = v_flex()
+            .w(px(360.0))
+            .gap_3()
+            .child(Input::new(&self.decision_title))
+            .child(Input::new(&self.decision_summary))
+            .child(h_flex().gap_2().child(submit).child(cancel));
+
+        if let Some(error) = &self.decision_error {
+            form = form.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        form.into_any_element()
+    }
+
+    fn render_decisions(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_workspace.is_none() {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Select a workspace to see its decisions.")
+                .into_any_element();
+        }
+
+        if self.show_decision_form {
+            return self.render_create_decision(cx);
+        }
+
+        let add_button = Button::new("new-decision")
+            .small()
+            .label("Add decision")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_decision_form = true;
+                this.decision_error = None;
+                cx.notify();
+            }));
+
+        let content: AnyElement = match &self.decisions {
+            LoadState::Loading => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Loading decisions…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(decisions) if decisions.is_empty() => v_flex()
+                .gap_1()
+                .child(div().text_sm().child("No decisions yet."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Record scope, permission, run, or review decisions here."),
+                )
+                .into_any_element(),
+            LoadState::Loaded(decisions) => {
+                let mut list = v_flex().gap_3();
+
+                for decision in decisions {
+                    list = list.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().text_sm().child(decision.title.clone()))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(decision.summary.clone().unwrap_or_default()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(decision.decision_type.clone()),
+                            ),
+                    );
+                }
+
+                list.into_any_element()
+            }
+        };
+
+        v_flex()
+            .gap_4()
+            .child(add_button)
+            .child(content)
+            .into_any_element()
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.section {
             Section::Agents => self.render_agents(cx).into_any_element(),
+            Section::Decisions => self.render_decisions(cx),
             Section::Inbox => self.render_inbox(cx),
             Section::Reviews => self.render_reviews(cx),
             Section::Sessions => self.render_sessions(cx),

@@ -53,6 +53,15 @@ pub struct Review {
     pub id: String,
 }
 
+/// A decision as returned by the `decisions.list` tRPC procedure.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Decision {
+    pub summary: Option<String>,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub decision_type: String,
+}
+
 /// The connection and authentication state against the Kloucy API.
 #[derive(Clone, Debug)]
 pub enum SessionStatus {
@@ -203,6 +212,23 @@ impl KloucyClient {
     /// Reject a review.
     pub fn reject_review(&self, id: &str) -> Result<(), ApiError> {
         self.mutation::<Value>("reviews.reject", serde_json::json!({ "id": id }))
+            .map(|_| ())
+    }
+
+    /// Record a decision in a workspace.
+    pub fn create_decision(
+        &self,
+        workspace_id: &str,
+        title: &str,
+        summary: &str,
+    ) -> Result<(), ApiError> {
+        let mut input = serde_json::json!({ "workspaceId": workspace_id, "title": title });
+
+        if !summary.is_empty() {
+            input["summary"] = Value::String(summary.to_string());
+        }
+
+        self.mutation::<Value>("decisions.create", input)
             .map(|_| ())
     }
 
