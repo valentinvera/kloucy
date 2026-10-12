@@ -24,6 +24,7 @@ import {
   readinessSnapshotRelations,
 } from "./schema/readiness-snapshot"
 import { review, reviewRelations } from "./schema/review"
+import { sessionStep, sessionStepRelations } from "./schema/session-step"
 import { weeklyReview, weeklyReviewRelations } from "./schema/weekly-review"
 import { workspace, workspaceRelations } from "./schema/workspace"
 
@@ -46,6 +47,8 @@ const schema = {
   reviewRelations,
   session,
   sessionRelations,
+  sessionStep,
+  sessionStepRelations,
   user,
   userRelations,
   verification,
