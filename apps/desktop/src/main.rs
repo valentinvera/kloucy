@@ -387,6 +387,31 @@ impl DesktopShell {
         .detach();
     }
 
+    fn start_session_from_task(&mut self, task_id: String, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let sessions = cx
+                .background_executor()
+                .spawn(async move {
+                    let _ = client.create_session(&workspace_id, &task_id);
+                    load_sessions(&client, &workspace_id)
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.section = Section::Sessions;
+                this.sessions = sessions;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (label, color): (String, Hsla) = match &self.session {
             SessionStatus::Checking => ("Checking API…".to_string(), cx.theme().muted_foreground),
@@ -658,10 +683,13 @@ impl DesktopShell {
             LoadState::Loaded(tasks) => {
                 let mut list = v_flex().gap_3();
 
-                for task in tasks {
+                for (index, task) in tasks.iter().enumerate() {
+                    let task_id = task.id.clone();
+
                     list = list.child(
                         h_flex()
                             .gap_2()
+                            .items_center()
                             .child(div().text_sm().child(task.title.clone()))
                             .child(
                                 div()
@@ -674,6 +702,14 @@ impl DesktopShell {
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(task.source.clone()),
+                            )
+                            .child(
+                                Button::new(("task-start", index))
+                                    .small()
+                                    .label("Start session")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.start_session_from_task(task_id.clone(), cx);
+                                    })),
                             ),
                     );
                 }
