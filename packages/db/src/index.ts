@@ -16,6 +16,10 @@ import {
 } from "./schema/auth"
 import { decision, decisionRelations } from "./schema/decision"
 import {
+  pairingSession,
+  pairingSessionRelations,
+} from "./schema/pairing-session"
+import {
   readinessSnapshot,
   readinessSnapshotRelations,
 } from "./schema/readiness-snapshot"
@@ -34,6 +38,8 @@ const schema = {
   agentTaskRelations,
   decision,
   decisionRelations,
+  pairingSession,
+  pairingSessionRelations,
   readinessSnapshot,
   readinessSnapshotRelations,
   review,
