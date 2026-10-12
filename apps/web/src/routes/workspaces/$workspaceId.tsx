@@ -2,6 +2,7 @@ import { Alert, AlertDescription } from "@kloucy/ui/components/alert"
 import { Badge } from "@kloucy/ui/components/badge"
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
+import { WorkspaceDecisions } from "@/components/workspace-decisions"
 import { WorkspaceInbox } from "@/components/workspace-inbox"
 import { WorkspaceReadiness } from "@/components/workspace-readiness"
 import { WorkspaceReviews } from "@/components/workspace-reviews"
@@ -89,6 +90,7 @@ function WorkspaceDetailComponent() {
           <WorkspaceSessions workspaceId={workspaceId} />
           <WorkspaceInbox workspaceId={workspaceId} />
           <WorkspaceReviews workspaceId={workspaceId} />
+          <WorkspaceDecisions workspaceId={workspaceId} />
         </div>
       ) : null}
     </section>
