@@ -30,6 +30,9 @@ pub struct AgentTask {
 /// An agent as returned by the `agents.list` tRPC procedure.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Agent {
+    pub command_template: Option<String>,
+    pub executable_path: Option<String>,
+    pub id: String,
     pub name: String,
     pub provider: String,
     pub status: String,
@@ -39,6 +42,7 @@ pub struct Agent {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSession {
+    pub agent_id: Option<String>,
     pub id: String,
     pub prompt: Option<String>,
     pub status: String,
@@ -249,6 +253,33 @@ impl KloucyClient {
     pub fn reject_review(&self, id: &str) -> Result<(), ApiError> {
         self.mutation::<Value>("reviews.reject", serde_json::json!({ "id": id }))
             .map(|_| ())
+    }
+
+    /// Append a log line to a session.
+    pub fn append_log(
+        &self,
+        session_id: &str,
+        stream: &str,
+        message: &str,
+    ) -> Result<(), ApiError> {
+        self.mutation::<Value>(
+            "sessions.appendLog",
+            serde_json::json!({
+                "sessionId": session_id,
+                "stream": stream,
+                "message": message,
+            }),
+        )
+        .map(|_| ())
+    }
+
+    /// Mark a session finished.
+    pub fn finish_session(&self, session_id: &str, status: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>(
+            "sessions.finish",
+            serde_json::json!({ "id": session_id, "status": status }),
+        )
+        .map(|_| ())
     }
 
     /// Create a pairing session for the signed-in owner.
