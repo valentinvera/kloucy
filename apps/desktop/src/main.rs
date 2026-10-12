@@ -14,8 +14,8 @@ use gpui_component::{
 };
 
 use crate::api::{
-    Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, Review, SessionStatus,
-    Workspace,
+    Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, ReadinessSnapshot, Review,
+    SessionStatus, Workspace,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -26,15 +26,17 @@ enum Section {
     Sessions,
     Reviews,
     Decisions,
+    Readiness,
 }
 
-const SECTIONS: [Section; 6] = [
+const SECTIONS: [Section; 7] = [
     Section::Workspaces,
     Section::Agents,
     Section::Inbox,
     Section::Sessions,
     Section::Reviews,
     Section::Decisions,
+    Section::Readiness,
 ];
 
 impl Section {
@@ -46,6 +48,7 @@ impl Section {
             Section::Sessions => "Sessions",
             Section::Reviews => "Reviews",
             Section::Decisions => "Decisions",
+            Section::Readiness => "Readiness",
         }
     }
 
@@ -57,6 +60,7 @@ impl Section {
             Section::Sessions => "Running, waiting, and finished agent work.",
             Section::Reviews => "Changed files and artifacts awaiting a decision.",
             Section::Decisions => "Control decisions and their reasons.",
+            Section::Readiness => "Whether this workspace is ready to run agents.",
         }
     }
 }
@@ -149,6 +153,20 @@ fn load_decisions(client: &KloucyClient, workspace_id: &str) -> LoadState<Vec<De
     }
 }
 
+fn load_readiness(
+    client: &KloucyClient,
+    workspace_id: &str,
+) -> LoadState<Option<ReadinessSnapshot>> {
+    let input = serde_json::json!({ "workspaceId": workspace_id });
+
+    match client.query::<Option<ReadinessSnapshot>>("readiness.latest", Some(input)) {
+        Ok(snapshot) => LoadState::Loaded(snapshot),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load readiness.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
 enum ReviewAction {
     Approve(String),
     Reject(String),
@@ -173,6 +191,7 @@ struct DesktopShell {
     sessions: LoadState<Vec<AgentSession>>,
     reviews: LoadState<Vec<Review>>,
     decisions: LoadState<Vec<Decision>>,
+    readiness: LoadState<Option<ReadinessSnapshot>>,
     email: Entity<InputState>,
     password: Entity<InputState>,
     workspace_name: Entity<InputState>,
@@ -249,6 +268,7 @@ impl DesktopShell {
             email,
             password,
             reviews: LoadState::Loading,
+            readiness: LoadState::Loading,
             section: Section::Workspaces,
             selected_workspace: None,
             session: SessionStatus::Checking,
@@ -364,6 +384,7 @@ impl DesktopShell {
                 this.session = SessionStatus::SignedOut;
                 this.create_error = None;
                 this.decisions = LoadState::Loading;
+                this.readiness = LoadState::Loading;
                 this.reviews = LoadState::Loading;
                 this.selected_workspace = None;
                 this.sessions = LoadState::Loading;
@@ -383,25 +404,28 @@ impl DesktopShell {
 
         self.selected_workspace = Some(workspace_id.clone());
         self.decisions = LoadState::Loading;
+        self.readiness = LoadState::Loading;
         self.reviews = LoadState::Loading;
         self.sessions = LoadState::Loading;
         self.tasks = LoadState::Loading;
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let (tasks, sessions, reviews, decisions) = cx
+            let (tasks, sessions, reviews, decisions, readiness) = cx
                 .background_executor()
                 .spawn(async move {
                     let tasks = load_tasks(&client, &workspace_id);
                     let sessions = load_sessions(&client, &workspace_id);
                     let reviews = load_reviews(&client, &workspace_id);
                     let decisions = load_decisions(&client, &workspace_id);
-                    (tasks, sessions, reviews, decisions)
+                    let readiness = load_readiness(&client, &workspace_id);
+                    (tasks, sessions, reviews, decisions, readiness)
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.decisions = decisions;
+                this.readiness = readiness;
                 this.reviews = reviews;
                 this.sessions = sessions;
                 this.tasks = tasks;
@@ -587,6 +611,32 @@ impl DesktopShell {
                     }
                 }
 
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn calculate_readiness(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        self.readiness = LoadState::Loading;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let readiness = cx
+                .background_executor()
+                .spawn(async move {
+                    let _ = client.calculate_readiness(&workspace_id);
+                    load_readiness(&client, &workspace_id)
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.readiness = readiness;
                 cx.notify();
             })
             .ok();
@@ -1266,11 +1316,110 @@ impl DesktopShell {
             .into_any_element()
     }
 
+    fn render_readiness(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_workspace.is_none() {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Select a workspace to check readiness.")
+                .into_any_element();
+        }
+
+        let calculate = Button::new("calculate-readiness")
+            .small()
+            .label("Calculate")
+            .on_click(cx.listener(|this, _, _, cx| this.calculate_readiness(cx)));
+
+        let content: AnyElement = match &self.readiness {
+            LoadState::Loading => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Loading readiness…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(None) => v_flex()
+                .gap_1()
+                .child(div().text_sm().child("No readiness check yet."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Calculate readiness to see blockers before running agents."),
+                )
+                .into_any_element(),
+            LoadState::Loaded(Some(snapshot)) => {
+                let mut body = v_flex().gap_3().child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_2xl()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(snapshot.score.to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(snapshot.status.clone()),
+                        ),
+                );
+
+                let blockers = snapshot.blockers.clone().unwrap_or_default();
+                if !blockers.is_empty() {
+                    let mut list = v_flex().gap_1().child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Blockers"),
+                    );
+                    for blocker in blockers {
+                        list = list.child(div().text_sm().child(blocker));
+                    }
+                    body = body.child(list);
+                }
+
+                let not_required = snapshot.not_required_yet.clone().unwrap_or_default();
+                if !not_required.is_empty() {
+                    let mut list = v_flex().gap_1().child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Not required yet"),
+                    );
+                    for item in not_required {
+                        list = list.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(item),
+                        );
+                    }
+                    body = body.child(list);
+                }
+
+                body.into_any_element()
+            }
+        };
+
+        v_flex()
+            .gap_4()
+            .child(calculate)
+            .child(content)
+            .into_any_element()
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.section {
             Section::Agents => self.render_agents(cx).into_any_element(),
             Section::Decisions => self.render_decisions(cx),
             Section::Inbox => self.render_inbox(cx),
+            Section::Readiness => self.render_readiness(cx),
             Section::Reviews => self.render_reviews(cx),
             Section::Sessions => self.render_sessions(cx),
             Section::Workspaces => self.render_workspaces(cx),
