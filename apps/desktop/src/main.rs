@@ -96,6 +96,15 @@ fn load_workspaces(client: &KloucyClient, session: &SessionStatus) -> LoadState<
     }
 }
 
+fn load_agents_list(client: &KloucyClient) -> LoadState<Vec<Agent>> {
+    match client.query::<Vec<Agent>>("agents.list", None) {
+        Ok(agents) => LoadState::Loaded(agents),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load agents.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
 fn load_agents(client: &KloucyClient, session: &SessionStatus) -> LoadState<Vec<Agent>> {
     if !matches!(session, SessionStatus::SignedIn(_)) {
         return LoadState::Failed(match session {
@@ -104,12 +113,7 @@ fn load_agents(client: &KloucyClient, session: &SessionStatus) -> LoadState<Vec<
         });
     }
 
-    match client.query::<Vec<Agent>>("agents.list", None) {
-        Ok(agents) => LoadState::Loaded(agents),
-        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load agents.".to_string()),
-        Err(ApiError::Message(message)) => LoadState::Failed(message),
-        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
-    }
+    load_agents_list(client)
 }
 
 fn load_tasks(client: &KloucyClient, workspace_id: &str) -> LoadState<Vec<AgentTask>> {
@@ -240,11 +244,17 @@ struct DesktopShell {
     task_prompt: Entity<InputState>,
     decision_title: Entity<InputState>,
     decision_summary: Entity<InputState>,
+    agent_name: Entity<InputState>,
+    agent_provider: Entity<InputState>,
+    agent_command: Entity<InputState>,
     create_error: Option<String>,
+    agent_error: Option<String>,
+    creating_agent: bool,
     creating_decision: bool,
     creating_task: bool,
     creating_workspace: bool,
     decision_error: Option<String>,
+    show_agent_form: bool,
     show_create_form: bool,
     show_decision_form: bool,
     show_task_form: bool,
@@ -271,6 +281,10 @@ impl DesktopShell {
         let decision_title = cx.new(|cx| InputState::new(window, cx).placeholder("Decision"));
         let decision_summary =
             cx.new(|cx| InputState::new(window, cx).placeholder("What changed and why"));
+        let agent_name = cx.new(|cx| InputState::new(window, cx).placeholder("Agent name"));
+        let agent_provider = cx.new(|cx| InputState::new(window, cx).placeholder("claude-code"));
+        let agent_command =
+            cx.new(|cx| InputState::new(window, cx).placeholder("codex exec --full-auto"));
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
@@ -297,7 +311,12 @@ impl DesktopShell {
         Self {
             agents: LoadState::Loading,
             client,
+            agent_command,
+            agent_error: None,
+            agent_name,
+            agent_provider,
             create_error: None,
+            creating_agent: false,
             creating_decision: false,
             creating_task: false,
             creating_workspace: false,
@@ -317,6 +336,7 @@ impl DesktopShell {
             session_logs: LoadState::Loading,
             sessions: LoadState::Loading,
             weekly_review: LoadState::Loading,
+            show_agent_form: false,
             show_create_form: false,
             show_decision_form: false,
             show_task_form: false,
@@ -435,6 +455,7 @@ impl DesktopShell {
                 this.weekly_review = LoadState::Loading;
                 this.selected_workspace = None;
                 this.sessions = LoadState::Loading;
+                this.show_agent_form = false;
                 this.show_create_form = false;
                 this.tasks = LoadState::Loading;
                 cx.notify();
@@ -931,6 +952,48 @@ impl DesktopShell {
         .detach();
     }
 
+    fn submit_create_agent(&mut self, cx: &mut Context<Self>) {
+        let name = self.agent_name.read(cx).value().to_string();
+        let provider = self.agent_provider.read(cx).value().to_string();
+        let command = self.agent_command.read(cx).value().to_string();
+
+        self.agent_error = None;
+        self.creating_agent = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.create_agent(&name, &provider, &command)?;
+                    Ok::<_, ApiError>(load_agents_list(&client))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.creating_agent = false;
+
+                match result {
+                    Ok(LoadState::Loaded(agents)) => {
+                        this.agents = LoadState::Loaded(agents);
+                        this.show_agent_form = false;
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.agent_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.agent_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (label, color): (String, Hsla) = match &self.session {
             SessionStatus::Checking => ("Checking API…".to_string(), cx.theme().muted_foreground),
@@ -1119,8 +1182,61 @@ impl DesktopShell {
         form.into_any_element()
     }
 
-    fn render_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        match &self.agents {
+    fn render_create_agent(&self, cx: &mut Context<Self>) -> AnyElement {
+        let submit = Button::new("create-agent")
+            .primary()
+            .label(if self.creating_agent {
+                "Creating…"
+            } else {
+                "Create agent"
+            })
+            .disabled(self.creating_agent)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_create_agent(cx)));
+
+        let cancel = Button::new("cancel-agent")
+            .label("Cancel")
+            .disabled(self.creating_agent)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_agent_form = false;
+                this.agent_error = None;
+                cx.notify();
+            }));
+
+        let mut form = v_flex()
+            .w(px(360.0))
+            .gap_3()
+            .child(Input::new(&self.agent_name))
+            .child(Input::new(&self.agent_provider))
+            .child(Input::new(&self.agent_command))
+            .child(h_flex().gap_2().child(submit).child(cancel));
+
+        if let Some(error) = &self.agent_error {
+            form = form.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        form.into_any_element()
+    }
+
+    fn render_agents(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.show_agent_form {
+            return self.render_create_agent(cx);
+        }
+
+        let new_button = Button::new("new-agent")
+            .small()
+            .label("New agent")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_agent_form = true;
+                this.agent_error = None;
+                cx.notify();
+            }));
+
+        let content: AnyElement = match &self.agents {
             LoadState::Loading => div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
@@ -1166,7 +1282,13 @@ impl DesktopShell {
 
                 list.into_any_element()
             }
-        }
+        };
+
+        v_flex()
+            .gap_4()
+            .child(new_button)
+            .child(content)
+            .into_any_element()
     }
 
     fn render_create_task(&self, cx: &mut Context<Self>) -> AnyElement {

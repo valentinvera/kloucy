@@ -255,6 +255,22 @@ impl KloucyClient {
             .map(|_| ())
     }
 
+    /// Register an agent for the signed-in owner.
+    pub fn create_agent(
+        &self,
+        name: &str,
+        provider: &str,
+        command_template: &str,
+    ) -> Result<(), ApiError> {
+        let mut input = serde_json::json!({ "name": name, "provider": provider });
+
+        if !command_template.is_empty() {
+            input["commandTemplate"] = Value::String(command_template.to_string());
+        }
+
+        self.mutation::<Value>("agents.create", input).map(|_| ())
+    }
+
     /// Append a log line to a session.
     pub fn append_log(
         &self,
