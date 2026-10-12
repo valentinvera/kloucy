@@ -16,6 +16,7 @@ import {
 } from "./schema/auth"
 import { decision, decisionRelations } from "./schema/decision"
 import { review, reviewRelations } from "./schema/review"
+import { weeklyReview, weeklyReviewRelations } from "./schema/weekly-review"
 import { workspace, workspaceRelations } from "./schema/workspace"
 
 const schema = {
@@ -36,6 +37,8 @@ const schema = {
   user,
   userRelations,
   verification,
+  weeklyReview,
+  weeklyReviewRelations,
   workspace,
   workspaceRelations,
 }
