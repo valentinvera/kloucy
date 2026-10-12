@@ -2,6 +2,7 @@ import { Alert, AlertDescription } from "@kloucy/ui/components/alert"
 import { Badge } from "@kloucy/ui/components/badge"
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
+import { SessionRow } from "@/components/session-row"
 import { formatDate, stageClass, stageLabel } from "@/lib/workspace-display"
 import { useTRPC } from "@/utils/trpc"
 
@@ -15,6 +16,7 @@ function WorkspaceDetailComponent() {
   const { data, error, isPending } = useQuery(
     trpc.workspaces.get.queryOptions({ id: workspaceId })
   )
+  const sessions = useQuery(trpc.sessions.list.queryOptions({ workspaceId }))
 
   return (
     <section className="mx-auto w-full max-w-3xl px-6 py-10">
@@ -81,10 +83,36 @@ function WorkspaceDetailComponent() {
             </div>
           </dl>
 
-          <p className="mt-8 text-caption text-muted-foreground">
-            Agent sessions, reviews, and controls for this workspace arrive
-            next.
-          </p>
+          <div className="mt-10">
+            <h2 className="font-medium text-medium">Sessions</h2>
+            <div className="mt-4">
+              {sessions.isPending ? (
+                <p className="text-medium text-muted-foreground">
+                  Loading sessions…
+                </p>
+              ) : null}
+              {sessions.error ? (
+                <Alert variant="destructive">
+                  <AlertDescription>{sessions.error.message}</AlertDescription>
+                </Alert>
+              ) : null}
+              {sessions.data && sessions.data.length === 0 ? (
+                <div className="border-border/60 border-t py-6">
+                  <p className="text-medium">No sessions yet.</p>
+                  <p className="mt-1 text-caption text-muted-foreground">
+                    Start a task on desktop to run an agent session.
+                  </p>
+                </div>
+              ) : null}
+              {sessions.data && sessions.data.length > 0 ? (
+                <div className="divide-y divide-border/60 border-border/60 border-t">
+                  {sessions.data.map((session) => (
+                    <SessionRow key={session.id} session={session} />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
         </div>
       ) : null}
     </section>
