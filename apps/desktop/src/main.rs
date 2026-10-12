@@ -153,11 +153,16 @@ struct DesktopShell {
     password: Entity<InputState>,
     workspace_name: Entity<InputState>,
     workspace_path: Entity<InputState>,
+    task_title: Entity<InputState>,
+    task_prompt: Entity<InputState>,
     create_error: Option<String>,
+    creating_task: bool,
     creating_workspace: bool,
     show_create_form: bool,
+    show_task_form: bool,
     signing_in: bool,
     sign_in_error: Option<String>,
+    task_error: Option<String>,
 }
 
 impl DesktopShell {
@@ -172,6 +177,9 @@ impl DesktopShell {
         let workspace_name = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
         let workspace_path =
             cx.new(|cx| InputState::new(window, cx).placeholder("/Users/you/project"));
+        let task_title = cx.new(|cx| InputState::new(window, cx).placeholder("Task title"));
+        let task_prompt =
+            cx.new(|cx| InputState::new(window, cx).placeholder("What should the agent do?"));
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
@@ -199,6 +207,7 @@ impl DesktopShell {
             agents: LoadState::Loading,
             client,
             create_error: None,
+            creating_task: false,
             creating_workspace: false,
             email,
             password,
@@ -207,8 +216,12 @@ impl DesktopShell {
             session: SessionStatus::Checking,
             sessions: LoadState::Loading,
             show_create_form: false,
+            show_task_form: false,
             sign_in_error: None,
             signing_in: false,
+            task_error: None,
+            task_prompt,
+            task_title,
             tasks: LoadState::Loading,
             workspace_name,
             workspace_path,
@@ -405,6 +418,51 @@ impl DesktopShell {
             this.update(cx, |this, cx| {
                 this.section = Section::Sessions;
                 this.sessions = sessions;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn submit_create_task(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        let title = self.task_title.read(cx).value().to_string();
+        let prompt = self.task_prompt.read(cx).value().to_string();
+
+        self.task_error = None;
+        self.creating_task = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.create_task(&workspace_id, &title, &prompt)?;
+                    Ok::<_, ApiError>(load_tasks(&client, &workspace_id))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.creating_task = false;
+
+                match result {
+                    Ok(LoadState::Loaded(tasks)) => {
+                        this.tasks = LoadState::Loaded(tasks);
+                        this.show_task_form = false;
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.task_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.task_error = Some(error_message(&error));
+                    }
+                }
+
                 cx.notify();
             })
             .ok();
@@ -650,6 +708,45 @@ impl DesktopShell {
         }
     }
 
+    fn render_create_task(&self, cx: &mut Context<Self>) -> AnyElement {
+        let submit = Button::new("create-task")
+            .primary()
+            .label(if self.creating_task {
+                "Creating…"
+            } else {
+                "Create task"
+            })
+            .disabled(self.creating_task)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_create_task(cx)));
+
+        let cancel = Button::new("cancel-task")
+            .label("Cancel")
+            .disabled(self.creating_task)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_task_form = false;
+                this.task_error = None;
+                cx.notify();
+            }));
+
+        let mut form = v_flex()
+            .w(px(360.0))
+            .gap_3()
+            .child(Input::new(&self.task_title))
+            .child(Input::new(&self.task_prompt))
+            .child(h_flex().gap_2().child(submit).child(cancel));
+
+        if let Some(error) = &self.task_error {
+            form = form.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        form.into_any_element()
+    }
+
     fn render_inbox(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.selected_workspace.is_none() {
             return div()
@@ -659,7 +756,20 @@ impl DesktopShell {
                 .into_any_element();
         }
 
-        match &self.tasks {
+        if self.show_task_form {
+            return self.render_create_task(cx);
+        }
+
+        let new_button = Button::new("new-task")
+            .small()
+            .label("New task")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_task_form = true;
+                this.task_error = None;
+                cx.notify();
+            }));
+
+        let content: AnyElement = match &self.tasks {
             LoadState::Loading => div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
@@ -716,7 +826,13 @@ impl DesktopShell {
 
                 list.into_any_element()
             }
-        }
+        };
+
+        v_flex()
+            .gap_4()
+            .child(new_button)
+            .child(content)
+            .into_any_element()
     }
 
     fn render_sessions(&self, cx: &mut Context<Self>) -> AnyElement {

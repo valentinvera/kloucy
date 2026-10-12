@@ -168,6 +168,23 @@ impl KloucyClient {
         serde_json::from_value(data).map_err(|error| ApiError::Message(error.to_string()))
     }
 
+    /// Capture a task in a workspace.
+    pub fn create_task(
+        &self,
+        workspace_id: &str,
+        title: &str,
+        prompt: &str,
+    ) -> Result<(), ApiError> {
+        let mut input = serde_json::json!({ "workspaceId": workspace_id, "title": title });
+
+        if !prompt.is_empty() {
+            input["prompt"] = Value::String(prompt.to_string());
+        }
+
+        self.mutation::<Value>("agentTasks.create", input)
+            .map(|_| ())
+    }
+
     /// Create a session for a task.
     pub fn create_session(&self, workspace_id: &str, task_id: &str) -> Result<(), ApiError> {
         self.mutation::<Value>(
