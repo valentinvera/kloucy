@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { WorkspaceDecisions } from "@/components/workspace-decisions"
 import { WorkspaceInbox } from "@/components/workspace-inbox"
+import { WorkspaceIntake } from "@/components/workspace-intake"
 import { WorkspaceReadiness } from "@/components/workspace-readiness"
 import { WorkspaceReviews } from "@/components/workspace-reviews"
 import { WorkspaceSessions } from "@/components/workspace-sessions"
@@ -86,6 +87,7 @@ function WorkspaceDetailComponent() {
             </div>
           </dl>
 
+          <WorkspaceIntake workspaceId={workspaceId} />
           <WorkspaceReadiness workspaceId={workspaceId} />
           <WorkspaceSessions workspaceId={workspaceId} />
           <WorkspaceInbox workspaceId={workspaceId} />
