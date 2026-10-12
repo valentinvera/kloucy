@@ -102,6 +102,13 @@ pub struct SessionLog {
     pub stream: String,
 }
 
+/// A session step as returned by the `sessionSteps.list` tRPC procedure.
+#[derive(Clone, Debug, Deserialize)]
+pub struct SessionStep {
+    pub lane: String,
+    pub reason: Option<String>,
+}
+
 /// The connection and authentication state against the Kloucy API.
 #[derive(Clone, Debug)]
 pub enum SessionStatus {
@@ -276,6 +283,30 @@ impl KloucyClient {
         }
 
         self.mutation::<Value>("workspaces.completeIntake", input)
+            .map(|_| ())
+    }
+
+    /// Add a step to a session's timeline.
+    pub fn create_session_step(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        lane: &str,
+        sort_order: i64,
+        reason: &str,
+    ) -> Result<(), ApiError> {
+        let mut input = serde_json::json!({
+            "workspaceId": workspace_id,
+            "sessionId": session_id,
+            "lane": lane,
+            "sortOrder": sort_order,
+        });
+
+        if !reason.is_empty() {
+            input["reason"] = Value::String(reason.to_string());
+        }
+
+        self.mutation::<Value>("sessionSteps.create", input)
             .map(|_| ())
     }
 
