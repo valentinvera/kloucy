@@ -1,5 +1,6 @@
 import { db } from "@kloucy/db"
 import { agentSession } from "@kloucy/db/schema/agent-session"
+import { sessionLog } from "@kloucy/db/schema/session-log"
 import { TRPCError } from "@trpc/server"
 import { and, eq } from "drizzle-orm"
 import {
@@ -51,6 +52,26 @@ const agentSessionCreateInputSchema = z.object({
   status: agentSessionStatusSchema.optional(),
   taskId: z.string().min(1).optional(),
   workspaceId: z.string().min(1),
+})
+
+const sessionLogStreamSchema = z.enum(["stdout", "stderr", "system"])
+
+const sessionLogSchema = z.object({
+  createdAt: z.date(),
+  id: z.string(),
+  message: z.string(),
+  sessionId: z.string(),
+  stream: sessionLogStreamSchema,
+})
+
+const sessionLogListInputSchema = z.object({
+  sessionId: z.string().min(1),
+})
+
+const sessionLogAppendInputSchema = z.object({
+  message: z.string().min(1),
+  sessionId: z.string().min(1),
+  stream: sessionLogStreamSchema.optional(),
 })
 
 function requireUserId(ctx: Context): string {
@@ -274,5 +295,54 @@ export class SessionsRouter {
     }
 
     return updated
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Query({
+    input: sessionLogListInputSchema,
+    output: z.array(sessionLogSchema),
+  })
+  async logs(
+    @Ctx() ctx: Context,
+    @Input() input: z.infer<typeof sessionLogListInputSchema>
+  ) {
+    const ownerId = requireUserId(ctx)
+
+    await assertSessionOwned(input.sessionId, ownerId)
+
+    return await db.query.sessionLog.findMany({
+      orderBy: (table, { asc }) => asc(table.createdAt),
+      where: (table) => eq(table.sessionId, input.sessionId),
+    })
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Mutation({ input: sessionLogAppendInputSchema, output: sessionLogSchema })
+  async appendLog(
+    @Ctx() ctx: Context,
+    @Input() input: z.infer<typeof sessionLogAppendInputSchema>
+  ) {
+    const ownerId = requireUserId(ctx)
+
+    await assertSessionOwned(input.sessionId, ownerId)
+
+    const [created] = await db
+      .insert(sessionLog)
+      .values({
+        id: crypto.randomUUID(),
+        message: input.message,
+        sessionId: input.sessionId,
+        stream: input.stream ?? "stdout",
+      })
+      .returning()
+
+    if (!created) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to append session log",
+      })
+    }
+
+    return created
   }
 }
