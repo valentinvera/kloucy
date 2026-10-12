@@ -4,8 +4,15 @@ use std::process::{Command, Stdio};
 use crate::api::KloucyClient;
 
 /// Run an agent command in the given directory, streaming its output to the
-/// session logs and marking the session finished when it exits.
-pub fn run_agent(client: KloucyClient, session_id: String, command: String, cwd: String) {
+/// session logs, marking the session finished, and creating a review when the
+/// run changed files.
+pub fn run_agent(
+    client: KloucyClient,
+    workspace_id: String,
+    session_id: String,
+    command: String,
+    cwd: String,
+) {
     let _ = client.append_log(&session_id, "system", &format!("$ {command}"));
 
     let spawned = Command::new("sh")
@@ -53,4 +60,33 @@ pub fn run_agent(client: KloucyClient, session_id: String, command: String, cwd:
 
     let success = child.wait().map(|status| status.success()).unwrap_or(false);
     let _ = client.finish_session(&session_id, if success { "done" } else { "failed" });
+
+    create_review_for_changes(&client, &workspace_id, &session_id, &cwd);
+}
+
+fn create_review_for_changes(
+    client: &KloucyClient,
+    workspace_id: &str,
+    session_id: &str,
+    cwd: &str,
+) {
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .arg("status")
+        .arg("--porcelain")
+        .output()
+    else {
+        return;
+    };
+
+    let changed = String::from_utf8_lossy(&output.stdout);
+    let trimmed = changed.trim();
+
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let _ = client.append_log(session_id, "system", "Changes detected; created a review.");
+    let _ = client.create_review(workspace_id, session_id, trimmed);
 }

@@ -255,6 +255,22 @@ impl KloucyClient {
             .map(|_| ())
     }
 
+    /// Create a review for a session.
+    pub fn create_review(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<(), ApiError> {
+        let mut input = serde_json::json!({ "workspaceId": workspace_id, "sessionId": session_id });
+
+        if !reason.is_empty() {
+            input["reason"] = Value::String(reason.to_string());
+        }
+
+        self.mutation::<Value>("reviews.create", input).map(|_| ())
+    }
+
     /// Register an agent for the signed-in owner.
     pub fn create_agent(
         &self,
