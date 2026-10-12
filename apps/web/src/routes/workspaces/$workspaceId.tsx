@@ -3,6 +3,7 @@ import { Badge } from "@kloucy/ui/components/badge"
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { WorkspaceInbox } from "@/components/workspace-inbox"
+import { WorkspaceReviews } from "@/components/workspace-reviews"
 import { WorkspaceSessions } from "@/components/workspace-sessions"
 import { formatDate, stageClass, stageLabel } from "@/lib/workspace-display"
 import { useTRPC } from "@/utils/trpc"
@@ -85,6 +86,7 @@ function WorkspaceDetailComponent() {
 
           <WorkspaceSessions workspaceId={workspaceId} />
           <WorkspaceInbox workspaceId={workspaceId} />
+          <WorkspaceReviews workspaceId={workspaceId} />
         </div>
       ) : null}
     </section>
