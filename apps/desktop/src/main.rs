@@ -220,6 +220,14 @@ fn error_message(error: &ApiError) -> String {
     }
 }
 
+fn split_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
 struct DesktopShell {
     section: Section,
     client: KloucyClient,
@@ -247,9 +255,14 @@ struct DesktopShell {
     agent_name: Entity<InputState>,
     agent_provider: Entity<InputState>,
     agent_command: Entity<InputState>,
+    intake_project_type: Entity<InputState>,
+    intake_safe_commands: Entity<InputState>,
+    intake_ignored_paths: Entity<InputState>,
     create_error: Option<String>,
     agent_error: Option<String>,
+    completing_intake: bool,
     creating_agent: bool,
+    intake_error: Option<String>,
     creating_decision: bool,
     creating_task: bool,
     creating_workspace: bool,
@@ -285,6 +298,12 @@ impl DesktopShell {
         let agent_provider = cx.new(|cx| InputState::new(window, cx).placeholder("claude-code"));
         let agent_command =
             cx.new(|cx| InputState::new(window, cx).placeholder("codex exec --full-auto"));
+        let intake_project_type =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Project type (rust, node, …)"));
+        let intake_safe_commands =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Safe commands, comma separated"));
+        let intake_ignored_paths =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Ignored paths, comma separated"));
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
@@ -315,8 +334,13 @@ impl DesktopShell {
             agent_error: None,
             agent_name,
             agent_provider,
+            completing_intake: false,
             create_error: None,
             creating_agent: false,
+            intake_error: None,
+            intake_ignored_paths,
+            intake_project_type,
+            intake_safe_commands,
             creating_decision: false,
             creating_task: false,
             creating_workspace: false,
@@ -1031,6 +1055,60 @@ impl DesktopShell {
         .detach();
     }
 
+    fn submit_complete_intake(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        let project_type = self.intake_project_type.read(cx).value().to_string();
+        let safe = self.intake_safe_commands.read(cx).value().to_string();
+        let ignored = self.intake_ignored_paths.read(cx).value().to_string();
+
+        let safe_commands = split_list(&safe);
+        let ignored_paths = split_list(&ignored);
+
+        self.intake_error = None;
+        self.completing_intake = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.complete_workspace_intake(
+                        &workspace_id,
+                        &project_type,
+                        &safe_commands,
+                        &ignored_paths,
+                    )?;
+                    let session = client.session();
+                    Ok::<_, ApiError>(load_workspaces(&client, &session))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.completing_intake = false;
+
+                match result {
+                    Ok(LoadState::Loaded(workspaces)) => {
+                        this.workspaces = LoadState::Loaded(workspaces);
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.intake_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.intake_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (label, color): (String, Hsla) = match &self.session {
             SessionStatus::Checking => ("Checking API…".to_string(), cx.theme().muted_foreground),
@@ -1093,6 +1171,44 @@ impl DesktopShell {
             )
             .footer(footer)
             .child(menu)
+    }
+
+    fn render_intake(&self, cx: &mut Context<Self>) -> AnyElement {
+        let submit = Button::new("complete-intake")
+            .primary()
+            .small()
+            .label(if self.completing_intake {
+                "Saving…"
+            } else {
+                "Complete intake"
+            })
+            .disabled(self.completing_intake)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_complete_intake(cx)));
+
+        let mut form = v_flex()
+            .w(px(360.0))
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Workspace intake"),
+            )
+            .child(Input::new(&self.intake_project_type))
+            .child(Input::new(&self.intake_safe_commands))
+            .child(Input::new(&self.intake_ignored_paths))
+            .child(submit);
+
+        if let Some(error) = &self.intake_error {
+            form = form.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        form.into_any_element()
     }
 
     fn render_workspaces(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1173,11 +1289,13 @@ impl DesktopShell {
             }
         };
 
-        v_flex()
-            .gap_4()
-            .child(new_button)
-            .child(content)
-            .into_any_element()
+        let mut section = v_flex().gap_4().child(new_button).child(content);
+
+        if self.selected_workspace.is_some() {
+            section = section.child(self.render_intake(cx));
+        }
+
+        section.into_any_element()
     }
 
     fn render_create_workspace(&self, cx: &mut Context<Self>) -> AnyElement {
