@@ -15,6 +15,10 @@ import {
   verification,
 } from "./schema/auth"
 import { decision, decisionRelations } from "./schema/decision"
+import {
+  readinessSnapshot,
+  readinessSnapshotRelations,
+} from "./schema/readiness-snapshot"
 import { review, reviewRelations } from "./schema/review"
 import { weeklyReview, weeklyReviewRelations } from "./schema/weekly-review"
 import { workspace, workspaceRelations } from "./schema/workspace"
@@ -30,6 +34,8 @@ const schema = {
   agentTaskRelations,
   decision,
   decisionRelations,
+  readinessSnapshot,
+  readinessSnapshotRelations,
   review,
   reviewRelations,
   session,
