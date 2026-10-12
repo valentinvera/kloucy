@@ -8,6 +8,7 @@ import { TrpcRouter } from "./routers/app.router"
 import { DecisionsRouter } from "./routers/decisions.router"
 import { ReviewsRouter } from "./routers/reviews.router"
 import { SessionsRouter } from "./routers/sessions.router"
+import { WeeklyReviewsRouter } from "./routers/weekly-reviews.router"
 import { WorkspacesRouter } from "./routers/workspaces.router"
 
 @Module({
@@ -20,6 +21,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     DecisionsRouter,
     ReviewsRouter,
     SessionsRouter,
+    WeeklyReviewsRouter,
     WorkspacesRouter,
   ],
   imports: [
@@ -37,6 +39,7 @@ import { WorkspacesRouter } from "./routers/workspaces.router"
     DecisionsRouter,
     ReviewsRouter,
     SessionsRouter,
+    WeeklyReviewsRouter,
     WorkspacesRouter,
   ],
 })
