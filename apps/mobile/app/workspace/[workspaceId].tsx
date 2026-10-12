@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useLocalSearchParams, useRouter } from "expo-router"
 import { Button, Spinner } from "heroui-native"
 import { useCallback } from "react"
-import { Text, View } from "react-native"
+import { ScrollView, Text, View } from "react-native"
+import { ReviewRow } from "@/components/review-row"
 import { SessionRow } from "@/components/session-row"
 import { trpc } from "@/utils/trpc"
 
@@ -11,24 +12,35 @@ export default function WorkspaceDetail() {
   const router = useRouter()
   const queryClient = useQueryClient()
 
-  const { data, error, isPending } = useQuery(
-    trpc.sessions.list.queryOptions({ workspaceId })
-  )
+  const sessions = useQuery(trpc.sessions.list.queryOptions({ workspaceId }))
+  const reviews = useQuery(trpc.reviews.list.queryOptions({ workspaceId }))
 
-  const invalidate = useCallback(() => {
+  const invalidateSessions = useCallback(() => {
     queryClient.invalidateQueries(
       trpc.sessions.list.queryFilter({ workspaceId })
     )
   }, [queryClient, workspaceId])
 
+  const invalidateReviews = useCallback(() => {
+    queryClient.invalidateQueries(
+      trpc.reviews.list.queryFilter({ workspaceId })
+    )
+  }, [queryClient, workspaceId])
+
   const start = useMutation(
-    trpc.sessions.start.mutationOptions({ onSuccess: invalidate })
+    trpc.sessions.start.mutationOptions({ onSuccess: invalidateSessions })
   )
   const stop = useMutation(
-    trpc.sessions.stop.mutationOptions({ onSuccess: invalidate })
+    trpc.sessions.stop.mutationOptions({ onSuccess: invalidateSessions })
   )
   const retry = useMutation(
-    trpc.sessions.retry.mutationOptions({ onSuccess: invalidate })
+    trpc.sessions.retry.mutationOptions({ onSuccess: invalidateSessions })
+  )
+  const approve = useMutation(
+    trpc.reviews.approve.mutationOptions({ onSuccess: invalidateReviews })
+  )
+  const reject = useMutation(
+    trpc.reviews.reject.mutationOptions({ onSuccess: invalidateReviews })
   )
 
   const handleBack = useCallback(() => {
@@ -53,44 +65,86 @@ export default function WorkspaceDetail() {
     },
     [retry]
   )
+  const handleApprove = useCallback(
+    (id: string) => {
+      approve.mutate({ id })
+    },
+    [approve]
+  )
+  const handleReject = useCallback(
+    (id: string) => {
+      reject.mutate({ id })
+    },
+    [reject]
+  )
 
   return (
-    <View className="flex-1 gap-4 bg-background px-6 pt-16">
-      <View className="flex-row items-center justify-between">
-        <Text className="font-geist-semibold text-2xl text-foreground">
+    <ScrollView className="flex-1 bg-background">
+      <View className="gap-4 px-6 pt-16 pb-16">
+        <View className="flex-row items-center justify-between">
+          <Text className="font-geist-semibold text-2xl text-foreground">
+            Workspace
+          </Text>
+          <Button onPress={handleBack} size="sm" variant="ghost">
+            <Button.Label>Workspaces</Button.Label>
+          </Button>
+        </View>
+
+        <Text className="font-geist-semibold text-foreground text-lg">
           Sessions
         </Text>
-        <Button onPress={handleBack} size="sm" variant="ghost">
-          <Button.Label>Workspaces</Button.Label>
-        </Button>
-      </View>
 
-      {isPending ? <Spinner /> : null}
+        {sessions.isPending ? <Spinner /> : null}
 
-      {error ? (
-        <Text className="font-geist text-danger text-sm">{error.message}</Text>
-      ) : null}
-
-      {data && data.length === 0 ? (
-        <View className="gap-1">
-          <Text className="font-geist text-base text-foreground">
-            No sessions yet.
+        {sessions.error ? (
+          <Text className="font-geist text-danger text-sm">
+            {sessions.error.message}
           </Text>
+        ) : null}
+
+        {sessions.data && sessions.data.length === 0 ? (
           <Text className="font-geist text-muted text-sm">
-            Start a task on desktop to run an agent session.
+            No sessions yet. Start a task on desktop.
           </Text>
-        </View>
-      ) : null}
+        ) : null}
 
-      {data?.map((session) => (
-        <SessionRow
-          key={session.id}
-          onRetry={handleRetry}
-          onStart={handleStart}
-          onStop={handleStop}
-          session={session}
-        />
-      ))}
-    </View>
+        {sessions.data?.map((session) => (
+          <SessionRow
+            key={session.id}
+            onRetry={handleRetry}
+            onStart={handleStart}
+            onStop={handleStop}
+            session={session}
+          />
+        ))}
+
+        <Text className="mt-4 font-geist-semibold text-foreground text-lg">
+          Reviews
+        </Text>
+
+        {reviews.isPending ? <Spinner /> : null}
+
+        {reviews.error ? (
+          <Text className="font-geist text-danger text-sm">
+            {reviews.error.message}
+          </Text>
+        ) : null}
+
+        {reviews.data && reviews.data.length === 0 ? (
+          <Text className="font-geist text-muted text-sm">
+            Nothing to review yet.
+          </Text>
+        ) : null}
+
+        {reviews.data?.map((review) => (
+          <ReviewRow
+            key={review.id}
+            onApprove={handleApprove}
+            onReject={handleReject}
+            review={review}
+          />
+        ))}
+      </View>
+    </ScrollView>
   )
 }
