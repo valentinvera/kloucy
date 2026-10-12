@@ -6,7 +6,7 @@ use gpui::{
     Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Root, Sizable as _, Theme, ThemeMode,
+    ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _, Theme, ThemeMode,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -16,7 +16,7 @@ use gpui_component::{
 
 use crate::api::{
     Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, PairingSession,
-    ReadinessSnapshot, Review, SessionLog, SessionStatus, WeeklyReview, Workspace,
+    ReadinessSnapshot, Review, SessionLog, SessionStatus, SessionStep, WeeklyReview, Workspace,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -149,6 +149,17 @@ fn load_session_logs(client: &KloucyClient, session_id: &str) -> LoadState<Vec<S
     }
 }
 
+fn load_session_steps(client: &KloucyClient, session_id: &str) -> LoadState<Vec<SessionStep>> {
+    let input = serde_json::json!({ "sessionId": session_id });
+
+    match client.query::<Vec<SessionStep>>("sessionSteps.list", Some(input)) {
+        Ok(steps) => LoadState::Loaded(steps),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load steps.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
 enum SessionAction {
     Start(String),
     Stop(String),
@@ -237,6 +248,11 @@ struct DesktopShell {
     selected_workspace: Option<String>,
     selected_session: Option<String>,
     session_logs: LoadState<Vec<SessionLog>>,
+    session_steps: LoadState<Vec<SessionStep>>,
+    new_step_reason: Entity<InputState>,
+    new_step_lane: String,
+    creating_step: bool,
+    step_error: Option<String>,
     tasks: LoadState<Vec<AgentTask>>,
     sessions: LoadState<Vec<AgentSession>>,
     reviews: LoadState<Vec<Review>>,
@@ -304,6 +320,7 @@ impl DesktopShell {
             cx.new(|cx| InputState::new(window, cx).placeholder("Safe commands, comma separated"));
         let intake_ignored_paths =
             cx.new(|cx| InputState::new(window, cx).placeholder("Ignored paths, comma separated"));
+        let new_step_reason = cx.new(|cx| InputState::new(window, cx).placeholder("Step"));
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
@@ -337,10 +354,15 @@ impl DesktopShell {
             completing_intake: false,
             create_error: None,
             creating_agent: false,
+            creating_step: false,
             intake_error: None,
             intake_ignored_paths,
             intake_project_type,
             intake_safe_commands,
+            new_step_lane: "now".to_string(),
+            new_step_reason,
+            session_steps: LoadState::Loading,
+            step_error: None,
             creating_decision: false,
             creating_task: false,
             creating_workspace: false,
@@ -474,6 +496,7 @@ impl DesktopShell {
                 this.decisions = LoadState::Loading;
                 this.pairing = LoadState::Loaded(None);
                 this.selected_session = None;
+                this.session_steps = LoadState::Loading;
                 this.readiness = LoadState::Loading;
                 this.reviews = LoadState::Loading;
                 this.weekly_review = LoadState::Loading;
@@ -497,6 +520,7 @@ impl DesktopShell {
         self.selected_workspace = Some(workspace_id.clone());
         self.selected_session = None;
         self.session_logs = LoadState::Loading;
+        self.session_steps = LoadState::Loading;
         self.decisions = LoadState::Loading;
         self.readiness = LoadState::Loading;
         self.reviews = LoadState::Loading;
@@ -966,6 +990,24 @@ impl DesktopShell {
 
         self.selected_session = Some(session_id.clone());
         self.session_logs = LoadState::Loading;
+        self.session_steps = LoadState::Loading;
+        self.step_error = None;
+
+        let steps_client = self.client.clone();
+        let steps_session = session_id.clone();
+        cx.spawn(async move |this, cx| {
+            let steps = cx
+                .background_executor()
+                .spawn(async move { load_session_steps(&steps_client, &steps_session) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.session_steps = steps;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
@@ -1107,6 +1149,166 @@ impl DesktopShell {
             .ok();
         })
         .detach();
+    }
+
+    fn submit_create_step(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+
+        let reason = self.new_step_reason.read(cx).value().to_string();
+        let lane = self.new_step_lane.clone();
+        let sort_order = match &self.session_steps {
+            LoadState::Loaded(steps) => {
+                steps.iter().filter(|step| step.lane == lane).count() as i64
+            }
+            _ => 0,
+        };
+
+        self.step_error = None;
+        self.creating_step = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.create_session_step(
+                        &workspace_id,
+                        &session_id,
+                        &lane,
+                        sort_order,
+                        &reason,
+                    )?;
+                    Ok::<_, ApiError>(load_session_steps(&client, &session_id))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.creating_step = false;
+
+                match result {
+                    Ok(LoadState::Loaded(steps)) => {
+                        this.session_steps = LoadState::Loaded(steps);
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.step_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.step_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_session_timeline(&self, cx: &mut Context<Self>) -> AnyElement {
+        let lanes = [
+            ("now", "Now"),
+            ("next", "Next"),
+            ("later", "Later"),
+            ("not_doing", "Not doing"),
+        ];
+
+        let mut groups = v_flex().gap_3();
+
+        for (lane, label) in lanes {
+            let mut group = v_flex().gap_1().child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label),
+            );
+
+            let mut count = 0usize;
+
+            if let LoadState::Loaded(all) = &self.session_steps {
+                for step in all {
+                    if step.lane == lane {
+                        count += 1;
+                        group = group.child(
+                            div().text_sm().child(
+                                step.reason
+                                    .clone()
+                                    .unwrap_or_else(|| "Untitled step".to_string()),
+                            ),
+                        );
+                    }
+                }
+            }
+
+            if count == 0 {
+                group = group.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("—"),
+                );
+            }
+
+            groups = groups.child(group);
+        }
+
+        let mut lane_buttons = h_flex().gap_1();
+
+        for (lane, label) in lanes {
+            lane_buttons = lane_buttons.child(
+                Button::new(lane)
+                    .small()
+                    .label(label)
+                    .selected(self.new_step_lane == lane)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.new_step_lane = lane.to_string();
+                        cx.notify();
+                    })),
+            );
+        }
+
+        let add = Button::new("add-step")
+            .small()
+            .label(if self.creating_step {
+                "Adding…"
+            } else {
+                "Add step"
+            })
+            .disabled(self.creating_step)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_create_step(cx)));
+
+        let mut form = v_flex().gap_2().child(lane_buttons).child(
+            h_flex()
+                .gap_2()
+                .child(Input::new(&self.new_step_reason))
+                .child(add),
+        );
+
+        if let Some(error) = &self.step_error {
+            form = form.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        v_flex()
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Timeline"),
+            )
+            .child(groups)
+            .child(form)
+            .into_any_element()
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1740,6 +1942,7 @@ impl DesktopShell {
             .gap_3()
             .child(title)
             .child(content)
+            .child(self.render_session_timeline(cx))
             .into_any_element()
     }
 
