@@ -328,6 +328,10 @@ struct DesktopShell {
     signing_in: bool,
     sign_in_error: Option<String>,
     session_error: Option<String>,
+    follow_up_review: Option<String>,
+    follow_up_condition: Entity<InputState>,
+    saving_follow_up: bool,
+    review_error: Option<String>,
     task_error: Option<String>,
 }
 
@@ -368,6 +372,8 @@ impl DesktopShell {
         let settings_ignored_paths =
             cx.new(|cx| InputState::new(window, cx).placeholder("Ignored paths, comma separated"));
         let new_step_reason = cx.new(|cx| InputState::new(window, cx).placeholder("Step"));
+        let follow_up_condition =
+            cx.new(|cx| InputState::new(window, cx).placeholder("When should this run again?"));
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
@@ -455,6 +461,10 @@ impl DesktopShell {
             show_task_form: false,
             sign_in_error: None,
             session_error: None,
+            follow_up_review: None,
+            follow_up_condition,
+            saving_follow_up: false,
+            review_error: None,
             signing_in: false,
             task_error: None,
             task_prompt,
@@ -657,6 +667,83 @@ impl DesktopShell {
 
             this.update(cx, |this, cx| {
                 this.reviews = reviews;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn open_follow_up(
+        &mut self,
+        review_id: String,
+        reason: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.review_error = None;
+        self.follow_up_review = Some(review_id);
+
+        let condition = reason.unwrap_or_default();
+        self.follow_up_condition
+            .update(cx, |state, cx| state.set_value(condition, window, cx));
+
+        cx.notify();
+    }
+
+    fn cancel_follow_up(&mut self, cx: &mut Context<Self>) {
+        self.follow_up_review = None;
+        self.review_error = None;
+        cx.notify();
+    }
+
+    fn submit_follow_up(&mut self, cx: &mut Context<Self>) {
+        let Some(review_id) = self.follow_up_review.clone() else {
+            return;
+        };
+
+        let condition = self.follow_up_condition.read(cx).value().to_string();
+
+        if condition.trim().is_empty() {
+            self.review_error = Some("Describe when this should run again.".to_string());
+            cx.notify();
+            return;
+        }
+
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        self.review_error = None;
+        self.saving_follow_up = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.follow_up_review(&review_id, &condition)?;
+                    Ok::<_, ApiError>(load_reviews(&client, &workspace_id))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.saving_follow_up = false;
+
+                match result {
+                    Ok(LoadState::Loaded(reviews)) => {
+                        this.reviews = LoadState::Loaded(reviews);
+                        this.follow_up_review = None;
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.review_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.review_error = Some(error_message(&error));
+                    }
+                }
+
                 cx.notify();
             })
             .ok();
@@ -2509,7 +2596,7 @@ impl DesktopShell {
                 .into_any_element();
         }
 
-        match &self.reviews {
+        let content: AnyElement = match &self.reviews {
             LoadState::Loading => div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
@@ -2536,6 +2623,8 @@ impl DesktopShell {
                 for (index, review) in reviews.iter().enumerate() {
                     let approve_id = review.id.clone();
                     let reject_id = review.id.clone();
+                    let follow_up_id = review.id.clone();
+                    let follow_up_reason = review.reason.clone();
 
                     list = list.child(
                         h_flex()
@@ -2554,6 +2643,12 @@ impl DesktopShell {
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(review.action.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(review.reason.clone().unwrap_or_default()),
                             )
                             .child(
                                 h_flex()
@@ -2579,6 +2674,19 @@ impl DesktopShell {
                                                     cx,
                                                 );
                                             })),
+                                    )
+                                    .child(
+                                        Button::new(("review-follow-up", index))
+                                            .small()
+                                            .label("Follow up")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.open_follow_up(
+                                                    follow_up_id.clone(),
+                                                    follow_up_reason.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
                                     ),
                             ),
                     );
@@ -2586,7 +2694,56 @@ impl DesktopShell {
 
                 list.into_any_element()
             }
+        };
+
+        let mut section = v_flex().gap_6().child(content);
+
+        if let Some(error) = &self.review_error {
+            section = section.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
         }
+
+        if self.follow_up_review.is_some() {
+            section = section.child(self.render_follow_up(cx));
+        }
+
+        section.into_any_element()
+    }
+
+    fn render_follow_up(&self, cx: &mut Context<Self>) -> AnyElement {
+        let submit = Button::new("save-follow-up")
+            .primary()
+            .small()
+            .label(if self.saving_follow_up {
+                "Saving…"
+            } else {
+                "Save condition"
+            })
+            .disabled(self.saving_follow_up)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_follow_up(cx)));
+
+        let cancel = Button::new("cancel-follow-up")
+            .small()
+            .label("Cancel")
+            .disabled(self.saving_follow_up)
+            .on_click(cx.listener(|this, _, _, cx| this.cancel_follow_up(cx)));
+
+        v_flex()
+            .w(px(360.0))
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Follow-up condition"),
+            )
+            .child(Input::new(&self.follow_up_condition))
+            .child(h_flex().gap_2().child(submit).child(cancel))
+            .into_any_element()
     }
 
     fn render_create_decision(&self, cx: &mut Context<Self>) -> AnyElement {

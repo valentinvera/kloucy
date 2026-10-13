@@ -59,6 +59,7 @@ pub struct Review {
     pub action: String,
     pub artifact_id: Option<String>,
     pub id: String,
+    pub reason: Option<String>,
 }
 
 /// A decision as returned by the `decisions.list` tRPC procedure.
@@ -264,6 +265,15 @@ impl KloucyClient {
     pub fn reject_review(&self, id: &str) -> Result<(), ApiError> {
         self.mutation::<Value>("reviews.reject", serde_json::json!({ "id": id }))
             .map(|_| ())
+    }
+
+    /// Record a follow-up condition on a review.
+    pub fn follow_up_review(&self, id: &str, condition: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>(
+            "reviews.update",
+            serde_json::json!({ "id": id, "action": "follow_up", "reason": condition }),
+        )
+        .map(|_| ())
     }
 
     /// Record the intake context for a workspace.
