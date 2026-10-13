@@ -1,12 +1,14 @@
+import { nativeMonoFontFamily } from "@kloucy/tokens"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Button } from "heroui-native"
 import { useCallback, useState } from "react"
-import { Text, View } from "react-native"
+import { Platform, Text, View } from "react-native"
 import { nextLogs, type SessionLogLine } from "@/lib/session-output"
 import { trpcClient } from "@/utils/trpc"
 
 const VISIBLE_LOGS = 8
 const OUTPUT_REFETCH_MS = 3000
+const MONO_FONT = nativeMonoFontFamily(Platform.OS)
 
 interface SessionRowProps {
   onRetry: (id: string) => void
@@ -103,10 +105,11 @@ export function SessionRow({
             <Text
               className={
                 log.stream === "stderr"
-                  ? "font-geist text-danger text-xs"
-                  : "font-geist text-muted text-xs"
+                  ? "text-danger text-xs"
+                  : "text-muted text-xs"
               }
               key={log.id}
+              style={{ fontFamily: MONO_FONT }}
             >
               {log.message}
             </Text>
