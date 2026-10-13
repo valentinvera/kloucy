@@ -1,4 +1,5 @@
 import { db } from "@kloucy/db"
+import { agentSession } from "@kloucy/db/schema/agent-session"
 import { agentTask } from "@kloucy/db/schema/agent-task"
 import { TRPCError } from "@trpc/server"
 import { and, eq } from "drizzle-orm"
@@ -48,6 +49,29 @@ const agentTaskSchema = z.object({
 
 const agentTaskIdInputSchema = z.object({
   id: z.string().min(1),
+})
+
+const agentSessionStatusSchema = z.enum([
+  "needs_setup",
+  "ready",
+  "running",
+  "waiting",
+  "done",
+  "failed",
+  "stopped",
+])
+
+const agentSessionSchema = z.object({
+  agentId: z.string().nullable(),
+  createdAt: z.date(),
+  endedAt: z.date().nullable(),
+  id: z.string(),
+  prompt: z.string().nullable(),
+  startedAt: z.date().nullable(),
+  status: agentSessionStatusSchema,
+  taskId: z.string().nullable(),
+  updatedAt: z.date(),
+  workspaceId: z.string(),
 })
 
 const agentTaskListInputSchema = z.object({
@@ -318,5 +342,52 @@ export class AgentTasksRouter {
     }
 
     return deleted
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Mutation({ input: agentTaskIdInputSchema, output: agentSessionSchema })
+  async startSession(
+    @Ctx() ctx: Context,
+    @Input() input: z.infer<typeof agentTaskIdInputSchema>
+  ) {
+    const ownerId = requireUserId(ctx)
+
+    const task = await db.query.agentTask.findFirst({
+      where: (table) => eq(table.id, input.id),
+      with: { workspace: true },
+    })
+
+    if (!task || task.workspace.ownerId !== ownerId) {
+      throw notFound()
+    }
+
+    const agentId =
+      task.assignedAgentId ?? task.workspace.defaultAgentId ?? null
+
+    const [created] = await db
+      .insert(agentSession)
+      .values({
+        agentId,
+        id: crypto.randomUUID(),
+        prompt: task.prompt ?? task.title,
+        status: agentId ? "ready" : "needs_setup",
+        taskId: task.id,
+        workspaceId: task.workspaceId,
+      })
+      .returning()
+
+    if (!created) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to create session",
+      })
+    }
+
+    await db
+      .update(agentTask)
+      .set({ createdSessionId: created.id, status: "converted" })
+      .where(eq(agentTask.id, task.id))
+
+    return created
   }
 }
