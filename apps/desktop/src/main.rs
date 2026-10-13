@@ -468,8 +468,11 @@ struct DesktopShell {
     agent_provider: Entity<InputState>,
     agent_command: Entity<InputState>,
     intake_project_type: Entity<InputState>,
+    intake_package_manager: Entity<InputState>,
+    intake_runtime: Entity<InputState>,
     intake_safe_commands: Entity<InputState>,
     intake_ignored_paths: Entity<InputState>,
+    intake_mobile_pairing: bool,
     settings_name: Entity<InputState>,
     settings_path: Entity<InputState>,
     settings_safe_commands: Entity<InputState>,
@@ -530,6 +533,10 @@ impl DesktopShell {
             cx.new(|cx| InputState::new(window, cx).placeholder("codex exec --full-auto"));
         let intake_project_type =
             cx.new(|cx| InputState::new(window, cx).placeholder("Project type (rust, node, …)"));
+        let intake_package_manager =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Package manager (bun, cargo, …)"));
+        let intake_runtime =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Runtime (bun, node, rust, …)"));
         let intake_safe_commands =
             cx.new(|cx| InputState::new(window, cx).placeholder("Safe commands, comma separated"));
         let intake_ignored_paths =
@@ -600,6 +607,9 @@ impl DesktopShell {
             intake_error: None,
             intake_ignored_paths,
             intake_project_type,
+            intake_package_manager,
+            intake_runtime,
+            intake_mobile_pairing: false,
             intake_safe_commands,
             archiving_workspace: false,
             saving_settings: false,
@@ -1507,8 +1517,11 @@ impl DesktopShell {
         };
 
         let project_type = self.intake_project_type.read(cx).value().to_string();
+        let package_manager = self.intake_package_manager.read(cx).value().to_string();
+        let runtime = self.intake_runtime.read(cx).value().to_string();
         let safe = self.intake_safe_commands.read(cx).value().to_string();
         let ignored = self.intake_ignored_paths.read(cx).value().to_string();
+        let mobile_pairing = self.intake_mobile_pairing;
 
         let safe_commands = split_list(&safe);
         let ignored_paths = split_list(&ignored);
@@ -1524,8 +1537,11 @@ impl DesktopShell {
                     client.complete_workspace_intake(
                         &workspace_id,
                         &project_type,
+                        &package_manager,
+                        &runtime,
                         &safe_commands,
                         &ignored_paths,
+                        mobile_pairing,
                     )?;
                     let session = client.session();
                     Ok::<_, ApiError>(load_workspaces(&client, &session))
@@ -2016,6 +2032,23 @@ impl DesktopShell {
             .disabled(self.completing_intake)
             .on_click(cx.listener(|this, _, _, cx| this.submit_complete_intake(cx)));
 
+        let detect = Button::new("detect-intake-project")
+            .small()
+            .label("Detect project")
+            .on_click(cx.listener(|this, _, window, cx| this.detect_intake_project(window, cx)));
+
+        let mobile_pairing = Button::new("intake-mobile-pairing")
+            .small()
+            .label(if self.intake_mobile_pairing {
+                "Mobile pairing allowed"
+            } else {
+                "Desktop only"
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.intake_mobile_pairing = !this.intake_mobile_pairing;
+                cx.notify();
+            }));
+
         let mut form = v_flex()
             .w(px(360.0))
             .gap_3()
@@ -2026,8 +2059,17 @@ impl DesktopShell {
                     .child("Workspace intake"),
             )
             .child(Input::new(&self.intake_project_type))
+            .child(Input::new(&self.intake_package_manager))
+            .child(Input::new(&self.intake_runtime))
             .child(Input::new(&self.intake_safe_commands))
             .child(Input::new(&self.intake_ignored_paths))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(detect)
+                    .child(mobile_pairing),
+            )
             .child(submit);
 
         if let Some(error) = &self.intake_error {
@@ -2040,6 +2082,36 @@ impl DesktopShell {
         }
 
         form.into_any_element()
+    }
+
+    fn detect_intake_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace) = self.selected_workspace_data() else {
+            return;
+        };
+
+        let files = detect::read_project_files(&workspace.local_path);
+        let Some(profile) = detect::detect_project(&files) else {
+            self.intake_error = Some("Could not recognise the project from its files.".to_string());
+            cx.notify();
+            return;
+        };
+
+        self.intake_error = None;
+
+        if let Some(project_type) = profile.project_type {
+            self.intake_project_type
+                .update(cx, |state, cx| state.set_value(project_type, window, cx));
+        }
+        if let Some(package_manager) = profile.package_manager {
+            self.intake_package_manager
+                .update(cx, |state, cx| state.set_value(package_manager, window, cx));
+        }
+        if let Some(runtime) = profile.runtime {
+            self.intake_runtime
+                .update(cx, |state, cx| state.set_value(runtime, window, cx));
+        }
+
+        cx.notify();
     }
 
     fn selected_workspace_data(&self) -> Option<&Workspace> {
