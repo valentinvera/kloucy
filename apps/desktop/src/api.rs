@@ -505,11 +505,11 @@ impl KloucyClient {
             .map(|_| ())
     }
 
-    /// Create a session for a task.
-    pub fn create_session(&self, workspace_id: &str, task_id: &str) -> Result<(), ApiError> {
+    /// Start a session from a task.
+    pub fn start_session_from_task(&self, task_id: &str) -> Result<(), ApiError> {
         self.mutation::<Value>(
-            "sessions.create",
-            serde_json::json!({ "workspaceId": workspace_id, "taskId": task_id }),
+            "agentTasks.startSession",
+            serde_json::json!({ "id": task_id }),
         )
         .map(|_| ())
     }

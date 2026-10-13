@@ -864,17 +864,20 @@ impl DesktopShell {
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let sessions = cx
+            let (sessions, tasks) = cx
                 .background_executor()
                 .spawn(async move {
-                    let _ = client.create_session(&workspace_id, &task_id);
-                    load_sessions(&client, &workspace_id)
+                    let _ = client.start_session_from_task(&task_id);
+                    let sessions = load_sessions(&client, &workspace_id);
+                    let tasks = load_tasks(&client, &workspace_id);
+                    (sessions, tasks)
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.section = Section::Sessions;
                 this.sessions = sessions;
+                this.tasks = tasks;
                 cx.notify();
             })
             .ok();
