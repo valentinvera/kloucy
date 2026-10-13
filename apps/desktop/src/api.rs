@@ -12,9 +12,13 @@ pub struct CurrentUser {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
+    pub default_agent_id: Option<String>,
     pub id: String,
+    pub ignored_paths: Option<Vec<String>>,
     pub local_path: String,
+    pub mobile_pairing_enabled: bool,
     pub name: String,
+    pub safe_commands: Option<Vec<String>>,
     pub stage: String,
 }
 
@@ -284,6 +288,43 @@ impl KloucyClient {
 
         self.mutation::<Value>("workspaces.completeIntake", input)
             .map(|_| ())
+    }
+
+    /// Correct the basic setup data of a workspace.
+    pub fn update_workspace(
+        &self,
+        workspace_id: &str,
+        name: &str,
+        local_path: &str,
+        safe_commands: &[String],
+        ignored_paths: &[String],
+    ) -> Result<(), ApiError> {
+        let mut input = serde_json::json!({ "id": workspace_id });
+
+        if !name.is_empty() {
+            input["name"] = Value::String(name.to_string());
+        }
+        if !local_path.is_empty() {
+            input["localPath"] = Value::String(local_path.to_string());
+        }
+        if !safe_commands.is_empty() {
+            input["safeCommands"] = serde_json::json!(safe_commands);
+        }
+        if !ignored_paths.is_empty() {
+            input["ignoredPaths"] = serde_json::json!(ignored_paths);
+        }
+
+        self.mutation::<Value>("workspaces.update", input)
+            .map(|_| ())
+    }
+
+    /// Archive a workspace so it leaves the default list.
+    pub fn archive_workspace(&self, workspace_id: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>(
+            "workspaces.archive",
+            serde_json::json!({ "id": workspace_id }),
+        )
+        .map(|_| ())
     }
 
     /// Add a step to a session's timeline.
