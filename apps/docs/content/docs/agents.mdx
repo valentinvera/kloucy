@@ -34,6 +34,12 @@ Choose **Add** next to a detected agent to prefill the form, or create one by ha
 Kloucy runs the command with `sh -c` inside the workspace's local path. A detected executable path is only a starting point; add the flags your agent needs for a non-interactive run.
 </Callout>
 
+## Testing a command
+
+**Test** runs the agent's executable with `--version`, reports what it printed, and marks the agent ready or back to needs setup. Only `--version` is ever run, so Kloucy never starts an agent just to check it.
+
+The web can test too: the API runs on the machine the agents run on here, so it resolves and runs the check for you. The desktop detects agents locally instead of asking the API, so its detection always describes your own machine.
+
 ## Running a session
 
 A session starts the command in the workspace directory and streams stdout and stderr into the session log. When the run ends and `git status` reports changes, Kloucy creates a **Review**.
