@@ -52,6 +52,13 @@ pub struct AgentSession {
     pub status: String,
 }
 
+/// A session poll: the session state plus the logs after the requested offset.
+#[derive(Clone, Debug, Deserialize)]
+pub struct SessionStream {
+    pub logs: Vec<SessionLog>,
+    pub session: AgentSession,
+}
+
 /// A review as returned by the `reviews.list` tRPC procedure.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -555,6 +562,13 @@ impl KloucyClient {
 
         self.mutation::<Value>("decisions.create", input)
             .map(|_| ())
+    }
+
+    /// Poll a session for its state and any logs after `from`.
+    pub fn stream_session(&self, session_id: &str, from: usize) -> Result<SessionStream, ApiError> {
+        let input = serde_json::json!({ "from": from, "sessionId": session_id });
+
+        self.query("sessions.stream", Some(input))
     }
 
     /// Start a session from a task.

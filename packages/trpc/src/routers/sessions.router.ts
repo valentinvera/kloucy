@@ -73,6 +73,16 @@ const sessionLogListInputSchema = z.object({
   sessionId: z.string().min(1),
 })
 
+const sessionStreamInputSchema = z.object({
+  from: z.number().int().nonnegative().optional(),
+  sessionId: z.string().min(1),
+})
+
+const sessionStreamSchema = z.object({
+  logs: z.array(sessionLogSchema),
+  session: agentSessionSchema,
+})
+
 const sessionLogAppendInputSchema = z.object({
   message: z.string().min(1),
   sessionId: z.string().min(1),
@@ -422,5 +432,32 @@ export class SessionsRouter {
     }
 
     return updated
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Query({ input: sessionStreamInputSchema, output: sessionStreamSchema })
+  async stream(
+    @Ctx() ctx: Context,
+    @Input() input: z.infer<typeof sessionStreamInputSchema>
+  ) {
+    const ownerId = requireUserId(ctx)
+
+    await assertSessionOwned(input.sessionId, ownerId)
+
+    const session = await db.query.agentSession.findFirst({
+      where: (table) => eq(table.id, input.sessionId),
+    })
+
+    if (!session) {
+      throw notFound()
+    }
+
+    const logs = await db.query.sessionLog.findMany({
+      offset: input.from ?? 0,
+      orderBy: (table, { asc }) => asc(table.createdAt),
+      where: (table) => eq(table.sessionId, input.sessionId),
+    })
+
+    return { logs, session }
   }
 }
