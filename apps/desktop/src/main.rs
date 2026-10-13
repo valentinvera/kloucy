@@ -33,9 +33,10 @@ enum Section {
     Readiness,
     WeeklyReview,
     Pairing,
+    Settings,
 }
 
-const SECTIONS: [Section; 10] = [
+const SECTIONS: [Section; 11] = [
     Section::Home,
     Section::Workspaces,
     Section::Agents,
@@ -46,6 +47,7 @@ const SECTIONS: [Section; 10] = [
     Section::Readiness,
     Section::WeeklyReview,
     Section::Pairing,
+    Section::Settings,
 ];
 
 impl Section {
@@ -61,6 +63,7 @@ impl Section {
             Section::Readiness => "Readiness",
             Section::WeeklyReview => "Weekly review",
             Section::Pairing => "Pairing",
+            Section::Settings => "Settings",
         }
     }
 
@@ -76,6 +79,7 @@ impl Section {
             Section::Readiness => "Whether this workspace is ready to run agents.",
             Section::WeeklyReview => "What shipped, what was blocked, and what comes next.",
             Section::Pairing => "Pair a phone to keep control away from the desk.",
+            Section::Settings => "Correct the setup data of the selected workspace.",
         }
     }
 }
@@ -297,6 +301,13 @@ struct DesktopShell {
     intake_project_type: Entity<InputState>,
     intake_safe_commands: Entity<InputState>,
     intake_ignored_paths: Entity<InputState>,
+    settings_name: Entity<InputState>,
+    settings_path: Entity<InputState>,
+    settings_safe_commands: Entity<InputState>,
+    settings_ignored_paths: Entity<InputState>,
+    saving_settings: bool,
+    archiving_workspace: bool,
+    settings_error: Option<String>,
     create_error: Option<String>,
     agent_error: Option<String>,
     completing_intake: bool,
@@ -343,6 +354,13 @@ impl DesktopShell {
         let intake_safe_commands =
             cx.new(|cx| InputState::new(window, cx).placeholder("Safe commands, comma separated"));
         let intake_ignored_paths =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Ignored paths, comma separated"));
+        let settings_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder("New workspace name"));
+        let settings_path = cx.new(|cx| InputState::new(window, cx).placeholder("New local path"));
+        let settings_safe_commands =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Safe commands, comma separated"));
+        let settings_ignored_paths =
             cx.new(|cx| InputState::new(window, cx).placeholder("Ignored paths, comma separated"));
         let new_step_reason = cx.new(|cx| InputState::new(window, cx).placeholder("Step"));
 
@@ -395,6 +413,13 @@ impl DesktopShell {
             intake_ignored_paths,
             intake_project_type,
             intake_safe_commands,
+            archiving_workspace: false,
+            saving_settings: false,
+            settings_error: None,
+            settings_ignored_paths,
+            settings_name,
+            settings_path,
+            settings_safe_commands,
             new_step_lane: "now".to_string(),
             new_step_reason,
             session_steps: LoadState::Loading,
@@ -1191,6 +1216,147 @@ impl DesktopShell {
         .detach();
     }
 
+    fn load_settings_values(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace) = self.selected_workspace_data() else {
+            return;
+        };
+
+        let name = workspace.name.clone();
+        let local_path = workspace.local_path.clone();
+        let safe_commands = workspace
+            .safe_commands
+            .clone()
+            .unwrap_or_default()
+            .join(", ");
+        let ignored_paths = workspace
+            .ignored_paths
+            .clone()
+            .unwrap_or_default()
+            .join(", ");
+
+        self.settings_name
+            .update(cx, |state, cx| state.set_value(name, window, cx));
+        self.settings_path
+            .update(cx, |state, cx| state.set_value(local_path, window, cx));
+        self.settings_safe_commands
+            .update(cx, |state, cx| state.set_value(safe_commands, window, cx));
+        self.settings_ignored_paths
+            .update(cx, |state, cx| state.set_value(ignored_paths, window, cx));
+
+        self.settings_error = None;
+        cx.notify();
+    }
+
+    fn submit_save_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        let name = self.settings_name.read(cx).value().to_string();
+        let local_path = self.settings_path.read(cx).value().to_string();
+        let safe = self.settings_safe_commands.read(cx).value().to_string();
+        let ignored = self.settings_ignored_paths.read(cx).value().to_string();
+
+        let safe_commands = split_list(&safe);
+        let ignored_paths = split_list(&ignored);
+
+        if name.is_empty()
+            && local_path.is_empty()
+            && safe_commands.is_empty()
+            && ignored_paths.is_empty()
+        {
+            self.settings_error = Some("Enter at least one value to save.".to_string());
+            cx.notify();
+            return;
+        }
+
+        self.settings_error = None;
+        self.saving_settings = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.update_workspace(
+                        &workspace_id,
+                        &name,
+                        &local_path,
+                        &safe_commands,
+                        &ignored_paths,
+                    )?;
+                    let session = client.session();
+                    Ok::<_, ApiError>(load_workspaces(&client, &session))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.saving_settings = false;
+
+                match result {
+                    Ok(LoadState::Loaded(workspaces)) => {
+                        this.workspaces = LoadState::Loaded(workspaces);
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.settings_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.settings_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn submit_archive_workspace(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        self.settings_error = None;
+        self.archiving_workspace = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.archive_workspace(&workspace_id)?;
+                    let session = client.session();
+                    Ok::<_, ApiError>(load_workspaces(&client, &session))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.archiving_workspace = false;
+
+                match result {
+                    Ok(LoadState::Loaded(workspaces)) => {
+                        this.workspaces = LoadState::Loaded(workspaces);
+                        this.selected_workspace = None;
+                        this.section = Section::Workspaces;
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.settings_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.settings_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn submit_create_step(&mut self, cx: &mut Context<Self>) {
         let Some(workspace_id) = self.selected_workspace.clone() else {
             return;
@@ -1442,6 +1608,132 @@ impl DesktopShell {
             .child(submit);
 
         if let Some(error) = &self.intake_error {
+            form = form.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        form.into_any_element()
+    }
+
+    fn selected_workspace_data(&self) -> Option<&Workspace> {
+        let id = self.selected_workspace.as_deref()?;
+
+        match &self.workspaces {
+            LoadState::Loaded(workspaces) => workspaces.iter().find(|workspace| workspace.id == id),
+            _ => None,
+        }
+    }
+
+    fn settings_value(&self, label: &str, value: String, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(120.0))
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label.to_string()),
+            )
+            .child(div().text_sm().child(if value.is_empty() {
+                "None".to_string()
+            } else {
+                value
+            }))
+            .into_any_element()
+    }
+
+    fn render_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(workspace) = self.selected_workspace_data() else {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Select a workspace to correct its setup data.")
+                .into_any_element();
+        };
+
+        let default_agent = workspace
+            .default_agent_id
+            .as_deref()
+            .and_then(|agent_id| match &self.agents {
+                LoadState::Loaded(agents) => agents
+                    .iter()
+                    .find(|agent| agent.id == agent_id)
+                    .map(|agent| agent.name.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let name = workspace.name.clone();
+        let local_path = workspace.local_path.clone();
+        let safe_commands = workspace
+            .safe_commands
+            .clone()
+            .unwrap_or_default()
+            .join(", ");
+        let ignored_paths = workspace
+            .ignored_paths
+            .clone()
+            .unwrap_or_default()
+            .join(", ");
+        let mobile_pairing = if workspace.mobile_pairing_enabled {
+            "Enabled"
+        } else {
+            "Disabled"
+        };
+
+        let load = Button::new("load-settings")
+            .small()
+            .label("Load current values")
+            .on_click(cx.listener(|this, _, window, cx| this.load_settings_values(window, cx)));
+
+        let save = Button::new("save-settings")
+            .primary()
+            .small()
+            .label(if self.saving_settings {
+                "Saving…"
+            } else {
+                "Save changes"
+            })
+            .disabled(self.saving_settings)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_save_settings(cx)));
+
+        let archive = Button::new("archive-workspace")
+            .small()
+            .label(if self.archiving_workspace {
+                "Archiving…"
+            } else {
+                "Archive workspace"
+            })
+            .disabled(self.archiving_workspace)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_archive_workspace(cx)));
+
+        let mut form = v_flex()
+            .w(px(360.0))
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Workspace settings"),
+            )
+            .child(self.settings_value("Name", name, cx))
+            .child(self.settings_value("Local path", local_path, cx))
+            .child(self.settings_value("Default agent", default_agent, cx))
+            .child(self.settings_value("Safe commands", safe_commands, cx))
+            .child(self.settings_value("Ignored paths", ignored_paths, cx))
+            .child(self.settings_value("Mobile pairing", mobile_pairing.to_string(), cx))
+            .child(load)
+            .child(Input::new(&self.settings_name))
+            .child(Input::new(&self.settings_path))
+            .child(Input::new(&self.settings_safe_commands))
+            .child(Input::new(&self.settings_ignored_paths))
+            .child(h_flex().gap_2().child(save).child(archive));
+
+        if let Some(error) = &self.settings_error {
             form = form.child(
                 div()
                     .text_sm()
@@ -2512,6 +2804,7 @@ impl DesktopShell {
             Section::Readiness => self.render_readiness(cx),
             Section::Reviews => self.render_reviews(cx),
             Section::Sessions => self.render_sessions(cx),
+            Section::Settings => self.render_settings(cx),
             Section::WeeklyReview => self.render_weekly_review(cx),
             Section::Workspaces => self.render_workspaces(cx),
         };
