@@ -1,29 +1,39 @@
 import { describe, expect, test } from "bun:test"
-import { nextLogs } from "../../apps/mobile/lib/session-output"
+import { nextLogs as mobileNextLogs } from "../../apps/mobile/lib/session-output"
+import { nextLogs as webNextLogs } from "../../apps/web/src/lib/session-output"
 
-describe("nextLogs", () => {
-  test("appends new lines in order", () => {
-    const first = [{ id: "1", message: "one", stream: "stdout" }]
-    const second = [{ id: "2", message: "two", stream: "stderr" }]
+// The mobile and web apps each keep a copy of this helper, so both are checked
+// with the same expectations.
+const implementations = {
+  mobile: mobileNextLogs,
+  web: webNextLogs,
+}
 
-    expect(nextLogs(first, second).map((log) => log.id)).toEqual(["1", "2"])
+for (const [name, nextLogs] of Object.entries(implementations)) {
+  describe(name, () => {
+    test("appends new lines in order", () => {
+      const first = [{ id: "1", message: "one", stream: "stdout" }]
+      const second = [{ id: "2", message: "two", stream: "stderr" }]
+
+      expect(nextLogs(first, second).map((log) => log.id)).toEqual(["1", "2"])
+    })
+
+    test("ignores lines the app already holds", () => {
+      const held = [
+        { id: "1", message: "one", stream: "stdout" },
+        { id: "2", message: "two", stream: "stdout" },
+      ]
+      const repeated = [{ id: "2", message: "two", stream: "stdout" }]
+
+      expect(nextLogs(held, repeated)).toEqual(held)
+    })
+
+    test("handles an empty history and an empty page", () => {
+      expect(nextLogs([], [])).toEqual([])
+
+      const line = { id: "1", message: "one", stream: "stdout" }
+
+      expect(nextLogs([], [line])).toEqual([line])
+    })
   })
-
-  test("ignores lines the app already holds", () => {
-    const held = [
-      { id: "1", message: "one", stream: "stdout" },
-      { id: "2", message: "two", stream: "stdout" },
-    ]
-    const repeated = [{ id: "2", message: "two", stream: "stdout" }]
-
-    expect(nextLogs(held, repeated)).toEqual(held)
-  })
-
-  test("handles an empty history and an empty page", () => {
-    expect(nextLogs([], [])).toEqual([])
-
-    const line = { id: "1", message: "one", stream: "stdout" }
-
-    expect(nextLogs([], [line])).toEqual([line])
-  })
-})
+}
