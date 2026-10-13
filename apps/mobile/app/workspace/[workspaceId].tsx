@@ -105,8 +105,8 @@ export default function WorkspaceDetail() {
     [approve]
   )
   const handleReject = useCallback(
-    (id: string) => {
-      reject.mutate({ id })
+    (id: string, reason: string) => {
+      reject.mutate({ id, reason })
     },
     [reject]
   )
