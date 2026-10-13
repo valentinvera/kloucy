@@ -1738,6 +1738,48 @@ impl DesktopShell {
         .detach();
     }
 
+    fn set_mobile_pairing(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        self.settings_error = None;
+        self.saving_settings = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.set_mobile_pairing(&workspace_id, enabled)?;
+                    let session = client.session();
+                    Ok::<_, ApiError>(load_workspaces(&client, &session))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.saving_settings = false;
+
+                match result {
+                    Ok(LoadState::Loaded(workspaces)) => {
+                        this.workspaces = LoadState::Loaded(workspaces);
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.settings_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.settings_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn submit_create_step(&mut self, cx: &mut Context<Self>) {
         let Some(workspace_id) = self.selected_workspace.clone() else {
             return;
@@ -2061,10 +2103,11 @@ impl DesktopShell {
             .unwrap_or_default()
             .join(", ");
         let mobile_pairing = if workspace.mobile_pairing_enabled {
-            "Enabled"
+            "Shared with mobile"
         } else {
-            "Disabled"
+            "Desktop only"
         };
+        let mobile_pairing_enabled = workspace.mobile_pairing_enabled;
 
         let mut agent_picker = v_flex().gap_1().child(
             div()
@@ -2127,6 +2170,18 @@ impl DesktopShell {
             .label("Load current values")
             .on_click(cx.listener(|this, _, window, cx| this.load_settings_values(window, cx)));
 
+        let mobile_pairing_toggle = Button::new("toggle-mobile-pairing")
+            .small()
+            .label(if mobile_pairing_enabled {
+                "Stop sharing"
+            } else {
+                "Share with mobile"
+            })
+            .disabled(self.saving_settings)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.set_mobile_pairing(!mobile_pairing_enabled, cx);
+            }));
+
         let save = Button::new("save-settings")
             .primary()
             .small()
@@ -2163,7 +2218,13 @@ impl DesktopShell {
             .child(agent_picker)
             .child(self.settings_value("Safe commands", safe_commands, cx))
             .child(self.settings_value("Ignored paths", ignored_paths, cx))
-            .child(self.settings_value("Mobile pairing", mobile_pairing.to_string(), cx))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(self.settings_value("Mobile pairing", mobile_pairing.to_string(), cx))
+                    .child(mobile_pairing_toggle),
+            )
             .child(load)
             .child(Input::new(&self.settings_name))
             .child(Input::new(&self.settings_path))
