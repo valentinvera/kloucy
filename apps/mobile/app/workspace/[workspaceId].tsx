@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from "expo-router"
 import { Button, Spinner } from "heroui-native"
 import { useCallback } from "react"
 import { ScrollView, Text, View } from "react-native"
+import { QuickInstruction } from "@/components/quick-instruction"
 import { ReviewRow } from "@/components/review-row"
 import { SessionRow } from "@/components/session-row"
 import { trpc } from "@/utils/trpc"
@@ -36,6 +37,11 @@ export default function WorkspaceDetail() {
   const retry = useMutation(
     trpc.sessions.retry.mutationOptions({ onSuccess: invalidateSessions })
   )
+  const sendInstruction = useMutation(
+    trpc.sessions.sendInstruction.mutationOptions({
+      onSuccess: invalidateSessions,
+    })
+  )
   const approve = useMutation(
     trpc.reviews.approve.mutationOptions({ onSuccess: invalidateReviews })
   )
@@ -64,6 +70,12 @@ export default function WorkspaceDetail() {
       retry.mutate({ id })
     },
     [retry]
+  )
+  const handleSendInstruction = useCallback(
+    (id: string, instruction: string) => {
+      sendInstruction.mutate({ id, instruction })
+    },
+    [sendInstruction]
   )
   const handleApprove = useCallback(
     (id: string) => {
@@ -117,6 +129,12 @@ export default function WorkspaceDetail() {
             session={session}
           />
         ))}
+
+        <QuickInstruction
+          isSending={sendInstruction.isPending}
+          onSend={handleSendInstruction}
+          sessions={sessions.data ?? []}
+        />
 
         <Text className="mt-4 font-geist-semibold text-foreground text-lg">
           Reviews
