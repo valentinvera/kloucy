@@ -1,3 +1,6 @@
+import { execFile } from "node:child_process"
+import { accessSync, constants, statSync } from "node:fs"
+import { promisify } from "node:util"
 import { db } from "@kloucy/db"
 import { agent } from "@kloucy/db/schema/agent"
 import { TRPCError } from "@trpc/server"
@@ -12,6 +15,7 @@ import {
 } from "nestjs-trpc"
 import { z } from "zod"
 import type { Context } from "../context"
+import { detectAgents, executableToTest } from "../lib/agent-registry"
 import { ProtectedMiddleware } from "../middleware/protected"
 
 const agentSchema = z.object({
@@ -56,6 +60,51 @@ const agentUpdateInputSchema = z.object({
   provider: z.string().min(1).optional(),
   status: z.string().min(1).optional(),
 })
+
+const detectedAgentSchema = z.object({
+  executablePath: z.string(),
+  name: z.string(),
+  provider: z.string(),
+})
+
+const agentTestResultSchema = z.object({
+  ok: z.boolean(),
+  output: z.string(),
+})
+
+const execFileAsync = promisify(execFile)
+const VERSION_TIMEOUT_MS = 5000
+const MAX_OUTPUT_LENGTH = 400
+
+/** Only `--version` is ever run, so the API never starts an agent session. */
+async function runVersion(
+  executable: string
+): Promise<{ ok: boolean; output: string }> {
+  try {
+    const { stderr, stdout } = await execFileAsync(executable, ["--version"], {
+      timeout: VERSION_TIMEOUT_MS,
+    })
+
+    return {
+      ok: true,
+      output: `${stdout}${stderr}`.trim().slice(0, MAX_OUTPUT_LENGTH),
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Command failed"
+
+    return { ok: false, output: message.slice(0, MAX_OUTPUT_LENGTH) }
+  }
+}
+
+function isExecutable(candidate: string): boolean {
+  try {
+    accessSync(candidate, constants.X_OK)
+
+    return statSync(candidate).isFile()
+  } catch {
+    return false
+  }
+}
 
 function requireUserId(ctx: Context): string {
   if (!ctx.session?.user) {
@@ -218,5 +267,50 @@ export class AgentsRouter {
     }
 
     return disabled
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Query({ output: z.array(detectedAgentSchema) })
+  detect(@Ctx() ctx: Context) {
+    requireUserId(ctx)
+
+    // Detection reads the PATH of the host the API runs on, which is the
+    // machine agents run on here. It resolves executables and runs nothing.
+    return detectAgents(process.env.PATH ?? "", isExecutable)
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Mutation({ input: agentIdInputSchema, output: agentTestResultSchema })
+  async testCommand(
+    @Ctx() ctx: Context,
+    @Input() input: z.infer<typeof agentIdInputSchema>
+  ) {
+    const ownerId = requireUserId(ctx)
+
+    const found = await db.query.agent.findFirst({
+      where: (table) => and(eq(table.id, input.id), eq(table.ownerId, ownerId)),
+    })
+
+    if (!found) {
+      throw notFound()
+    }
+
+    const executable = executableToTest(found)
+
+    if (!executable) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Agent has no executable path or command",
+      })
+    }
+
+    const result = await runVersion(executable)
+
+    await db
+      .update(agent)
+      .set({ status: result.ok ? "ready" : "needs_setup" })
+      .where(eq(agent.id, found.id))
+
+    return result
   }
 }
