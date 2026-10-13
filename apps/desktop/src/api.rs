@@ -357,6 +357,17 @@ impl KloucyClient {
             .map(|_| ())
     }
 
+    /// Allow, or stop, supervising a workspace from mobile.
+    pub fn set_mobile_pairing(&self, workspace_id: &str, enabled: bool) -> Result<(), ApiError> {
+        let input = serde_json::json!({
+            "id": workspace_id,
+            "mobilePairingEnabled": enabled,
+        });
+
+        self.mutation::<Value>("workspaces.update", input)
+            .map(|_| ())
+    }
+
     /// Add a step to a session's timeline.
     pub fn create_session_step(
         &self,
