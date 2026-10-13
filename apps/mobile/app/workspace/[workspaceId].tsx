@@ -1,11 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useLocalSearchParams, useRouter } from "expo-router"
 import { Button, Spinner } from "heroui-native"
-import { useCallback } from "react"
+import { useCallback, useMemo } from "react"
 import { ScrollView, Text, View } from "react-native"
+import { NextActions } from "@/components/next-actions"
 import { QuickInstruction } from "@/components/quick-instruction"
 import { ReviewRow } from "@/components/review-row"
 import { SessionRow } from "@/components/session-row"
+import { nextActions } from "@/lib/next-actions"
 import { trpc } from "@/utils/trpc"
 
 export default function WorkspaceDetail() {
@@ -15,6 +17,15 @@ export default function WorkspaceDetail() {
 
   const sessions = useQuery(trpc.sessions.list.queryOptions({ workspaceId }))
   const reviews = useQuery(trpc.reviews.list.queryOptions({ workspaceId }))
+
+  const actions = useMemo(
+    () =>
+      nextActions({
+        reviews: reviews.data ?? [],
+        sessions: sessions.data ?? [],
+      }),
+    [reviews.data, sessions.data]
+  )
 
   const invalidateSessions = useCallback(() => {
     queryClient.invalidateQueries(
@@ -101,6 +112,8 @@ export default function WorkspaceDetail() {
             <Button.Label>Workspaces</Button.Label>
           </Button>
         </View>
+
+        <NextActions actions={actions} />
 
         <Text className="font-geist-semibold text-foreground text-lg">
           Sessions
