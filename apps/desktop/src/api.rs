@@ -402,6 +402,21 @@ impl KloucyClient {
             .map(|_| ())
     }
 
+    /// Replace the safe commands of a workspace.
+    pub fn set_safe_commands(
+        &self,
+        workspace_id: &str,
+        commands: &[String],
+    ) -> Result<(), ApiError> {
+        let input = serde_json::json!({
+            "id": workspace_id,
+            "safeCommands": commands,
+        });
+
+        self.mutation::<Value>("workspaces.update", input)
+            .map(|_| ())
+    }
+
     /// Set the safety mode of a workspace.
     pub fn set_safety_mode(&self, workspace_id: &str, mode: &str) -> Result<(), ApiError> {
         let input = serde_json::json!({
