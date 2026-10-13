@@ -532,6 +532,15 @@ impl KloucyClient {
             .map(|_| ())
     }
 
+    /// Send a follow-up instruction to a session.
+    pub fn send_session_instruction(&self, id: &str, instruction: &str) -> Result<(), ApiError> {
+        self.mutation::<Value>(
+            "sessions.sendInstruction",
+            serde_json::json!({ "id": id, "instruction": instruction }),
+        )
+        .map(|_| ())
+    }
+
     /// Create a workspace owned by the signed-in user.
     pub fn create_workspace(&self, name: &str, local_path: &str) -> Result<(), ApiError> {
         self.mutation::<Value>(

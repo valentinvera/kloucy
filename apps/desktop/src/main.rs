@@ -332,6 +332,9 @@ struct DesktopShell {
     follow_up_condition: Entity<InputState>,
     saving_follow_up: bool,
     review_error: Option<String>,
+    instruction: Entity<InputState>,
+    sending_instruction: bool,
+    instruction_error: Option<String>,
     task_error: Option<String>,
 }
 
@@ -374,6 +377,8 @@ impl DesktopShell {
         let new_step_reason = cx.new(|cx| InputState::new(window, cx).placeholder("Step"));
         let follow_up_condition =
             cx.new(|cx| InputState::new(window, cx).placeholder("When should this run again?"));
+        let instruction =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Send a follow-up instruction"));
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
@@ -465,6 +470,9 @@ impl DesktopShell {
             follow_up_condition,
             saving_follow_up: false,
             review_error: None,
+            instruction,
+            sending_instruction: false,
+            instruction_error: None,
             signing_in: false,
             task_error: None,
             task_prompt,
@@ -741,6 +749,51 @@ impl DesktopShell {
                     Ok(LoadState::Loading) => {}
                     Err(error) => {
                         this.review_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn submit_instruction(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+
+        let instruction = self.instruction.read(cx).value().to_string();
+
+        if instruction.trim().is_empty() {
+            self.instruction_error = Some("Write an instruction to send.".to_string());
+            cx.notify();
+            return;
+        }
+
+        self.instruction_error = None;
+        self.sending_instruction = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.send_session_instruction(&session_id, &instruction)?;
+                    Ok::<_, ApiError>(load_session_logs(&client, &session_id))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.sending_instruction = false;
+
+                match result {
+                    Ok(logs) => {
+                        this.session_logs = logs;
+                    }
+                    Err(error) => {
+                        this.instruction_error = Some(error_message(&error));
                     }
                 }
 
@@ -2582,12 +2635,39 @@ impl DesktopShell {
             }
         };
 
-        v_flex()
+        let send = Button::new("send-instruction")
+            .small()
+            .label(if self.sending_instruction {
+                "Sending…"
+            } else {
+                "Send"
+            })
+            .disabled(self.sending_instruction)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_instruction(cx)));
+
+        let mut panel = v_flex()
             .gap_3()
             .child(title)
             .child(content)
-            .child(self.render_session_timeline(cx))
-            .into_any_element()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Input::new(&self.instruction))
+                    .child(send),
+            )
+            .child(self.render_session_timeline(cx));
+
+        if let Some(error) = &self.instruction_error {
+            panel = panel.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        panel.into_any_element()
     }
 
     fn render_reviews(&self, cx: &mut Context<Self>) -> AnyElement {

@@ -42,6 +42,11 @@ const agentSessionIdInputSchema = z.object({
   id: z.string().min(1),
 })
 
+const sessionInstructionInputSchema = z.object({
+  id: z.string().min(1),
+  instruction: z.string().min(1),
+})
+
 const agentSessionListInputSchema = z.object({
   workspaceId: z.string().min(1),
 })
@@ -364,6 +369,51 @@ export class SessionsRouter {
     const [updated] = await db
       .update(agentSession)
       .set({ endedAt: new Date(), status: input.status })
+      .where(eq(agentSession.id, input.id))
+      .returning()
+
+    if (!updated) {
+      throw notFound()
+    }
+
+    return updated
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Mutation({
+    input: sessionInstructionInputSchema,
+    output: agentSessionSchema,
+  })
+  async sendInstruction(
+    @Ctx() ctx: Context,
+    @Input() input: z.infer<typeof sessionInstructionInputSchema>
+  ) {
+    const ownerId = requireUserId(ctx)
+
+    await assertSessionOwned(input.id, ownerId)
+
+    const session = await db.query.agentSession.findFirst({
+      where: (table) => eq(table.id, input.id),
+    })
+
+    if (!session) {
+      throw notFound()
+    }
+
+    await db.insert(sessionLog).values({
+      id: crypto.randomUUID(),
+      message: `> ${input.instruction}`,
+      sessionId: input.id,
+      stream: "system",
+    })
+
+    if (session.status !== "waiting") {
+      return session
+    }
+
+    const [updated] = await db
+      .update(agentSession)
+      .set({ status: "ready" })
       .where(eq(agentSession.id, input.id))
       .returning()
 
