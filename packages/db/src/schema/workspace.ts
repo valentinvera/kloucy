@@ -17,6 +17,11 @@ export const workspaceStageEnum = pgEnum("workspace_stage", [
   "archived",
 ])
 
+export const workspaceSafetyModeEnum = pgEnum("workspace_safety_mode", [
+  "open",
+  "guarded",
+])
+
 export const workspace = pgTable(
   "workspace",
   {
@@ -38,6 +43,9 @@ export const workspace = pgTable(
     projectType: text("project_type"),
     runtime: text("runtime"),
     safeCommands: text("safe_commands").array(),
+    safetyMode: workspaceSafetyModeEnum("safety_mode")
+      .default("open")
+      .notNull(),
     stage: workspaceStageEnum("stage").default("setup").notNull(),
     updatedAt: timestamp("updated_at")
       .defaultNow()
