@@ -29,6 +29,17 @@ Pairing requires a signed-in mobile session, so sign in first with the account y
 Pairing codes are single-use and expire. If a claim fails, create a new code from the desktop.
 </Callout>
 
+## Supervising a workspace
+
+Opening a workspace shows its name, local path and a one-line session summary that puts blocked work first, for example `2 waiting · 1 running · 1 done`.
+
+Below that:
+
+- **Next actions** lists at most three things that need you, most blocking first: waiting sessions, pending reviews, failures, work ready to start, then what is running.
+- **Sessions** lists every session. **Output** expands the latest lines of that session and keeps refreshing while it is open.
+- **Quick instruction** sends a short follow-up to the session you pick. It lands in the desktop session log.
+- **Reviews** approves immediately; **Reject** asks for a short reason.
+
 ## Per workspace
 
 Workspaces carry a `mobilePairingEnabled` flag, visible in desktop **Settings**.
