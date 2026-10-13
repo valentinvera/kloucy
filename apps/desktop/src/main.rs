@@ -2,11 +2,12 @@ mod api;
 mod detect;
 mod runner;
 mod safety;
+mod typography;
 
 use gpui::{
     AnyElement, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight, Hsla,
-    IntoElement, KeyBinding, Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, rgb, size,
+    IntoElement, KeyBinding, Render, SharedString, Window, WindowBounds, WindowOptions, actions,
+    div, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _, Theme, ThemeMode,
@@ -436,6 +437,7 @@ struct DesktopShell {
     client: KloucyClient,
     registry: Arc<runner::RunRegistry>,
     focus_handle: FocusHandle,
+    mono_font: SharedString,
     palette_open: bool,
     palette_query: Entity<InputState>,
     session: SessionStatus,
@@ -513,6 +515,9 @@ impl DesktopShell {
         let client = KloucyClient::new();
         let registry = runner::RunRegistry::new();
         let focus_handle = cx.focus_handle();
+        let mono_font = typography::pick_mono_family(&cx.text_system().all_font_names())
+            .map(SharedString::from)
+            .unwrap_or_else(|| cx.theme().font_family.clone());
         let palette_query = cx.new(|cx| InputState::new(window, cx).placeholder("Search commands"));
         let email = cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
         let password = cx.new(|cx| {
@@ -596,6 +601,7 @@ impl DesktopShell {
             client,
             registry,
             focus_handle,
+            mono_font,
             palette_open: false,
             palette_query,
             agent_command,
@@ -2209,7 +2215,19 @@ impl DesktopShell {
         }
     }
 
-    fn settings_value(&self, label: &str, value: String, cx: &mut Context<Self>) -> AnyElement {
+    fn settings_value(
+        &self,
+        label: &str,
+        value: String,
+        mono: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = div().text_sm();
+
+        if mono {
+            row = row.font_family(self.mono_font.clone());
+        }
+
         h_flex()
             .gap_2()
             .child(
@@ -2219,7 +2237,7 @@ impl DesktopShell {
                     .text_color(cx.theme().muted_foreground)
                     .child(label.to_string()),
             )
-            .child(div().text_sm().child(if value.is_empty() {
+            .child(row.child(if value.is_empty() {
                 "None".to_string()
             } else {
                 value
@@ -2394,24 +2412,29 @@ impl DesktopShell {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Workspace settings"),
             )
-            .child(self.settings_value("Name", name, cx))
-            .child(self.settings_value("Local path", local_path, cx))
-            .child(self.settings_value("Default agent", default_agent, cx))
+            .child(self.settings_value("Name", name, false, cx))
+            .child(self.settings_value("Local path", local_path, true, cx))
+            .child(self.settings_value("Default agent", default_agent, false, cx))
             .child(agent_picker)
-            .child(self.settings_value("Safe commands", safe_commands, cx))
-            .child(self.settings_value("Ignored paths", ignored_paths, cx))
+            .child(self.settings_value("Safe commands", safe_commands, true, cx))
+            .child(self.settings_value("Ignored paths", ignored_paths, true, cx))
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(self.settings_value("Mobile pairing", mobile_pairing.to_string(), cx))
+                    .child(self.settings_value(
+                        "Mobile pairing",
+                        mobile_pairing.to_string(),
+                        false,
+                        cx,
+                    ))
                     .child(mobile_pairing_toggle),
             )
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(self.settings_value("Safety mode", safety_mode.to_string(), cx))
+                    .child(self.settings_value("Safety mode", safety_mode.to_string(), false, cx))
                     .child(safety_mode_toggle),
             )
             .child(load)
@@ -2502,6 +2525,7 @@ impl DesktopShell {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
+                                    .font_family(self.mono_font.clone())
                                     .child(workspace.local_path.clone()),
                             ),
                     );
@@ -2744,6 +2768,7 @@ impl DesktopShell {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
+                            .font_family(self.mono_font.clone())
                             .child(agent.executable_path.clone()),
                     )
                     .child(
@@ -3048,11 +3073,13 @@ impl DesktopShell {
                         cx.theme().muted_foreground
                     };
 
-                    list = list.child(div().text_xs().text_color(color).child(format!(
-                        "{} {}",
-                        index + 1,
-                        log.message
-                    )));
+                    list = list.child(
+                        div()
+                            .text_xs()
+                            .text_color(color)
+                            .font_family(self.mono_font.clone())
+                            .child(format!("{} {}", index + 1, log.message)),
+                    );
                 }
 
                 list.into_any_element()
