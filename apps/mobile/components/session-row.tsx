@@ -1,10 +1,12 @@
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Button } from "heroui-native"
 import { useCallback, useState } from "react"
 import { Text, View } from "react-native"
-import { trpc } from "@/utils/trpc"
+import { nextLogs, type SessionLogLine } from "@/lib/session-output"
+import { trpcClient } from "@/utils/trpc"
 
 const VISIBLE_LOGS = 8
+const OUTPUT_REFETCH_MS = 3000
 
 interface SessionRowProps {
   onRetry: (id: string) => void
@@ -23,14 +25,36 @@ export function SessionRow({
   onStop,
   session,
 }: SessionRowProps) {
+  const queryClient = useQueryClient()
   const [isExpanded, setIsExpanded] = useState(false)
 
-  const logs = useQuery(
-    trpc.sessions.logs.queryOptions(
-      { sessionId: session.id },
-      { enabled: isExpanded, refetchInterval: 3000 }
-    )
-  )
+  const outputKey = ["session-output", session.id]
+
+  // Only the lines that are new since the last poll travel over the wire, so a
+  // long session keeps a small payload. The cursor is how much this app holds.
+  const logs = useQuery({
+    enabled: isExpanded,
+    queryFn: async () => {
+      const previous =
+        queryClient.getQueryData<SessionLogLine[]>(outputKey) ?? []
+
+      const stream = await trpcClient.sessions.stream.query({
+        from: previous.length,
+        sessionId: session.id,
+      })
+
+      return nextLogs(
+        previous,
+        stream.logs.map((log) => ({
+          id: log.id,
+          message: log.message,
+          stream: log.stream,
+        }))
+      )
+    },
+    queryKey: outputKey,
+    refetchInterval: OUTPUT_REFETCH_MS,
+  })
 
   const handleStart = useCallback(
     () => onStart(session.id),
