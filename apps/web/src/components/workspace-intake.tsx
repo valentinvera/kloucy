@@ -7,6 +7,8 @@ import {
   FieldTitle,
 } from "@kloucy/ui/components/field"
 import { Input } from "@kloucy/ui/components/input"
+import { Label } from "@kloucy/ui/components/label"
+import { Switch } from "@kloucy/ui/components/switch"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { type ChangeEvent, type FormEvent, useCallback, useState } from "react"
 import { useTRPC } from "@/utils/trpc"
@@ -78,8 +80,8 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
     []
   )
 
-  const handleMobilePairingToggle = useCallback(() => {
-    setMobilePairing((value) => !value)
+  const handleMobilePairingChange = useCallback((checked: boolean) => {
+    setMobilePairing(checked)
   }, [])
 
   const handleSubmit = useCallback(
@@ -173,13 +175,16 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
           </Field>
           <Field>
             <FieldTitle>Mobile supervision</FieldTitle>
-            <Button
-              onClick={handleMobilePairingToggle}
-              type="button"
-              variant={mobilePairing ? "default" : "secondary"}
-            >
-              {mobilePairing ? "Shared with mobile" : "Desktop only"}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={mobilePairing}
+                id="intake-mobile-pairing"
+                onCheckedChange={handleMobilePairingChange}
+              />
+              <Label htmlFor="intake-mobile-pairing">
+                {mobilePairing ? "Shared with mobile" : "Desktop only"}
+              </Label>
+            </div>
             <FieldDescription>
               Shared workspaces appear in the mobile app.
             </FieldDescription>
