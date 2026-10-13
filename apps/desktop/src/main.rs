@@ -1,4 +1,5 @@
 mod api;
+mod detect;
 mod runner;
 
 use gpui::{
@@ -18,6 +19,8 @@ use crate::api::{
     Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, PairingSession,
     ReadinessSnapshot, Review, SessionLog, SessionStatus, SessionStep, WeeklyReview, Workspace,
 };
+
+use crate::detect::DetectedAgent;
 
 use std::sync::Arc;
 
@@ -272,6 +275,7 @@ struct DesktopShell {
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
     agents: LoadState<Vec<Agent>>,
+    detected_agents: Option<Vec<DetectedAgent>>,
     selected_workspace: Option<String>,
     selected_session: Option<String>,
     session_logs: LoadState<Vec<SessionLog>>,
@@ -399,6 +403,7 @@ impl DesktopShell {
 
         Self {
             agents: LoadState::Loading,
+            detected_agents: None,
             client,
             registry,
             agent_command,
@@ -1871,6 +1876,33 @@ impl DesktopShell {
         form.into_any_element()
     }
 
+    fn detect_agents(&mut self, cx: &mut Context<Self>) {
+        self.detected_agents = Some(detect::detect_installed_agents());
+        self.show_agent_form = false;
+        self.agent_error = None;
+        cx.notify();
+    }
+
+    fn register_detected_agent(
+        &mut self,
+        agent: DetectedAgent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_agent_form = true;
+        self.agent_error = None;
+
+        self.agent_name
+            .update(cx, |state, cx| state.set_value(agent.name, window, cx));
+        self.agent_provider
+            .update(cx, |state, cx| state.set_value(agent.provider, window, cx));
+        self.agent_command.update(cx, |state, cx| {
+            state.set_value(agent.executable_path, window, cx)
+        });
+
+        cx.notify();
+    }
+
     fn render_create_agent(&self, cx: &mut Context<Self>) -> AnyElement {
         let submit = Button::new("create-agent")
             .primary()
@@ -1925,6 +1957,11 @@ impl DesktopShell {
                 cx.notify();
             }));
 
+        let detect_button = Button::new("detect-agents")
+            .small()
+            .label("Detect installed agents")
+            .on_click(cx.listener(|this, _, _, cx| this.detect_agents(cx)));
+
         let content: AnyElement = match &self.agents {
             LoadState::Loading => div()
                 .text_sm()
@@ -1973,11 +2010,71 @@ impl DesktopShell {
             }
         };
 
-        v_flex()
+        let mut section = v_flex()
             .gap_4()
-            .child(new_button)
-            .child(content)
-            .into_any_element()
+            .child(h_flex().gap_2().child(new_button).child(detect_button))
+            .child(content);
+
+        if let Some(detected) = &self.detected_agents {
+            section = section.child(self.render_detected_agents(detected, cx));
+        }
+
+        section.into_any_element()
+    }
+
+    fn render_detected_agents(
+        &self,
+        detected: &[DetectedAgent],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut list = v_flex().gap_1().child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Detected on your PATH"),
+        );
+
+        if detected.is_empty() {
+            return list
+                .child(
+                    div()
+                        .text_sm()
+                        .child("No known agent CLI was found on your PATH."),
+                )
+                .into_any_element();
+        }
+
+        for (index, agent) in detected.iter().enumerate() {
+            let detected_agent = agent.clone();
+
+            list = list.child(
+                h_flex()
+                    .gap_2()
+                    .child(div().text_sm().child(agent.name.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(agent.provider.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(agent.executable_path.clone()),
+                    )
+                    .child(
+                        Button::new(("add-detected-agent", index))
+                            .small()
+                            .label("Add")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.register_detected_agent(detected_agent.clone(), window, cx);
+                            })),
+                    ),
+            );
+        }
+
+        list.into_any_element()
     }
 
     fn render_create_task(&self, cx: &mut Context<Self>) -> AnyElement {
