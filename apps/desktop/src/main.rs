@@ -361,9 +361,41 @@ fn load_weekly_review(
     }
 }
 
-enum ReviewAction {
-    Approve(String),
-    Reject(String),
+/// Why a review decision needs a written reason.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReviewReason {
+    FollowUp,
+    Reject,
+}
+
+impl ReviewReason {
+    fn title(self) -> &'static str {
+        match self {
+            ReviewReason::FollowUp => "Follow-up condition",
+            ReviewReason::Reject => "Why reject this change?",
+        }
+    }
+
+    fn submit_label(self) -> &'static str {
+        match self {
+            ReviewReason::FollowUp => "Save condition",
+            ReviewReason::Reject => "Reject change",
+        }
+    }
+
+    fn missing_reason(self) -> &'static str {
+        match self {
+            ReviewReason::FollowUp => "Describe when this should run again.",
+            ReviewReason::Reject => "Describe why this change is rejected.",
+        }
+    }
+
+    fn placeholder(self) -> &'static str {
+        match self {
+            ReviewReason::FollowUp => "When should this run again?",
+            ReviewReason::Reject => "What is wrong with this change?",
+        }
+    }
 }
 
 fn error_message(error: &ApiError) -> String {
@@ -461,9 +493,9 @@ struct DesktopShell {
     signing_in: bool,
     sign_in_error: Option<String>,
     session_error: Option<String>,
-    follow_up_review: Option<String>,
-    follow_up_condition: Entity<InputState>,
-    saving_follow_up: bool,
+    review_reason_for: Option<(String, ReviewReason)>,
+    review_reason: Entity<InputState>,
+    saving_review_reason: bool,
     review_error: Option<String>,
     instruction: Entity<InputState>,
     sending_instruction: bool,
@@ -510,8 +542,9 @@ impl DesktopShell {
         let settings_ignored_paths =
             cx.new(|cx| InputState::new(window, cx).placeholder("Ignored paths, comma separated"));
         let new_step_reason = cx.new(|cx| InputState::new(window, cx).placeholder("Step"));
-        let follow_up_condition =
-            cx.new(|cx| InputState::new(window, cx).placeholder("When should this run again?"));
+        let review_reason = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(ReviewReason::FollowUp.placeholder())
+        });
         let instruction =
             cx.new(|cx| InputState::new(window, cx).placeholder("Send a follow-up instruction"));
 
@@ -604,9 +637,9 @@ impl DesktopShell {
             show_task_form: false,
             sign_in_error: None,
             session_error: None,
-            follow_up_review: None,
-            follow_up_condition,
-            saving_follow_up: false,
+            review_reason_for: None,
+            review_reason,
+            saving_review_reason: false,
             review_error: None,
             instruction,
             sending_instruction: false,
@@ -788,7 +821,7 @@ impl DesktopShell {
         .detach();
     }
 
-    fn review_action(&mut self, action: ReviewAction, cx: &mut Context<Self>) {
+    fn approve_review(&mut self, review_id: String, cx: &mut Context<Self>) {
         let Some(workspace_id) = self.selected_workspace.clone() else {
             return;
         };
@@ -798,15 +831,7 @@ impl DesktopShell {
             let reviews = cx
                 .background_executor()
                 .spawn(async move {
-                    match action {
-                        ReviewAction::Approve(id) => {
-                            let _ = client.approve_review(&id);
-                        }
-                        ReviewAction::Reject(id) => {
-                            let _ = client.reject_review(&id);
-                        }
-                    }
-
+                    let _ = client.approve_review(&review_id);
                     load_reviews(&client, &workspace_id)
                 })
                 .await;
@@ -820,38 +845,41 @@ impl DesktopShell {
         .detach();
     }
 
-    fn open_follow_up(
+    fn open_review_reason(
         &mut self,
         review_id: String,
+        kind: ReviewReason,
         reason: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.review_error = None;
-        self.follow_up_review = Some(review_id);
+        self.review_reason_for = Some((review_id, kind));
 
-        let condition = reason.unwrap_or_default();
-        self.follow_up_condition
-            .update(cx, |state, cx| state.set_value(condition, window, cx));
+        let value = reason.unwrap_or_default();
+        self.review_reason.update(cx, |state, cx| {
+            state.set_placeholder(kind.placeholder(), window, cx);
+            state.set_value(value, window, cx);
+        });
 
         cx.notify();
     }
 
-    fn cancel_follow_up(&mut self, cx: &mut Context<Self>) {
-        self.follow_up_review = None;
+    fn cancel_review_reason(&mut self, cx: &mut Context<Self>) {
+        self.review_reason_for = None;
         self.review_error = None;
         cx.notify();
     }
 
-    fn submit_follow_up(&mut self, cx: &mut Context<Self>) {
-        let Some(review_id) = self.follow_up_review.clone() else {
+    fn submit_review_reason(&mut self, cx: &mut Context<Self>) {
+        let Some((review_id, kind)) = self.review_reason_for.clone() else {
             return;
         };
 
-        let condition = self.follow_up_condition.read(cx).value().to_string();
+        let reason = self.review_reason.read(cx).value().to_string();
 
-        if condition.trim().is_empty() {
-            self.review_error = Some("Describe when this should run again.".to_string());
+        if reason.trim().is_empty() {
+            self.review_error = Some(kind.missing_reason().to_string());
             cx.notify();
             return;
         }
@@ -861,25 +889,33 @@ impl DesktopShell {
         };
 
         self.review_error = None;
-        self.saving_follow_up = true;
+        self.saving_review_reason = true;
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    client.follow_up_review(&review_id, &condition)?;
+                    match kind {
+                        ReviewReason::FollowUp => {
+                            client.follow_up_review(&review_id, &reason)?;
+                        }
+                        ReviewReason::Reject => {
+                            client.reject_review(&review_id, Some(&reason))?;
+                        }
+                    }
+
                     Ok::<_, ApiError>(load_reviews(&client, &workspace_id))
                 })
                 .await;
 
             this.update(cx, |this, cx| {
-                this.saving_follow_up = false;
+                this.saving_review_reason = false;
 
                 match result {
                     Ok(LoadState::Loaded(reviews)) => {
                         this.reviews = LoadState::Loaded(reviews);
-                        this.follow_up_review = None;
+                        this.review_reason_for = None;
                     }
                     Ok(LoadState::Failed(message)) => {
                         this.review_error = Some(message);
@@ -2846,6 +2882,7 @@ impl DesktopShell {
                     let reject_id = review.id.clone();
                     let follow_up_id = review.id.clone();
                     let follow_up_reason = review.reason.clone();
+                    let reject_reason = review.reason.clone();
 
                     list = list.child(
                         h_flex()
@@ -2879,19 +2916,19 @@ impl DesktopShell {
                                             .small()
                                             .label("Approve")
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.review_action(
-                                                    ReviewAction::Approve(approve_id.clone()),
-                                                    cx,
-                                                );
+                                                this.approve_review(approve_id.clone(), cx);
                                             })),
                                     )
                                     .child(
                                         Button::new(("review-reject", index))
                                             .small()
                                             .label("Reject")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.review_action(
-                                                    ReviewAction::Reject(reject_id.clone()),
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.open_review_reason(
+                                                    reject_id.clone(),
+                                                    ReviewReason::Reject,
+                                                    reject_reason.clone(),
+                                                    window,
                                                     cx,
                                                 );
                                             })),
@@ -2901,8 +2938,9 @@ impl DesktopShell {
                                             .small()
                                             .label("Follow up")
                                             .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_follow_up(
+                                                this.open_review_reason(
                                                     follow_up_id.clone(),
+                                                    ReviewReason::FollowUp,
                                                     follow_up_reason.clone(),
                                                     window,
                                                     cx,
@@ -2928,30 +2966,30 @@ impl DesktopShell {
             );
         }
 
-        if self.follow_up_review.is_some() {
-            section = section.child(self.render_follow_up(cx));
+        if let Some((_, kind)) = &self.review_reason_for {
+            section = section.child(self.render_review_reason(*kind, cx));
         }
 
         section.into_any_element()
     }
 
-    fn render_follow_up(&self, cx: &mut Context<Self>) -> AnyElement {
-        let submit = Button::new("save-follow-up")
+    fn render_review_reason(&self, kind: ReviewReason, cx: &mut Context<Self>) -> AnyElement {
+        let submit = Button::new("save-review-reason")
             .primary()
             .small()
-            .label(if self.saving_follow_up {
+            .label(if self.saving_review_reason {
                 "Saving…"
             } else {
-                "Save condition"
+                kind.submit_label()
             })
-            .disabled(self.saving_follow_up)
-            .on_click(cx.listener(|this, _, _, cx| this.submit_follow_up(cx)));
+            .disabled(self.saving_review_reason)
+            .on_click(cx.listener(|this, _, _, cx| this.submit_review_reason(cx)));
 
-        let cancel = Button::new("cancel-follow-up")
+        let cancel = Button::new("cancel-review-reason")
             .small()
             .label("Cancel")
-            .disabled(self.saving_follow_up)
-            .on_click(cx.listener(|this, _, _, cx| this.cancel_follow_up(cx)));
+            .disabled(self.saving_review_reason)
+            .on_click(cx.listener(|this, _, _, cx| this.cancel_review_reason(cx)));
 
         v_flex()
             .w(px(360.0))
@@ -2960,9 +2998,9 @@ impl DesktopShell {
                 div()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Follow-up condition"),
+                    .child(kind.title()),
             )
-            .child(Input::new(&self.follow_up_condition))
+            .child(Input::new(&self.review_reason))
             .child(h_flex().gap_2().child(submit).child(cancel))
             .into_any_element()
     }
