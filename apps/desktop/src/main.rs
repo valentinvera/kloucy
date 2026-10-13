@@ -327,6 +327,7 @@ struct DesktopShell {
     show_task_form: bool,
     signing_in: bool,
     sign_in_error: Option<String>,
+    session_error: Option<String>,
     task_error: Option<String>,
 }
 
@@ -453,6 +454,7 @@ impl DesktopShell {
             show_decision_form: false,
             show_task_form: false,
             sign_in_error: None,
+            session_error: None,
             signing_in: false,
             task_error: None,
             task_prompt,
@@ -675,6 +677,21 @@ impl DesktopShell {
             .or_else(|| agent.executable_path.clone())
     }
 
+    fn session_agent_id(&self, session_id: &str) -> Option<String> {
+        let from_session = match &self.sessions {
+            LoadState::Loaded(sessions) => sessions
+                .iter()
+                .find(|session| session.id == session_id)
+                .and_then(|session| session.agent_id.clone()),
+            _ => None,
+        };
+
+        from_session.or_else(|| {
+            self.selected_workspace_data()
+                .and_then(|workspace| workspace.default_agent_id.clone())
+        })
+    }
+
     fn session_action(&mut self, action: SessionAction, cx: &mut Context<Self>) {
         let Some(workspace_id) = self.selected_workspace.clone() else {
             return;
@@ -682,27 +699,27 @@ impl DesktopShell {
 
         let (command, cwd) = match &action {
             SessionAction::Start(id) => {
-                let agent_id = match &self.sessions {
-                    LoadState::Loaded(sessions) => sessions
-                        .iter()
-                        .find(|session| &session.id == id)
-                        .and_then(|session| session.agent_id.clone()),
-                    _ => None,
-                };
-
-                let command = agent_id.and_then(|agent_id| self.agent_command(&agent_id));
-                let cwd = match &self.workspaces {
-                    LoadState::Loaded(workspaces) => workspaces
-                        .iter()
-                        .find(|workspace| workspace.id == workspace_id)
-                        .map(|workspace| workspace.local_path.clone()),
-                    _ => None,
-                };
+                let command = self
+                    .session_agent_id(id)
+                    .and_then(|agent_id| self.agent_command(&agent_id));
+                let cwd = self
+                    .selected_workspace_data()
+                    .map(|workspace| workspace.local_path.clone());
 
                 (command, cwd)
             }
             _ => (None, None),
         };
+
+        if matches!(&action, SessionAction::Start(_)) && (command.is_none() || cwd.is_none()) {
+            self.session_error = Some(
+                "Set a default agent for this workspace before starting a session.".to_string(),
+            );
+            cx.notify();
+            return;
+        }
+
+        self.session_error = None;
 
         let client = self.client.clone();
         let registry = self.registry.clone();
@@ -1362,6 +1379,48 @@ impl DesktopShell {
         .detach();
     }
 
+    fn set_default_agent(&mut self, agent_id: Option<String>, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        self.settings_error = None;
+        self.saving_settings = true;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.set_default_agent(&workspace_id, agent_id.as_deref())?;
+                    let session = client.session();
+                    Ok::<_, ApiError>(load_workspaces(&client, &session))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.saving_settings = false;
+
+                match result {
+                    Ok(LoadState::Loaded(workspaces)) => {
+                        this.workspaces = LoadState::Loaded(workspaces);
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.settings_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.settings_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn submit_create_step(&mut self, cx: &mut Context<Self>) {
         let Some(workspace_id) = self.selected_workspace.clone() else {
             return;
@@ -1690,6 +1749,62 @@ impl DesktopShell {
             "Disabled"
         };
 
+        let mut agent_picker = v_flex().gap_1().child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Set default agent"),
+        );
+
+        match &self.agents {
+            LoadState::Loaded(agents) if agents.is_empty() => {
+                agent_picker = agent_picker.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Register or detect an agent first."),
+                );
+            }
+            LoadState::Loaded(agents) => {
+                for (index, agent) in agents.iter().enumerate() {
+                    let agent_id = agent.id.clone();
+                    let is_default =
+                        workspace.default_agent_id.as_deref() == Some(agent.id.as_str());
+
+                    agent_picker = agent_picker.child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().text_sm().child(agent.name.clone()))
+                            .child(
+                                Button::new(("default-agent", index))
+                                    .small()
+                                    .label(if is_default {
+                                        "Default"
+                                    } else {
+                                        "Set as default"
+                                    })
+                                    .disabled(is_default)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.set_default_agent(Some(agent_id.clone()), cx);
+                                    })),
+                            ),
+                    );
+                }
+
+                if workspace.default_agent_id.is_some() {
+                    agent_picker = agent_picker.child(
+                        Button::new("clear-default-agent")
+                            .small()
+                            .label("Clear default")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_default_agent(None, cx);
+                            })),
+                    );
+                }
+            }
+            _ => {}
+        }
+
         let load = Button::new("load-settings")
             .small()
             .label("Load current values")
@@ -1728,6 +1843,7 @@ impl DesktopShell {
             .child(self.settings_value("Name", name, cx))
             .child(self.settings_value("Local path", local_path, cx))
             .child(self.settings_value("Default agent", default_agent, cx))
+            .child(agent_picker)
             .child(self.settings_value("Safe commands", safe_commands, cx))
             .child(self.settings_value("Ignored paths", ignored_paths, cx))
             .child(self.settings_value("Mobile pairing", mobile_pairing.to_string(), cx))
@@ -2313,9 +2429,18 @@ impl DesktopShell {
             }
         };
 
-        v_flex()
-            .gap_6()
-            .child(content)
+        let mut section = v_flex().gap_6().child(content);
+
+        if let Some(error) = &self.session_error {
+            section = section.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        section
             .child(self.render_session_logs(cx))
             .into_any_element()
     }
