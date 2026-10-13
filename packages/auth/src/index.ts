@@ -26,13 +26,26 @@ const authSchema = {
 export function createAuth() {
   const db = createDb()
 
+  // A `Secure` cookie is only sent back over a secure context, and plain HTTP
+  // only counts as one on localhost. A local-first setup reaches the API over
+  // HTTP on a LAN or Tailscale address, where a `Secure` cookie is stored but
+  // never returned, so the session would silently not stick. HTTPS deployments
+  // keep the strict attributes.
+  const isHttps = env.BETTER_AUTH_URL.startsWith("https")
+
   return betterAuth({
     advanced: {
-      defaultCookieAttributes: {
-        httpOnly: true,
-        sameSite: "none",
-        secure: true,
-      },
+      defaultCookieAttributes: isHttps
+        ? {
+            httpOnly: true,
+            sameSite: "none",
+            secure: true,
+          }
+        : {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: false,
+          },
     },
     baseURL: env.BETTER_AUTH_URL,
     database: drizzleAdapter(db, {
