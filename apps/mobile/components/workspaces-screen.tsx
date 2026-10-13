@@ -4,6 +4,7 @@ import { Button, Spinner } from "heroui-native"
 import { useCallback } from "react"
 import { Pressable, Text, View } from "react-native"
 import { authClient } from "@/lib/auth-client"
+import { monoFont } from "@/lib/fonts"
 import { hiddenNote, mobileWorkspaces } from "@/lib/workspace-filter"
 import { trpc } from "@/utils/trpc"
 
@@ -64,7 +65,10 @@ export function WorkspacesScreen() {
             <Text className="font-geist text-base text-foreground">
               {workspace.name}
             </Text>
-            <Text className="font-geist text-muted text-xs">
+            <Text
+              className="text-muted text-xs"
+              style={{ fontFamily: monoFont }}
+            >
               {workspace.localPath}
             </Text>
           </Pressable>
