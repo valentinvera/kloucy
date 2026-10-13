@@ -1243,53 +1243,6 @@ impl DesktopShell {
             return;
         };
 
-        let mut shipped: Vec<String> = Vec::new();
-        let mut blockers: Vec<String> = Vec::new();
-        let mut done = 0usize;
-        let mut running = 0usize;
-        let mut waiting = 0usize;
-
-        if let LoadState::Loaded(sessions) = &self.sessions {
-            for session in sessions {
-                let label = session
-                    .prompt
-                    .clone()
-                    .unwrap_or_else(|| "Untitled session".to_string());
-                match session.status.as_str() {
-                    "done" => {
-                        done += 1;
-                        shipped.push(label);
-                    }
-                    "running" => running += 1,
-                    "waiting" => {
-                        waiting += 1;
-                        blockers.push(label);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        let mut rejected_changes: Vec<String> = Vec::new();
-        if let LoadState::Loaded(reviews) = &self.reviews {
-            for review in reviews {
-                if review.action == "rejected" {
-                    rejected_changes.push(
-                        review
-                            .artifact_id
-                            .clone()
-                            .unwrap_or_else(|| "Changed files".to_string()),
-                    );
-                }
-            }
-        }
-
-        let summary = format!("{done} done, {running} running, {waiting} waiting");
-        let next_actions = vec![
-            "Review waiting sessions".to_string(),
-            "Start a task from the inbox".to_string(),
-        ];
-
         self.weekly_review = LoadState::Loading;
 
         let client = self.client.clone();
@@ -1297,14 +1250,18 @@ impl DesktopShell {
             let review = cx
                 .background_executor()
                 .spawn(async move {
-                    let _ = client.create_weekly_review(
-                        &workspace_id,
-                        &summary,
-                        &shipped,
-                        &blockers,
-                        &rejected_changes,
-                        &next_actions,
-                    );
+                    if let Ok(draft) = client.generate_weekly_review(&workspace_id) {
+                        let _ = client.create_weekly_review(
+                            &workspace_id,
+                            &draft.summary,
+                            &draft.shipped,
+                            &draft.blockers,
+                            &draft.rejected_changes,
+                            &draft.next_actions,
+                            &draft.risky_patterns,
+                        );
+                    }
+
                     load_weekly_review(&client, &workspace_id)
                 })
                 .await;
