@@ -135,4 +135,22 @@ export const kloucyTokens = {
 
 export type KloucyTokens = typeof kloucyTokens
 
+/**
+ * Native surfaces take a single family name rather than a stack, so code,
+ * terminal output and paths pick the platform's own monospace: Android accepts
+ * `monospace`, iOS and macOS expose Menlo, and react-native-web keeps the CSS
+ * stack from the tokens.
+ */
+export function nativeMonoFontFamily(platform: string): string {
+  if (platform === "android") {
+    return "monospace"
+  }
+
+  if (platform === "web") {
+    return typography.fontFamily.mono
+  }
+
+  return "Menlo"
+}
+
 export { colors, effects, radius, semantic, spacing, typography }
