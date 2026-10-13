@@ -3,8 +3,9 @@ mod detect;
 mod runner;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Entity, FontWeight, Hsla, IntoElement, Render,
-    Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    AnyElement, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight, Hsla,
+    IntoElement, KeyBinding, Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
+    px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _, Theme, ThemeMode,
@@ -24,7 +25,136 @@ use crate::detect::DetectedAgent;
 
 use std::sync::Arc;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+actions!(kloucy, [OpenCommandPalette]);
+
+/// Key context of the signed-in shell, so the palette shortcut works anywhere in it.
+const SHELL_CONTEXT: &str = "KloucyShell";
+
+/// A command offered by the palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaletteCommand {
+    DetectAgents,
+    NewPairingCode,
+    NewWorkspace,
+    RegisterAgent,
+    Section(Section),
+}
+
+struct PaletteEntry {
+    command: PaletteCommand,
+    group: &'static str,
+    keywords: &'static str,
+    label: &'static str,
+}
+
+const PALETTE_ENTRIES: [PaletteEntry; 15] = [
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Home),
+        group: "Go to",
+        keywords: "home overview activity",
+        label: "Open home",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Workspaces),
+        group: "Go to",
+        keywords: "projects",
+        label: "Open workspaces",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Agents),
+        group: "Go to",
+        keywords: "registry providers",
+        label: "Open agents",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Inbox),
+        group: "Go to",
+        keywords: "tasks capture",
+        label: "Open inbox",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Sessions),
+        group: "Go to",
+        keywords: "runs logs",
+        label: "Open sessions",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Reviews),
+        group: "Go to",
+        keywords: "changes approve reject",
+        label: "Open reviews",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Decisions),
+        group: "Go to",
+        keywords: "log history",
+        label: "Open decisions",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Readiness),
+        group: "Go to",
+        keywords: "blockers safety",
+        label: "Open readiness",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::WeeklyReview),
+        group: "Go to",
+        keywords: "summary week",
+        label: "Open weekly review",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Pairing),
+        group: "Go to",
+        keywords: "mobile qr",
+        label: "Open pairing",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Settings),
+        group: "Go to",
+        keywords: "workspace config archive",
+        label: "Open settings",
+    },
+    PaletteEntry {
+        command: PaletteCommand::NewWorkspace,
+        group: "Action",
+        keywords: "project create",
+        label: "New workspace",
+    },
+    PaletteEntry {
+        command: PaletteCommand::RegisterAgent,
+        group: "Action",
+        keywords: "agent add command",
+        label: "Register an agent",
+    },
+    PaletteEntry {
+        command: PaletteCommand::DetectAgents,
+        group: "Action",
+        keywords: "path detect installed",
+        label: "Detect installed agents",
+    },
+    PaletteEntry {
+        command: PaletteCommand::NewPairingCode,
+        group: "Action",
+        keywords: "mobile qr code",
+        label: "New pairing code",
+    },
+];
+
+/// Commands matching a query, by label or keywords.
+fn palette_matches(query: &str) -> Vec<&'static PaletteEntry> {
+    let needle = query.trim().to_lowercase();
+
+    PALETTE_ENTRIES
+        .iter()
+        .filter(|entry| {
+            needle.is_empty()
+                || entry.label.to_lowercase().contains(&needle)
+                || entry.keywords.contains(&needle)
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Section {
     Home,
     Workspaces,
@@ -272,6 +402,9 @@ struct DesktopShell {
     section: Section,
     client: KloucyClient,
     registry: Arc<runner::RunRegistry>,
+    focus_handle: FocusHandle,
+    palette_open: bool,
+    palette_query: Entity<InputState>,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
     agents: LoadState<Vec<Agent>>,
@@ -342,6 +475,8 @@ impl DesktopShell {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let client = KloucyClient::new();
         let registry = runner::RunRegistry::new();
+        let focus_handle = cx.focus_handle();
+        let palette_query = cx.new(|cx| InputState::new(window, cx).placeholder("Search commands"));
         let email = cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
         let password = cx.new(|cx| {
             InputState::new(window, cx)
@@ -418,6 +553,9 @@ impl DesktopShell {
             detected_agents: None,
             client,
             registry,
+            focus_handle,
+            palette_open: false,
+            palette_query,
             agent_command,
             agent_error: None,
             agent_name,
@@ -3300,10 +3438,171 @@ impl DesktopShell {
     }
 
     fn render_shell(&self, cx: &mut Context<Self>) -> AnyElement {
-        h_flex()
+        let mut shell = h_flex()
+            .id("kloucy-shell")
+            .relative()
+            .key_context(SHELL_CONTEXT)
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::on_action_open_palette))
+            .on_action(cx.listener(Self::on_action_close_palette))
             .size_full()
             .child(self.render_nav(cx))
-            .child(self.render_content(cx))
+            .child(self.render_content(cx));
+
+        if self.palette_open {
+            shell = shell.child(self.render_command_palette(cx));
+        }
+
+        shell.into_any_element()
+    }
+
+    fn on_action_open_palette(
+        &mut self,
+        _: &OpenCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.palette_open {
+            self.close_palette(window, cx);
+            return;
+        }
+
+        self.open_palette(window, cx);
+    }
+
+    /// Escape reaches the shell as the focused input's escape action.
+    fn on_action_close_palette(
+        &mut self,
+        _: &gpui_component::input::Escape,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.palette_open {
+            self.close_palette(window, cx);
+        }
+    }
+
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette_open = true;
+
+        self.palette_query
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.palette_query
+            .update(cx, |state, cx| state.focus(window, cx));
+
+        cx.notify();
+    }
+
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette_open = false;
+
+        self.palette_query
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.focus_handle.focus(window);
+
+        cx.notify();
+    }
+
+    fn run_palette_command(
+        &mut self,
+        command: PaletteCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_palette(window, cx);
+
+        match command {
+            PaletteCommand::Section(section) => {
+                self.section = section;
+            }
+            PaletteCommand::NewWorkspace => {
+                self.section = Section::Workspaces;
+                self.show_create_form = true;
+                self.create_error = None;
+            }
+            PaletteCommand::RegisterAgent => {
+                self.section = Section::Agents;
+                self.show_agent_form = true;
+                self.agent_error = None;
+            }
+            PaletteCommand::DetectAgents => {
+                self.section = Section::Agents;
+                self.detect_agents(cx);
+            }
+            PaletteCommand::NewPairingCode => {
+                self.section = Section::Pairing;
+                self.create_pairing(cx);
+            }
+        }
+
+        cx.notify();
+    }
+
+    fn render_command_palette(&self, cx: &mut Context<Self>) -> AnyElement {
+        let query = self.palette_query.read(cx).value().to_string();
+        let matches = palette_matches(&query);
+
+        let mut list = v_flex().gap_1();
+
+        if matches.is_empty() {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No matching commands."),
+            );
+        }
+
+        for (index, entry) in matches.into_iter().enumerate() {
+            let command = entry.command;
+
+            list = list.child(
+                div()
+                    .id(("palette-command", index))
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .hover(|element| element.bg(cx.theme().list_hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.run_palette_command(command, window, cx);
+                    }))
+                    .child(div().text_sm().child(entry.label))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(entry.group),
+                    ),
+            );
+        }
+
+        let panel = v_flex()
+            .id("command-palette")
+            .w(px(560.0))
+            .max_h(px(420.0))
+            .gap_3()
+            .p_3()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .child(Input::new(&self.palette_query))
+            .child(list)
+            .on_click(|_, _, cx| cx.stop_propagation());
+
+        div()
+            .id("command-palette-backdrop")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(120.0))
+            .bg(cx.theme().overlay)
+            .on_click(cx.listener(|this, _, window, cx| this.close_palette(window, cx)))
+            .child(panel)
             .into_any_element()
     }
 
@@ -3378,6 +3677,11 @@ fn main() {
         gpui_component::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
 
+        cx.bind_keys([
+            KeyBinding::new("cmd-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
+            KeyBinding::new("ctrl-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
+        ]);
+
         let bounds = Bounds::centered(None, size(px(1120.0), px(720.0)), cx);
 
         cx.open_window(
@@ -3392,4 +3696,34 @@ fn main() {
         )
         .expect("failed to open Kloucy desktop window");
     });
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_query_lists_every_command() {
+        assert_eq!(palette_matches("").len(), PALETTE_ENTRIES.len());
+        assert_eq!(palette_matches("   ").len(), PALETTE_ENTRIES.len());
+    }
+
+    #[test]
+    fn matches_labels_and_keywords_ignoring_case() {
+        assert!(
+            palette_matches("PAIR")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::NewPairingCode)
+        );
+        assert!(
+            palette_matches("blockers")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::Section(Section::Readiness))
+        );
+    }
+
+    #[test]
+    fn an_unknown_query_matches_nothing() {
+        assert!(palette_matches("zzzz").is_empty());
+    }
 }
