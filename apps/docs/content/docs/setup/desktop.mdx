@@ -1,0 +1,41 @@
+---
+title: Desktop setup
+description: Build and run the Kloucy desktop app against your API.
+icon: Laptop
+---
+
+The desktop app is a GPUI application written in Rust. It talks to the Kloucy API and starts agents on your machine.
+
+## Build
+
+```bash
+cd apps/desktop
+cargo build --release
+```
+
+The binary lands at `apps/desktop/target/release/kloucy-desktop`.
+
+## Run
+
+```bash
+KLOUCY_API_URL=http://localhost:4040 ./target/release/kloucy-desktop
+```
+
+<Callout type="warn" title="API URL">
+`KLOUCY_API_URL` defaults to `http://localhost:3001`. If your API listens elsewhere (the local setup uses `4040`), set it explicitly.
+</Callout>
+
+## Sign in
+
+Use the same account as the web app. Create it once through the API or the web sign-up screen, then sign in from the desktop.
+
+## What you get
+
+- **Home** summarizes what the agents are doing and the next action.
+- **Workspaces** create a workspace and record its intake: project type, safe commands, ignored paths.
+- **Agents** register agents by hand or detect installed CLIs on your `PATH`.
+- **Inbox** captures tasks; **Sessions** run them and stream logs.
+- **Reviews** approve or reject changes and record follow-up conditions.
+- **Readiness** and **Weekly review** summarize progress over time.
+- **Pairing** shows a QR code for the mobile app.
+- **Settings** correct workspace data, set the default agent, and archive a workspace.
