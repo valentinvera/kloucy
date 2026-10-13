@@ -1,4 +1,5 @@
 import { Text, View } from "react-native"
+import { monoFont } from "@/lib/fonts"
 import { type SessionCounts, summarizeCounts } from "@/lib/session-counts"
 
 interface WorkspaceSummaryProps {
@@ -18,7 +19,9 @@ export function WorkspaceSummary({
         {name}
       </Text>
       {localPath ? (
-        <Text className="font-geist text-muted text-xs">{localPath}</Text>
+        <Text className="text-muted text-xs" style={{ fontFamily: monoFont }}>
+          {localPath}
+        </Text>
       ) : null}
       <Text className="font-geist text-foreground text-sm">
         {summarizeCounts(counts)}
