@@ -327,6 +327,21 @@ impl KloucyClient {
         .map(|_| ())
     }
 
+    /// Set, or clear, the default agent of a workspace.
+    pub fn set_default_agent(
+        &self,
+        workspace_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let input = serde_json::json!({
+            "id": workspace_id,
+            "defaultAgentId": agent_id,
+        });
+
+        self.mutation::<Value>("workspaces.update", input)
+            .map(|_| ())
+    }
+
     /// Add a step to a session's timeline.
     pub fn create_session_step(
         &self,
