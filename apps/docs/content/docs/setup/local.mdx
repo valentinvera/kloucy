@@ -1,0 +1,88 @@
+---
+title: Local setup
+description: Install dependencies, configure env, migrate the database, and run Kloucy locally.
+icon: Terminal
+---
+
+Kloucy is a Bun workspace. Install once from the repository root, then run the app you need.
+
+## Requirements
+
+- [Bun](https://bun.sh) for every JavaScript app and package.
+- [Rust](https://rustup.rs) only if you build the desktop app.
+- A Postgres database. Neon works well; `DATABASE_URL` points at it.
+
+On Linux the desktop also needs the usual X11/Wayland development packages that GPUI links against.
+
+## Install
+
+```bash
+bun install
+```
+
+## Environment
+
+Each app reads its own `.env` and validates its keys at startup, so a missing or malformed value fails fast.
+
+`apps/api/.env`
+
+```bash
+HOST=0.0.0.0
+PORT=4040
+BETTER_AUTH_SECRET=at-least-32-characters-long-secret
+BETTER_AUTH_URL=http://localhost:4040
+CORS_ORIGIN=http://localhost:3000
+DATABASE_URL=postgres://user:password@host/database
+```
+
+`apps/web/.env`
+
+```bash
+VITE_API_URL=http://localhost:4040
+VITE_HOST=localhost
+VITE_PORT=3000
+```
+
+`apps/docs/.env`
+
+```bash
+DOCS_HOST=localhost
+DOCS_PORT=4000
+```
+
+`apps/mobile/.env`
+
+```bash
+EXPO_PUBLIC_API_URL=http://localhost:4040
+```
+
+<Callout type="info">
+`CORS_ORIGIN` accepts a comma-separated list. The web origin (for example `http://localhost:3000`) must be in that list, or sign-in fails with an origin error.
+</Callout>
+
+## Database
+
+```bash
+cd packages/db
+bun run db:migrate
+```
+
+Use `bun run db:generate` to write migrations from the schema and `bun run db:studio` to open Drizzle Studio.
+
+## Run
+
+```bash
+bun run dev:api
+bun run dev:web
+bun run dev:docs
+bun run dev:mobile
+```
+
+The API serves everything under `/api`: tRPC at `/api/trpc`, auth at `/api/auth`.
+
+## Checks
+
+```bash
+bun run check
+bunx turbo run check-types --filter=@kloucy/api... --filter=@kloucy/docs... --filter=@kloucy/mobile... --filter=@kloucy/web...
+```

@@ -1,0 +1,33 @@
+---
+title: Security model
+description: What runs locally, what needs your approval, and how sessions are protected.
+icon: ShieldCheck
+---
+
+## Local-first
+
+Agent processes start on your machine, in the local path of the workspace you selected. Kloucy orchestrates those processes; it does not run your code anywhere else.
+
+## Explicit actions only
+
+- Detection resolves executables and never runs them.
+- Registering an agent is a manual step: you review the command before it is stored.
+- Starting a session is an explicit action.
+- Stopping a session terminates the process group, so child processes stop too.
+
+Workspaces also record **safe commands** and **ignored paths**, so the intent of a project is written down instead of implied.
+
+## API protections
+
+- Every request goes through `/api`.
+- tRPC procedures that touch your data require an authenticated session through a protected middleware.
+- CORS is limited to the origins in `CORS_ORIGIN`, plus the native app schemes.
+- Sign-in uses Better Auth, with sessions stored in your database.
+
+## Secrets
+
+`BETTER_AUTH_SECRET` and `DATABASE_URL` live in `apps/api/.env`, which is not committed. Environment values are validated at startup, so the process refuses to run with a missing or weak secret.
+
+## Data
+
+Kloucy stores workspaces, tasks, sessions, session logs, reviews, decisions, readiness snapshots, weekly reviews, and pairing sessions in your own Postgres database.

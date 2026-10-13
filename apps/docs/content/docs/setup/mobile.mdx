@@ -1,0 +1,34 @@
+---
+title: Mobile pairing
+description: Pair a phone with a QR code and supervise sessions from mobile.
+icon: Smartphone
+---
+
+The mobile app is an Expo/React Native app. It continues and supervises work you started on the desktop.
+
+## Run
+
+```bash
+bun run dev:mobile
+```
+
+Set `EXPO_PUBLIC_API_URL` in `apps/mobile/.env` to the API reachable from the phone. `localhost` only works for a simulator on the same machine; on a real device use your machine's LAN address.
+
+## Sign in
+
+Pairing requires a signed-in mobile session, so sign in first with the account you use on the desktop.
+
+## Pair with a QR code
+
+1. On the desktop, open **Pairing** and choose **New pairing code**.
+2. The desktop creates a pairing session and renders a QR code with a `kloucy://pair?token=...` URL.
+3. Scan the code with the phone. The app opens the pairing screen and claims the token.
+4. The desktop shows the pairing status as `claimed`.
+
+<Callout type="info">
+Pairing codes are single-use and expire. If a claim fails, create a new code from the desktop.
+</Callout>
+
+## Per workspace
+
+Workspaces carry a `mobilePairingEnabled` flag, visible in desktop **Settings**.

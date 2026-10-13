@@ -1,16 +1,54 @@
 ---
-title: Hello World
-description: Kloucy documentation.
+title: Kloucy
+description: Desktop-first agent orchestration for local projects.
 icon: Rocket
 ---
 
-Kloucy documentation is ready.
+Kloucy keeps local coding agents visible and under your control. You describe the work, Kloucy runs your agents in a local project, and you review what changed.
 
-## Getting Started
+Everything runs next to your code: agent processes start on your machine, in the workspace directory you picked.
 
-Use this space to document the MVP, local setup, architecture decisions, and agent workflows as they become concrete.
+## Surfaces
+
+- **Desktop** is the command center: workspaces, agents, sessions, reviews, readiness, pairing.
+- **Mobile** is the supervision surface: check sessions, send short follow-up instructions, approve or reject changes.
+- **Web** is the public product and account surface.
+- **Docs** (this site) are the setup and trust surface.
+
+## Start here
 
 <Cards>
-  <Card title="TanStack Start" href="https://tanstack.com/start" />
-  <Card title="Fumadocs" href="https://fumadocs.dev" />
+  <Card
+    title="Local setup"
+    href="/docs/setup/local"
+    description="Install dependencies, configure env, migrate the database, run the apps."
+  />
+  <Card
+    title="Desktop setup"
+    href="/docs/setup/desktop"
+    description="Build and run the desktop app against your API."
+  />
+  <Card
+    title="Mobile pairing"
+    href="/docs/setup/mobile"
+    description="Pair a phone with a QR code."
+  />
+</Cards>
+
+<Cards>
+  <Card
+    title="Supported agents"
+    href="/docs/agents"
+    description="Which CLIs Kloucy detects, and how to register them."
+  />
+  <Card
+    title="Security model"
+    href="/docs/security"
+    description="What runs locally and what needs your approval."
+  />
+  <Card
+    title="Troubleshooting"
+    href="/docs/troubleshooting"
+    description="Common setup failures and how to fix them."
+  />
 </Cards>

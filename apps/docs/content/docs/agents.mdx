@@ -1,0 +1,45 @@
+---
+title: Supported agents
+description: Which agent CLIs Kloucy detects, and how to register the ones it does not.
+icon: Bot
+---
+
+Kloucy orchestrates agent CLIs you already have. It does not ship an agent of its own.
+
+## Detection
+
+Desktop **Agents → Detect installed agents** scans your `PATH` for these binaries:
+
+| Provider       | Binary         |
+| -------------- | -------------- |
+| `claude-code`  | `claude`       |
+| `codex`        | `codex`        |
+| `cursor-agent` | `cursor-agent` |
+| `gemini`       | `gemini`       |
+| `goose`        | `goose`        |
+| `aider`        | `aider`        |
+| `opencode`     | `opencode`     |
+
+Detection only resolves executables. It never runs them, so nothing starts before you register it.
+
+## Registering
+
+Choose **Add** next to a detected agent to prefill the form, or create one by hand:
+
+- **Name** is how the agent shows up in Kloucy.
+- **Provider** groups agents by kind.
+- **Command** is what Kloucy runs for a session.
+
+<Callout type="warn" title="Review the command">
+Kloucy runs the command with `sh -c` inside the workspace's local path. A detected executable path is only a starting point; add the flags your agent needs for a non-interactive run.
+</Callout>
+
+## Running a session
+
+A session starts the command in the workspace directory and streams stdout and stderr into the session log. When the run ends and `git status` reports changes, Kloucy creates a **Review**.
+
+**Stop** terminates the agent process group, so anything the agent spawned goes down with it.
+
+## Default agent
+
+Each workspace can name a default agent in **Settings**. Sessions with no agent of their own fall back to it, and a session cannot start without one.
