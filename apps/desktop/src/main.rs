@@ -2101,6 +2101,16 @@ impl DesktopShell {
             self.intake_runtime
                 .update(cx, |state, cx| state.set_value(runtime, window, cx));
         }
+        if !profile.safe_commands.is_empty() {
+            let commands = profile.safe_commands.join(", ");
+            self.intake_safe_commands
+                .update(cx, |state, cx| state.set_value(commands, window, cx));
+        }
+        if !profile.ignored_paths.is_empty() {
+            let paths = profile.ignored_paths.join(", ");
+            self.intake_ignored_paths
+                .update(cx, |state, cx| state.set_value(paths, window, cx));
+        }
 
         cx.notify();
     }
