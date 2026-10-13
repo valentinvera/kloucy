@@ -49,41 +49,150 @@ const KNOWN_AGENTS: [KnownAgent; 7] = [
 /// A project profile guessed from the entries of a workspace directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectProfile {
+    pub ignored_paths: Vec<String>,
     pub package_manager: Option<String>,
     pub project_type: Option<String>,
     pub runtime: Option<String>,
+    pub safe_commands: Vec<String>,
+}
+
+/// What a project signal says about the workspace it was found in.
+struct ProjectSignal {
+    file: &'static str,
+    ignored_paths: &'static [&'static str],
+    package_manager: &'static str,
+    project_type: &'static str,
+    runtime: &'static str,
+    safe_commands: &'static [&'static str],
 }
 
 /// Signals checked in order, so a repository with several ecosystems resolves to
-/// the first one listed here.
-const PROJECT_SIGNALS: [(&str, &str, &str, &str); 13] = [
-    // file, project type, package manager, runtime
-    ("bun.lock", "node", "bun", "bun"),
-    ("bun.lockb", "node", "bun", "bun"),
-    ("pnpm-lock.yaml", "node", "pnpm", "node"),
-    ("yarn.lock", "node", "yarn", "node"),
-    ("package-lock.json", "node", "npm", "node"),
-    ("Cargo.toml", "rust", "cargo", "rust"),
-    ("go.mod", "go", "go", "go"),
-    ("uv.lock", "python", "uv", "python"),
-    ("poetry.lock", "python", "poetry", "python"),
-    ("Pipfile.lock", "python", "pipenv", "python"),
-    ("requirements.txt", "python", "pip", "python"),
-    ("Gemfile", "ruby", "bundler", "ruby"),
-    ("composer.json", "php", "composer", "php"),
+/// the first one listed here. The commands and paths are suggestions the user
+/// reviews in the intake, not a policy Kloucy enforces.
+const PROJECT_SIGNALS: [ProjectSignal; 13] = [
+    ProjectSignal {
+        file: "bun.lock",
+        ignored_paths: &["node_modules", "dist"],
+        package_manager: "bun",
+        project_type: "node",
+        runtime: "bun",
+        safe_commands: &["bun test", "bun run check"],
+    },
+    ProjectSignal {
+        file: "bun.lockb",
+        ignored_paths: &["node_modules", "dist"],
+        package_manager: "bun",
+        project_type: "node",
+        runtime: "bun",
+        safe_commands: &["bun test", "bun run check"],
+    },
+    ProjectSignal {
+        file: "pnpm-lock.yaml",
+        ignored_paths: &["node_modules", "dist"],
+        package_manager: "pnpm",
+        project_type: "node",
+        runtime: "node",
+        safe_commands: &["pnpm test"],
+    },
+    ProjectSignal {
+        file: "yarn.lock",
+        ignored_paths: &["node_modules", "dist"],
+        package_manager: "yarn",
+        project_type: "node",
+        runtime: "node",
+        safe_commands: &["yarn test"],
+    },
+    ProjectSignal {
+        file: "package-lock.json",
+        ignored_paths: &["node_modules", "dist"],
+        package_manager: "npm",
+        project_type: "node",
+        runtime: "node",
+        safe_commands: &["npm test"],
+    },
+    ProjectSignal {
+        file: "Cargo.toml",
+        ignored_paths: &["target"],
+        package_manager: "cargo",
+        project_type: "rust",
+        runtime: "rust",
+        safe_commands: &["cargo test", "cargo build", "cargo fmt"],
+    },
+    ProjectSignal {
+        file: "go.mod",
+        ignored_paths: &["bin"],
+        package_manager: "go",
+        project_type: "go",
+        runtime: "go",
+        safe_commands: &["go test ./...", "go build ./..."],
+    },
+    ProjectSignal {
+        file: "uv.lock",
+        ignored_paths: &[".venv", "__pycache__"],
+        package_manager: "uv",
+        project_type: "python",
+        runtime: "python",
+        safe_commands: &["pytest"],
+    },
+    ProjectSignal {
+        file: "poetry.lock",
+        ignored_paths: &[".venv", "__pycache__"],
+        package_manager: "poetry",
+        project_type: "python",
+        runtime: "python",
+        safe_commands: &["poetry run pytest"],
+    },
+    ProjectSignal {
+        file: "Pipfile.lock",
+        ignored_paths: &[".venv", "__pycache__"],
+        package_manager: "pipenv",
+        project_type: "python",
+        runtime: "python",
+        safe_commands: &["pipenv run pytest"],
+    },
+    ProjectSignal {
+        file: "requirements.txt",
+        ignored_paths: &[".venv", "__pycache__"],
+        package_manager: "pip",
+        project_type: "python",
+        runtime: "python",
+        safe_commands: &["pytest"],
+    },
+    ProjectSignal {
+        file: "Gemfile",
+        ignored_paths: &["vendor/bundle", "tmp"],
+        package_manager: "bundler",
+        project_type: "ruby",
+        runtime: "ruby",
+        safe_commands: &["bundle exec rspec"],
+    },
+    ProjectSignal {
+        file: "composer.json",
+        ignored_paths: &["vendor"],
+        package_manager: "composer",
+        project_type: "php",
+        runtime: "php",
+        safe_commands: &["composer test"],
+    },
 ];
+
+fn owned(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
+}
 
 /// Guess a project profile from directory entry names. Reading names only is
 /// enough; nothing in the project is executed.
 pub fn detect_project(files: &[String]) -> Option<ProjectProfile> {
-    let (_, project_type, package_manager, runtime) = PROJECT_SIGNALS
+    let signal = PROJECT_SIGNALS
         .iter()
-        .find(|(file, ..)| files.iter().any(|candidate| candidate == file))?;
+        .find(|signal| files.iter().any(|candidate| candidate == signal.file))?;
 
     Some(ProjectProfile {
-        package_manager: Some((*package_manager).to_string()),
-        project_type: Some((*project_type).to_string()),
-        runtime: Some((*runtime).to_string()),
+        ignored_paths: owned(signal.ignored_paths),
+        package_manager: Some(signal.package_manager.to_string()),
+        project_type: Some(signal.project_type.to_string()),
+        runtime: Some(signal.runtime.to_string()),
+        safe_commands: owned(signal.safe_commands),
     })
 }
 
@@ -250,6 +359,17 @@ mod tests {
         assert_eq!(profile.package_manager.as_deref(), Some("cargo"));
         assert!(detect_project(&["README.md".to_string()]).is_none());
         assert!(detect_project(&[]).is_none());
+    }
+
+    #[test]
+    fn suggests_safe_commands_and_ignored_paths() {
+        let profile = detect_project(&["bun.lock".to_string()]).expect("a bun project");
+
+        let commands: Vec<&str> = profile.safe_commands.iter().map(String::as_str).collect();
+        let paths: Vec<&str> = profile.ignored_paths.iter().map(String::as_str).collect();
+
+        assert_eq!(commands, vec!["bun test", "bun run check"]);
+        assert_eq!(paths, vec!["node_modules", "dist"]);
     }
 
     #[test]
