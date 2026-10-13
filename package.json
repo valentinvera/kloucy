@@ -54,7 +54,8 @@
     "fix": "ultracite fix",
     "test:e2e": "bun scripts/playwright/run.ts test",
     "test:e2e:headed": "bun scripts/playwright/run.ts test --headed",
-    "test:e2e:ui": "bun scripts/playwright/run.ts test --ui"
+    "test:e2e:ui": "bun scripts/playwright/run.ts test --ui",
+    "test:unit": "bun test tests/unit"
   },
   "dependencies": {
     "@kloucy/env": "workspace:*",

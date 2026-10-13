@@ -26,6 +26,9 @@ jobs:
       - name: Format and lint
         run: bun run check
 
+      - name: Unit tests
+        run: bun run test:unit
+
       # @kloucy/docs is excluded: its check-types needs the generated
       # src/routeTree.gen.ts (gitignored, produced by the Vite router plugin),
       # which is not available in a fresh checkout.
