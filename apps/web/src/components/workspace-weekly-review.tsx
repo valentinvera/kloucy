@@ -1,6 +1,6 @@
 import { Button } from "@kloucy/ui/components/button"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useCallback } from "react"
+import { useCallback, useState } from "react"
 import { useTRPC } from "@/utils/trpc"
 
 interface WorkspaceWeeklyReviewProps {
@@ -37,9 +37,8 @@ export function WorkspaceWeeklyReview({
 }: WorkspaceWeeklyReviewProps) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
+  const [isGenerating, setIsGenerating] = useState(false)
 
-  const sessions = useQuery(trpc.sessions.list.queryOptions({ workspaceId }))
-  const reviews = useQuery(trpc.reviews.list.queryOptions({ workspaceId }))
   const latest = useQuery(
     trpc.weeklyReviews.latest.queryOptions({ workspaceId })
   )
@@ -54,30 +53,21 @@ export function WorkspaceWeeklyReview({
     })
   )
 
-  const handleGenerate = useCallback(() => {
-    const sessionList = sessions.data ?? []
-    const reviewList = reviews.data ?? []
+  const handleGenerate = useCallback(async () => {
+    setIsGenerating(true)
 
-    const done = sessionList.filter((session) => session.status === "done")
-    const running = sessionList.filter(
-      (session) => session.status === "running"
-    )
-    const waiting = sessionList.filter(
-      (session) => session.status === "waiting"
-    )
+    try {
+      const draft = await queryClient.fetchQuery(
+        trpc.weeklyReviews.generate.queryOptions({ workspaceId })
+      )
 
-    createReview.mutate({
-      blockers: waiting.map((session) => session.prompt ?? "Untitled session"),
-      nextActions: ["Review waiting sessions", "Start a task from the inbox"],
-      rejectedChanges: reviewList
-        .filter((entry) => entry.action === "rejected")
-        .map((entry) => entry.artifactId ?? "Changed files"),
-      shipped: done.map((session) => session.prompt ?? "Untitled session"),
-      summary: `${done.length} done, ${running.length} running, ${waiting.length} waiting`,
-      workspaceId,
-    })
-  }, [createReview, reviews.data, sessions.data, workspaceId])
+      await createReview.mutateAsync({ ...draft, workspaceId })
+    } finally {
+      setIsGenerating(false)
+    }
+  }, [createReview, queryClient, trpc, workspaceId])
 
+  const isPending = isGenerating || createReview.isPending
   const review = latest.data
 
   return (
@@ -85,12 +75,12 @@ export function WorkspaceWeeklyReview({
       <div className="flex items-center justify-between gap-4">
         <h2 className="font-medium text-medium">Weekly review</h2>
         <Button
-          disabled={createReview.isPending}
+          disabled={isPending}
           onClick={handleGenerate}
           size="sm"
           variant="secondary"
         >
-          {createReview.isPending ? "Generating…" : "Generate review"}
+          {isPending ? "Generating…" : "Generate review"}
         </Button>
       </div>
 
@@ -121,6 +111,7 @@ export function WorkspaceWeeklyReview({
               items={review.rejectedChanges}
               title="Rejected changes"
             />
+            <ReviewItems items={review.riskyPatterns} title="Risky patterns" />
             <ReviewItems items={review.nextActions} title="Next actions" />
           </div>
         ) : null}
