@@ -286,13 +286,25 @@ impl KloucyClient {
         &self,
         workspace_id: &str,
         project_type: &str,
+        package_manager: &str,
+        runtime: &str,
         safe_commands: &[String],
         ignored_paths: &[String],
+        mobile_pairing: bool,
     ) -> Result<(), ApiError> {
-        let mut input = serde_json::json!({ "id": workspace_id });
+        let mut input = serde_json::json!({
+            "id": workspace_id,
+            "mobilePairingEnabled": mobile_pairing,
+        });
 
         if !project_type.is_empty() {
             input["projectType"] = Value::String(project_type.to_string());
+        }
+        if !package_manager.is_empty() {
+            input["packageManager"] = Value::String(package_manager.to_string());
+        }
+        if !runtime.is_empty() {
+            input["runtime"] = Value::String(runtime.to_string());
         }
         if !safe_commands.is_empty() {
             input["safeCommands"] = serde_json::json!(safe_commands);
