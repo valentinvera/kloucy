@@ -19,7 +19,7 @@ Workspaces also record **safe commands** and **ignored paths**, so the intent of
 
 ## Safety mode
 
-A workspace is either `open` or `guarded`, set in desktop **Settings** or during intake:
+A workspace is either `open` or `guarded`, set in desktop **Settings**, during desktop or web intake, or from the mobile workspace screen:
 
 - **Open** runs the agent command you registered.
 - **Guarded** only starts a command when a safe command equals it or is a prefix of it. Listing `codex` allows `codex exec --full-auto` and refuses anything else, including `aider --yes`.
