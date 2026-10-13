@@ -500,6 +500,8 @@ struct DesktopShell {
     signing_in: bool,
     sign_in_error: Option<String>,
     session_error: Option<String>,
+    blocked_command: Option<String>,
+    session_notice: Option<String>,
     review_reason_for: Option<(String, ReviewReason)>,
     review_reason: Entity<InputState>,
     saving_review_reason: bool,
@@ -656,6 +658,8 @@ impl DesktopShell {
             show_task_form: false,
             sign_in_error: None,
             session_error: None,
+            blocked_command: None,
+            session_notice: None,
             review_reason_for: None,
             review_reason,
             saving_review_reason: false,
@@ -1063,9 +1067,9 @@ impl DesktopShell {
 
             if let Some(command) = command.as_deref() {
                 if !safety::command_allowed(&mode, command, &safe_commands) {
-                    self.session_error = Some(format!(
-                        "This workspace is guarded and \"{command}\" is not in its safe commands. Add it in Settings, or allow any command."
-                    ));
+                    self.blocked_command = Some(command.to_string());
+                    self.session_error = None;
+                    self.session_notice = None;
                     cx.notify();
                     return;
                 }
@@ -1073,6 +1077,8 @@ impl DesktopShell {
         }
 
         self.session_error = None;
+        self.blocked_command = None;
+        self.session_notice = None;
 
         let client = self.client.clone();
         let registry = self.registry.clone();
@@ -1766,6 +1772,58 @@ impl DesktopShell {
                     Ok(LoadState::Loading) => {}
                     Err(error) => {
                         this.settings_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn allow_blocked_command(&mut self, cx: &mut Context<Self>) {
+        let (Some(workspace_id), Some(command)) = (
+            self.selected_workspace.clone(),
+            self.blocked_command.clone(),
+        ) else {
+            return;
+        };
+
+        let safe_commands = self
+            .selected_workspace_data()
+            .and_then(|workspace| workspace.safe_commands.clone())
+            .unwrap_or_default();
+        let next = safety::with_safe_command(&safe_commands, &command);
+
+        self.blocked_command = None;
+        self.session_error = None;
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.set_safe_commands(&workspace_id, &next)?;
+                    let session = client.session();
+                    Ok::<_, ApiError>(load_workspaces(&client, &session))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(LoadState::Loaded(workspaces)) => {
+                        this.workspaces = LoadState::Loaded(workspaces);
+                        this.session_notice = Some(format!(
+                            "Added \"{command}\" to this workspace's safe commands. Press Start again."
+                        ));
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.session_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.session_error = Some(error_message(&error));
                     }
                 }
 
@@ -3022,6 +3080,36 @@ impl DesktopShell {
         };
 
         let mut section = v_flex().gap_6().child(content);
+
+        if let Some(command) = &self.blocked_command {
+            let allow = Button::new("allow-blocked-command")
+                .small()
+                .label("Add to safe commands")
+                .on_click(cx.listener(|this, _, _, cx| this.allow_blocked_command(cx)));
+
+            section = section.child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().danger_foreground)
+                            .child(format!(
+                                "This workspace is guarded, so \"{command}\" is not allowed to start. Add it to the safe commands, or allow any command in Settings."
+                            )),
+                    )
+                    .child(allow),
+            );
+        }
+
+        if let Some(notice) = &self.session_notice {
+            section = section.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().success_foreground)
+                    .child(notice.clone()),
+            );
+        }
 
         if let Some(error) = &self.session_error {
             section = section.child(

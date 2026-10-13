@@ -24,7 +24,7 @@ A workspace is either `open` or `guarded`, set in desktop **Settings**, during d
 - **Open** runs the agent command you registered.
 - **Guarded** only starts a command when a safe command equals it or is a prefix of it. Listing `codex` allows `codex exec --full-auto` and refuses anything else, including `aider --yes`.
 
-When a guarded workspace refuses a command, the desktop says so and points at Settings: add the command to the workspace's safe commands, or switch the workspace back to open. The check runs before the session is started, so a refused command never reaches your machine.
+When a guarded workspace refuses a command, the desktop says so and offers **Add to safe commands**, which appends the command to the list and asks you to start again; Settings can also switch the workspace back to open. The check runs before the session is started, so a refused command never reaches your machine.
 
 ## API protections
 
