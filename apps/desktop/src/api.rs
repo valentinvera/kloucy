@@ -19,6 +19,7 @@ pub struct Workspace {
     pub mobile_pairing_enabled: bool,
     pub name: String,
     pub safe_commands: Option<Vec<String>>,
+    pub safety_mode: String,
     pub stage: String,
 }
 
@@ -310,10 +311,12 @@ impl KloucyClient {
         safe_commands: &[String],
         ignored_paths: &[String],
         mobile_pairing: bool,
+        safety_mode: &str,
     ) -> Result<(), ApiError> {
         let mut input = serde_json::json!({
             "id": workspace_id,
             "mobilePairingEnabled": mobile_pairing,
+            "safetyMode": safety_mode,
         });
 
         if !project_type.is_empty() {
@@ -393,6 +396,17 @@ impl KloucyClient {
         let input = serde_json::json!({
             "id": workspace_id,
             "mobilePairingEnabled": enabled,
+        });
+
+        self.mutation::<Value>("workspaces.update", input)
+            .map(|_| ())
+    }
+
+    /// Set the safety mode of a workspace.
+    pub fn set_safety_mode(&self, workspace_id: &str, mode: &str) -> Result<(), ApiError> {
+        let input = serde_json::json!({
+            "id": workspace_id,
+            "safetyMode": mode,
         });
 
         self.mutation::<Value>("workspaces.update", input)
