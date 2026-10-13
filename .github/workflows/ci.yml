@@ -31,3 +31,49 @@ jobs:
       # which is not available in a fresh checkout.
       - name: Type check
         run: bunx turbo run check-types --filter=@kloucy/api... --filter=@kloucy/mobile... --filter=@kloucy/web...
+
+  desktop:
+    name: Desktop (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      # GTK/X11/Wayland and friends, as required by GPUI.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            clang \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libssl-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libzstd-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Check
+        run: cargo check
+
+      - name: Test
+        run: cargo test
