@@ -4,6 +4,7 @@ import { Button, Spinner } from "heroui-native"
 import { useCallback } from "react"
 import { Pressable, Text, View } from "react-native"
 import { authClient } from "@/lib/auth-client"
+import { hiddenNote, mobileWorkspaces } from "@/lib/workspace-filter"
 import { trpc } from "@/utils/trpc"
 
 export function WorkspacesScreen() {
@@ -14,6 +15,9 @@ export function WorkspacesScreen() {
   const handleSignOut = useCallback(async () => {
     await authClient.signOut()
   }, [])
+
+  const { hidden, visible } = mobileWorkspaces(data ?? [])
+  const note = hiddenNote(hidden)
 
   return (
     <View className="flex-1 gap-4 bg-background px-6 pt-16">
@@ -32,18 +36,22 @@ export function WorkspacesScreen() {
         <Text className="font-geist text-danger text-sm">{error.message}</Text>
       ) : null}
 
-      {data && data.length === 0 ? (
+      {data && visible.length === 0 ? (
         <View className="gap-1">
           <Text className="font-geist text-base text-foreground">
-            Open your first workspace.
+            {hidden > 0
+              ? "Nothing is shared with mobile."
+              : "Open your first workspace."}
           </Text>
           <Text className="font-geist text-muted text-sm">
-            Create a workspace on desktop to supervise it here.
+            {hidden > 0
+              ? "Enable mobile supervision for a workspace in desktop Settings."
+              : "Create a workspace on desktop to supervise it here."}
           </Text>
         </View>
       ) : null}
 
-      {data?.map((workspace) => (
+      {visible.map((workspace) => (
         <Link
           asChild
           href={{
@@ -62,6 +70,10 @@ export function WorkspacesScreen() {
           </Pressable>
         </Link>
       ))}
+
+      {note ? (
+        <Text className="font-geist text-muted text-xs">{note}</Text>
+      ) : null}
     </View>
   )
 }
