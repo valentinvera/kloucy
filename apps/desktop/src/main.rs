@@ -1,6 +1,7 @@
 mod api;
 mod detect;
 mod runner;
+mod safety;
 
 use gpui::{
     AnyElement, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight, Hsla,
@@ -473,6 +474,7 @@ struct DesktopShell {
     intake_safe_commands: Entity<InputState>,
     intake_ignored_paths: Entity<InputState>,
     intake_mobile_pairing: bool,
+    intake_safety_mode: String,
     settings_name: Entity<InputState>,
     settings_path: Entity<InputState>,
     settings_safe_commands: Entity<InputState>,
@@ -610,6 +612,7 @@ impl DesktopShell {
             intake_package_manager,
             intake_runtime,
             intake_mobile_pairing: false,
+            intake_safety_mode: "open".to_string(),
             intake_safe_commands,
             archiving_workspace: false,
             saving_settings: false,
@@ -1035,12 +1038,32 @@ impl DesktopShell {
             _ => (None, None),
         };
 
-        if matches!(&action, SessionAction::Start(_)) && (command.is_none() || cwd.is_none()) {
-            self.session_error = Some(
-                "Set a default agent for this workspace before starting a session.".to_string(),
-            );
-            cx.notify();
-            return;
+        if matches!(&action, SessionAction::Start(_)) {
+            if command.is_none() || cwd.is_none() {
+                self.session_error = Some(
+                    "Set a default agent for this workspace before starting a session.".to_string(),
+                );
+                cx.notify();
+                return;
+            }
+
+            let workspace = self.selected_workspace_data();
+            let mode = workspace
+                .map(|workspace| workspace.safety_mode.clone())
+                .unwrap_or_default();
+            let safe_commands = workspace
+                .and_then(|workspace| workspace.safe_commands.clone())
+                .unwrap_or_default();
+
+            if let Some(command) = command.as_deref() {
+                if !safety::command_allowed(&mode, command, &safe_commands) {
+                    self.session_error = Some(format!(
+                        "This workspace is guarded and \"{command}\" is not in its safe commands. Add it in Settings, or allow any command."
+                    ));
+                    cx.notify();
+                    return;
+                }
+            }
         }
 
         self.session_error = None;
@@ -1513,6 +1536,7 @@ impl DesktopShell {
         let safe = self.intake_safe_commands.read(cx).value().to_string();
         let ignored = self.intake_ignored_paths.read(cx).value().to_string();
         let mobile_pairing = self.intake_mobile_pairing;
+        let safety_mode = self.intake_safety_mode.clone();
 
         let safe_commands = split_list(&safe);
         let ignored_paths = split_list(&ignored);
@@ -1533,6 +1557,7 @@ impl DesktopShell {
                         &safe_commands,
                         &ignored_paths,
                         mobile_pairing,
+                        &safety_mode,
                     )?;
                     let session = client.session();
                     Ok::<_, ApiError>(load_workspaces(&client, &session))
@@ -1717,6 +1742,49 @@ impl DesktopShell {
                 .background_executor()
                 .spawn(async move {
                     client.set_default_agent(&workspace_id, agent_id.as_deref())?;
+                    let session = client.session();
+                    Ok::<_, ApiError>(load_workspaces(&client, &session))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.saving_settings = false;
+
+                match result {
+                    Ok(LoadState::Loaded(workspaces)) => {
+                        this.workspaces = LoadState::Loaded(workspaces);
+                    }
+                    Ok(LoadState::Failed(message)) => {
+                        this.settings_error = Some(message);
+                    }
+                    Ok(LoadState::Loading) => {}
+                    Err(error) => {
+                        this.settings_error = Some(error_message(&error));
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn set_safety_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        self.settings_error = None;
+        self.saving_settings = true;
+
+        let mode = mode.to_string();
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    client.set_safety_mode(&workspace_id, &mode)?;
                     let session = client.session();
                     Ok::<_, ApiError>(load_workspaces(&client, &session))
                 })
@@ -2040,6 +2108,22 @@ impl DesktopShell {
                 cx.notify();
             }));
 
+        let safety_mode = Button::new("intake-safety-mode")
+            .small()
+            .label(if self.intake_safety_mode == "guarded" {
+                "Guarded: safe commands only"
+            } else {
+                "Open: any command"
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.intake_safety_mode = if this.intake_safety_mode == "guarded" {
+                    "open".to_string()
+                } else {
+                    "guarded".to_string()
+                };
+                cx.notify();
+            }));
+
         let mut form = v_flex()
             .w(px(360.0))
             .gap_3()
@@ -2061,6 +2145,7 @@ impl DesktopShell {
                     .child(detect)
                     .child(mobile_pairing),
             )
+            .child(safety_mode)
             .child(submit);
 
         if let Some(error) = &self.intake_error {
@@ -2181,6 +2266,12 @@ impl DesktopShell {
             "Desktop only"
         };
         let mobile_pairing_enabled = workspace.mobile_pairing_enabled;
+        let safety_mode = if workspace.safety_mode == "guarded" {
+            "Guarded"
+        } else {
+            "Open"
+        };
+        let safety_mode_value = workspace.safety_mode.clone();
 
         let mut agent_picker = v_flex().gap_1().child(
             div()
@@ -2243,6 +2334,24 @@ impl DesktopShell {
             .label("Load current values")
             .on_click(cx.listener(|this, _, window, cx| this.load_settings_values(window, cx)));
 
+        let safety_mode_toggle = Button::new("toggle-safety-mode")
+            .small()
+            .label(if safety_mode_value == "guarded" {
+                "Allow any command"
+            } else {
+                "Guard commands"
+            })
+            .disabled(self.saving_settings)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let next = if safety_mode_value == "guarded" {
+                    "open"
+                } else {
+                    "guarded"
+                };
+
+                this.set_safety_mode(next, cx);
+            }));
+
         let mobile_pairing_toggle = Button::new("toggle-mobile-pairing")
             .small()
             .label(if mobile_pairing_enabled {
@@ -2297,6 +2406,13 @@ impl DesktopShell {
                     .items_center()
                     .child(self.settings_value("Mobile pairing", mobile_pairing.to_string(), cx))
                     .child(mobile_pairing_toggle),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(self.settings_value("Safety mode", safety_mode.to_string(), cx))
+                    .child(safety_mode_toggle),
             )
             .child(load)
             .child(Input::new(&self.settings_name))

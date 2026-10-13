@@ -17,6 +17,15 @@ Agent processes start on your machine, in the local path of the workspace you se
 
 Workspaces also record **safe commands** and **ignored paths**, so the intent of a project is written down instead of implied.
 
+## Safety mode
+
+A workspace is either `open` or `guarded`, set in desktop **Settings** or during intake:
+
+- **Open** runs the agent command you registered.
+- **Guarded** only starts a command when a safe command equals it or is a prefix of it. Listing `codex` allows `codex exec --full-auto` and refuses anything else, including `aider --yes`.
+
+When a guarded workspace refuses a command, the desktop says so and points at Settings: add the command to the workspace's safe commands, or switch the workspace back to open. The check runs before the session is started, so a refused command never reaches your machine.
+
 ## API protections
 
 - Every request goes through `/api`.

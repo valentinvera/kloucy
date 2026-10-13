@@ -1,0 +1,70 @@
+//! The workspace safety rule that decides whether an agent command may start.
+
+/// Whether `command` may run under `mode`, given the workspace's safe commands.
+///
+/// `open` runs anything. `guarded` only allows a command when a safe command
+/// equals it or is a prefix of it, so listing `codex` allows
+/// `codex exec --full-auto` but not `codexfoo`.
+pub fn command_allowed(mode: &str, command: &str, safe_commands: &[String]) -> bool {
+    if mode != "guarded" {
+        return true;
+    }
+
+    let command = command.trim();
+
+    if command.is_empty() {
+        return false;
+    }
+
+    safe_commands.iter().any(|allowed| {
+        let allowed = allowed.trim();
+        !allowed.is_empty() && (command == allowed || command.starts_with(&format!("{allowed} ")))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowed(commands: &[&str]) -> Vec<String> {
+        commands
+            .iter()
+            .map(|command| (*command).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn open_workspaces_run_anything() {
+        assert!(command_allowed("open", "codex exec --full-auto", &[]));
+        assert!(command_allowed("", "anything", &[]));
+    }
+
+    #[test]
+    fn guarded_workspaces_need_a_matching_safe_command() {
+        let safe = allowed(&["codex"]);
+
+        assert!(command_allowed("guarded", "codex", &safe));
+        assert!(command_allowed("guarded", "codex exec --full-auto", &safe));
+        assert!(!command_allowed("guarded", "codexfoo", &safe));
+        assert!(!command_allowed("guarded", "aider --yes", &safe));
+    }
+
+    #[test]
+    fn guarded_workspaces_refuse_without_safe_commands() {
+        assert!(!command_allowed("guarded", "bun test", &[]));
+        assert!(!command_allowed(
+            "guarded",
+            "bun test",
+            &allowed(&["", "  "])
+        ));
+        assert!(!command_allowed("guarded", "", &allowed(&["bun"])));
+    }
+
+    #[test]
+    fn matching_ignores_surrounding_whitespace() {
+        let safe = allowed(&[" cargo test "]);
+
+        assert!(command_allowed("guarded", "cargo test", &safe));
+        assert!(command_allowed("guarded", "  cargo test --all", &safe));
+    }
+}
