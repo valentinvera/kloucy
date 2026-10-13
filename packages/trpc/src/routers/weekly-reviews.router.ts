@@ -12,6 +12,7 @@ import {
 } from "nestjs-trpc"
 import { z } from "zod"
 import type { Context } from "../context"
+import { buildWeeklyReview } from "../lib/weekly-review"
 import { ProtectedMiddleware } from "../middleware/protected"
 
 const weeklyReviewSchema = z.object({
@@ -38,6 +39,15 @@ const weeklyReviewCreateInputSchema = z.object({
   shipped: z.array(z.string()).optional(),
   summary: z.string().min(1).optional(),
   workspaceId: z.string().min(1),
+})
+
+const weeklyReviewDraftSchema = z.object({
+  blockers: z.array(z.string()),
+  nextActions: z.array(z.string()),
+  rejectedChanges: z.array(z.string()),
+  riskyPatterns: z.array(z.string()),
+  shipped: z.array(z.string()),
+  summary: z.string(),
 })
 
 function requireUserId(ctx: Context): string {
@@ -108,6 +118,44 @@ export class WeeklyReviewsRouter {
     })
 
     return found ?? null
+  }
+
+  @UseMiddlewares(ProtectedMiddleware)
+  @Query({
+    input: weeklyReviewListInputSchema,
+    output: weeklyReviewDraftSchema,
+  })
+  async generate(
+    @Ctx() ctx: Context,
+    @Input() input: z.infer<typeof weeklyReviewListInputSchema>
+  ) {
+    const ownerId = requireUserId(ctx)
+
+    await assertWorkspaceOwned(input.workspaceId, ownerId)
+
+    const sessions = await db.query.agentSession.findMany({
+      where: (table) => eq(table.workspaceId, input.workspaceId),
+    })
+    const reviews = await db.query.review.findMany({
+      where: (table) => eq(table.workspaceId, input.workspaceId),
+    })
+
+    return buildWeeklyReview(
+      {
+        reviews: reviews.map((review) => ({
+          action: review.action,
+          createdAt: review.createdAt,
+          reason: review.reason,
+        })),
+        sessions: sessions.map((session) => ({
+          createdAt: session.createdAt,
+          endedAt: session.endedAt,
+          prompt: session.prompt,
+          status: session.status,
+        })),
+      },
+      new Date()
+    )
   }
 
   @UseMiddlewares(ProtectedMiddleware)

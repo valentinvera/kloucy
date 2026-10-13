@@ -93,6 +93,18 @@ pub struct WeeklyReview {
     pub summary: Option<String>,
 }
 
+/// A weekly review derived from stored activity, before it is saved.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklyReviewDraft {
+    pub blockers: Vec<String>,
+    pub next_actions: Vec<String>,
+    pub rejected_changes: Vec<String>,
+    pub risky_patterns: Vec<String>,
+    pub shipped: Vec<String>,
+    pub summary: String,
+}
+
 /// A pairing session as returned by `pairing.createQrSession`.
 #[derive(Clone, Debug, Deserialize)]
 pub struct PairingSession {
@@ -483,6 +495,16 @@ impl KloucyClient {
         serde_json::from_value(data).map_err(|error| ApiError::Message(error.to_string()))
     }
 
+    /// Derive a weekly review from the activity stored for a workspace.
+    pub fn generate_weekly_review(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WeeklyReviewDraft, ApiError> {
+        let input = serde_json::json!({ "workspaceId": workspace_id });
+
+        self.query("weeklyReviews.generate", Some(input))
+    }
+
     /// Save a weekly review for a workspace.
     pub fn create_weekly_review(
         &self,
@@ -492,6 +514,7 @@ impl KloucyClient {
         blockers: &[String],
         rejected_changes: &[String],
         next_actions: &[String],
+        risky_patterns: &[String],
     ) -> Result<(), ApiError> {
         self.mutation::<Value>(
             "weeklyReviews.create",
@@ -502,6 +525,7 @@ impl KloucyClient {
                 "blockers": blockers,
                 "rejectedChanges": rejected_changes,
                 "nextActions": next_actions,
+                "riskyPatterns": risky_patterns,
             }),
         )
         .map(|_| ())
