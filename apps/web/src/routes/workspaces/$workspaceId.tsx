@@ -77,6 +77,14 @@ function WorkspaceDetailComponent() {
               </dd>
             </div>
             <div>
+              <dt className="text-caption text-muted-foreground">
+                Safety mode
+              </dt>
+              <dd className="mt-1 text-medium">
+                {data.safetyMode === "guarded" ? "Guarded" : "Open"}
+              </dd>
+            </div>
+            <div>
               <dt className="text-caption text-muted-foreground">Created</dt>
               <dd className="mt-1 text-medium">{formatDate(data.createdAt)}</dd>
             </div>
