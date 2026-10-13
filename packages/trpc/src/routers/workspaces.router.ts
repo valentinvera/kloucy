@@ -22,6 +22,8 @@ const workspaceStageSchema = z.enum([
   "archived",
 ])
 
+const workspaceSafetyModeSchema = z.enum(["open", "guarded"])
+
 const workspaceSchema = z.object({
   archivedAt: z.date().nullable(),
   createdAt: z.date(),
@@ -37,6 +39,7 @@ const workspaceSchema = z.object({
   projectType: z.string().nullable(),
   runtime: z.string().nullable(),
   safeCommands: z.array(z.string()).nullable(),
+  safetyMode: workspaceSafetyModeSchema,
   stage: workspaceStageSchema,
   updatedAt: z.date(),
 })
@@ -55,6 +58,7 @@ const workspaceCreateInputSchema = z.object({
   projectType: z.string().min(1).optional(),
   runtime: z.string().min(1).optional(),
   safeCommands: z.array(z.string()).optional(),
+  safetyMode: workspaceSafetyModeSchema.optional(),
 })
 
 const workspaceUpdateInputSchema = z.object({
@@ -69,6 +73,7 @@ const workspaceUpdateInputSchema = z.object({
   projectType: z.string().min(1).nullable().optional(),
   runtime: z.string().min(1).nullable().optional(),
   safeCommands: z.array(z.string()).nullable().optional(),
+  safetyMode: workspaceSafetyModeSchema.optional(),
   stage: workspaceStageSchema.optional(),
 })
 
@@ -81,6 +86,7 @@ const workspaceIntakeInputSchema = z.object({
   projectType: z.string().min(1).optional(),
   runtime: z.string().min(1).optional(),
   safeCommands: z.array(z.string()).optional(),
+  safetyMode: workspaceSafetyModeSchema.optional(),
 })
 
 function requireUserId(ctx: Context): string {
@@ -169,6 +175,7 @@ export class WorkspacesRouter {
         projectType: input.projectType ?? null,
         runtime: input.runtime ?? null,
         safeCommands: input.safeCommands ?? null,
+        safetyMode: input.safetyMode ?? "open",
       })
       .returning()
 
@@ -215,6 +222,9 @@ export class WorkspacesRouter {
     }
     if (input.safeCommands !== undefined) {
       changes.safeCommands = input.safeCommands
+    }
+    if (input.safetyMode !== undefined) {
+      changes.safetyMode = input.safetyMode
     }
     if (input.ignoredPaths !== undefined) {
       changes.ignoredPaths = input.ignoredPaths
@@ -295,6 +305,9 @@ export class WorkspacesRouter {
     }
     if (input.safeCommands !== undefined) {
       changes.safeCommands = input.safeCommands
+    }
+    if (input.safetyMode !== undefined) {
+      changes.safetyMode = input.safetyMode
     }
     if (input.ignoredPaths !== undefined) {
       changes.ignoredPaths = input.ignoredPaths
