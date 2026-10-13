@@ -34,6 +34,7 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
   const [safeCommands, setSafeCommands] = useState("")
   const [ignoredPaths, setIgnoredPaths] = useState("")
   const [mobilePairing, setMobilePairing] = useState(false)
+  const [guardCommands, setGuardCommands] = useState(false)
 
   const completeIntake = useMutation(
     trpc.workspaces.completeIntake.mutationOptions({
@@ -84,12 +85,17 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
     setMobilePairing(checked)
   }, [])
 
+  const handleGuardCommandsChange = useCallback((checked: boolean) => {
+    setGuardCommands(checked)
+  }, [])
+
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
       completeIntake.mutate({
         id: workspaceId,
         mobilePairingEnabled: mobilePairing,
+        safetyMode: guardCommands ? "guarded" : "open",
         ...(projectType ? { projectType } : {}),
         ...(packageManager ? { packageManager } : {}),
         ...(runtime ? { runtime } : {}),
@@ -99,6 +105,7 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
     },
     [
       completeIntake,
+      guardCommands,
       ignoredPaths,
       mobilePairing,
       packageManager,
@@ -187,6 +194,25 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
             </div>
             <FieldDescription>
               Shared workspaces appear in the mobile app.
+            </FieldDescription>
+          </Field>
+          <Field>
+            <FieldTitle>Safety mode</FieldTitle>
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={guardCommands}
+                id="intake-safety-mode"
+                onCheckedChange={handleGuardCommandsChange}
+              />
+              <Label htmlFor="intake-safety-mode">
+                {guardCommands
+                  ? "Guarded: safe commands only"
+                  : "Open: any command"}
+              </Label>
+            </div>
+            <FieldDescription>
+              A guarded workspace only starts a command listed in its safe
+              commands.
             </FieldDescription>
           </Field>
         </FieldGroup>

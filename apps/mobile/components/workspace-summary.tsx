@@ -6,12 +6,14 @@ interface WorkspaceSummaryProps {
   counts: SessionCounts
   localPath?: string
   name: string
+  safetyMode?: string
 }
 
 export function WorkspaceSummary({
   counts,
   localPath,
   name,
+  safetyMode,
 }: WorkspaceSummaryProps) {
   return (
     <View className="gap-1">
@@ -26,6 +28,13 @@ export function WorkspaceSummary({
       <Text className="font-geist text-foreground text-sm">
         {summarizeCounts(counts)}
       </Text>
+      {safetyMode ? (
+        <Text className="font-geist text-muted text-xs">
+          {safetyMode === "guarded"
+            ? "Guarded: safe commands only"
+            : "Open: any command"}
+        </Text>
+      ) : null}
     </View>
   )
 }

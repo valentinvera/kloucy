@@ -6,6 +6,7 @@ import { ScrollView, Text, View } from "react-native"
 import { NextActions } from "@/components/next-actions"
 import { QuickInstruction } from "@/components/quick-instruction"
 import { ReviewRow } from "@/components/review-row"
+import { SafetyModeSwitch } from "@/components/safety-mode-switch"
 import { SessionRow } from "@/components/session-row"
 import { WorkspaceSummary } from "@/components/workspace-summary"
 import { nextActions } from "@/lib/next-actions"
@@ -63,6 +64,15 @@ export default function WorkspaceDetail() {
       onSuccess: invalidateSessions,
     })
   )
+  const updateSafetyMode = useMutation(
+    trpc.workspaces.update.mutationOptions({
+      onSuccess: async () => {
+        await queryClient.invalidateQueries(
+          trpc.workspaces.get.queryFilter({ id: workspaceId })
+        )
+      },
+    })
+  )
   const approve = useMutation(
     trpc.reviews.approve.mutationOptions({ onSuccess: invalidateReviews })
   )
@@ -98,6 +108,15 @@ export default function WorkspaceDetail() {
     },
     [sendInstruction]
   )
+  const handleGuardCommandsChange = useCallback(
+    (guarded: boolean) => {
+      updateSafetyMode.mutate({
+        id: workspaceId,
+        safetyMode: guarded ? "guarded" : "open",
+      })
+    },
+    [updateSafetyMode, workspaceId]
+  )
   const handleApprove = useCallback(
     (id: string) => {
       approve.mutate({ id })
@@ -119,11 +138,17 @@ export default function WorkspaceDetail() {
             counts={counts}
             localPath={workspace.data?.localPath}
             name={workspace.data?.name ?? "Workspace"}
+            safetyMode={workspace.data?.safetyMode}
           />
           <Button onPress={handleBack} size="sm" variant="ghost">
             <Button.Label>Workspaces</Button.Label>
           </Button>
         </View>
+
+        <SafetyModeSwitch
+          isGuarded={workspace.data?.safetyMode === "guarded"}
+          onChange={handleGuardCommandsChange}
+        />
 
         <NextActions actions={actions} />
 
