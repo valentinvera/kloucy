@@ -4,6 +4,7 @@ import {
   FieldDescription,
   FieldGroup,
   FieldLabel,
+  FieldTitle,
 } from "@kloucy/ui/components/field"
 import { Input } from "@kloucy/ui/components/input"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
@@ -26,8 +27,11 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
   const queryClient = useQueryClient()
 
   const [projectType, setProjectType] = useState("")
+  const [packageManager, setPackageManager] = useState("")
+  const [runtime, setRuntime] = useState("")
   const [safeCommands, setSafeCommands] = useState("")
   const [ignoredPaths, setIgnoredPaths] = useState("")
+  const [mobilePairing, setMobilePairing] = useState(false)
 
   const completeIntake = useMutation(
     trpc.workspaces.completeIntake.mutationOptions({
@@ -46,6 +50,20 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
     []
   )
 
+  const handlePackageManagerChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setPackageManager(event.target.value)
+    },
+    []
+  )
+
+  const handleRuntimeChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setRuntime(event.target.value)
+    },
+    []
+  )
+
   const handleSafeCommandsChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       setSafeCommands(event.target.value)
@@ -60,17 +78,33 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
     []
   )
 
+  const handleMobilePairingToggle = useCallback(() => {
+    setMobilePairing((value) => !value)
+  }, [])
+
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
       completeIntake.mutate({
         id: workspaceId,
+        mobilePairingEnabled: mobilePairing,
         ...(projectType ? { projectType } : {}),
+        ...(packageManager ? { packageManager } : {}),
+        ...(runtime ? { runtime } : {}),
         ...(safeCommands ? { safeCommands: splitList(safeCommands) } : {}),
         ...(ignoredPaths ? { ignoredPaths: splitList(ignoredPaths) } : {}),
       })
     },
-    [completeIntake, ignoredPaths, projectType, safeCommands, workspaceId]
+    [
+      completeIntake,
+      ignoredPaths,
+      mobilePairing,
+      packageManager,
+      projectType,
+      runtime,
+      safeCommands,
+      workspaceId,
+    ]
   )
 
   return (
@@ -86,6 +120,28 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
               onChange={handleProjectTypeChange}
               placeholder="rust, node, …"
               value={projectType}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="intake-package-manager">
+              Package manager
+            </FieldLabel>
+            <Input
+              autoComplete="off"
+              id="intake-package-manager"
+              onChange={handlePackageManagerChange}
+              placeholder="bun, cargo, …"
+              value={packageManager}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="intake-runtime">Runtime</FieldLabel>
+            <Input
+              autoComplete="off"
+              id="intake-runtime"
+              onChange={handleRuntimeChange}
+              placeholder="bun, node, rust, …"
+              value={runtime}
             />
           </Field>
           <Field>
@@ -114,6 +170,19 @@ export function WorkspaceIntake({ workspaceId }: WorkspaceIntakeProps) {
               placeholder=".env, secrets/"
               value={ignoredPaths}
             />
+          </Field>
+          <Field>
+            <FieldTitle>Mobile supervision</FieldTitle>
+            <Button
+              onClick={handleMobilePairingToggle}
+              type="button"
+              variant={mobilePairing ? "default" : "secondary"}
+            >
+              {mobilePairing ? "Shared with mobile" : "Desktop only"}
+            </Button>
+            <FieldDescription>
+              Shared workspaces appear in the mobile app.
+            </FieldDescription>
           </Field>
         </FieldGroup>
         <Button
