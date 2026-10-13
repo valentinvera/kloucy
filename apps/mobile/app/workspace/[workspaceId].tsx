@@ -7,7 +7,9 @@ import { NextActions } from "@/components/next-actions"
 import { QuickInstruction } from "@/components/quick-instruction"
 import { ReviewRow } from "@/components/review-row"
 import { SessionRow } from "@/components/session-row"
+import { WorkspaceSummary } from "@/components/workspace-summary"
 import { nextActions } from "@/lib/next-actions"
+import { sessionCounts } from "@/lib/session-counts"
 import { trpc } from "@/utils/trpc"
 
 export default function WorkspaceDetail() {
@@ -15,8 +17,16 @@ export default function WorkspaceDetail() {
   const router = useRouter()
   const queryClient = useQueryClient()
 
+  const workspace = useQuery(
+    trpc.workspaces.get.queryOptions({ id: workspaceId })
+  )
   const sessions = useQuery(trpc.sessions.list.queryOptions({ workspaceId }))
   const reviews = useQuery(trpc.reviews.list.queryOptions({ workspaceId }))
+
+  const counts = useMemo(
+    () => sessionCounts(sessions.data ?? []),
+    [sessions.data]
+  )
 
   const actions = useMemo(
     () =>
@@ -104,10 +114,12 @@ export default function WorkspaceDetail() {
   return (
     <ScrollView className="flex-1 bg-background">
       <View className="gap-4 px-6 pt-16 pb-16">
-        <View className="flex-row items-center justify-between">
-          <Text className="font-geist-semibold text-2xl text-foreground">
-            Workspace
-          </Text>
+        <View className="flex-row items-start justify-between gap-4">
+          <WorkspaceSummary
+            counts={counts}
+            localPath={workspace.data?.localPath}
+            name={workspace.data?.name ?? "Workspace"}
+          />
           <Button onPress={handleBack} size="sm" variant="ghost">
             <Button.Label>Workspaces</Button.Label>
           </Button>
