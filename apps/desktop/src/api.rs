@@ -261,10 +261,15 @@ impl KloucyClient {
             .map(|_| ())
     }
 
-    /// Reject a review.
-    pub fn reject_review(&self, id: &str) -> Result<(), ApiError> {
-        self.mutation::<Value>("reviews.reject", serde_json::json!({ "id": id }))
-            .map(|_| ())
+    /// Reject a review, optionally explaining why.
+    pub fn reject_review(&self, id: &str, reason: Option<&str>) -> Result<(), ApiError> {
+        let mut input = serde_json::json!({ "id": id });
+
+        if let Some(reason) = reason {
+            input["reason"] = Value::String(reason.to_string());
+        }
+
+        self.mutation::<Value>("reviews.reject", input).map(|_| ())
     }
 
     /// Record a follow-up condition on a review.
