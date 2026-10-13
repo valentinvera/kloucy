@@ -1382,6 +1382,8 @@ impl DesktopShell {
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
+            let mut known = 0usize;
+
             loop {
                 let is_active = this
                     .update(cx, |this, _| {
@@ -1393,30 +1395,62 @@ impl DesktopShell {
                     break;
                 }
 
-                let logs = cx
+                let from = known;
+
+                let stream = cx
                     .background_executor()
                     .spawn({
                         let client = client.clone();
                         let session_id = session_id.clone();
-                        async move { load_session_logs(&client, &session_id) }
+                        async move { client.stream_session(&session_id, from) }
                     })
                     .await;
 
-                let still_active = this
+                let appended = this
                     .update(cx, |this, cx| {
-                        if this.selected_session.as_deref() == Some(session_id.as_str()) {
-                            this.session_logs = logs;
-                            cx.notify();
-                            true
-                        } else {
-                            false
+                        if this.selected_session.as_deref() != Some(session_id.as_str()) {
+                            return None;
+                        }
+
+                        match stream {
+                            Ok(stream) => {
+                                let appended = stream.logs.len();
+
+                                if let LoadState::Loaded(logs) = &mut this.session_logs {
+                                    logs.extend(stream.logs);
+                                } else {
+                                    this.session_logs = LoadState::Loaded(stream.logs);
+                                }
+
+                                if let LoadState::Loaded(sessions) = &mut this.sessions {
+                                    if let Some(session) = sessions
+                                        .iter_mut()
+                                        .find(|session| session.id == stream.session.id)
+                                    {
+                                        session.status = stream.session.status;
+                                    }
+                                }
+
+                                cx.notify();
+                                Some(appended)
+                            }
+                            Err(error) => {
+                                if matches!(this.session_logs, LoadState::Loading) {
+                                    this.session_logs = LoadState::Failed(error_message(&error));
+                                    cx.notify();
+                                }
+
+                                Some(0)
+                            }
                         }
                     })
-                    .unwrap_or(false);
+                    .unwrap_or(None);
 
-                if !still_active {
+                let Some(appended) = appended else {
                     break;
-                }
+                };
+
+                known += appended;
 
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(2))
