@@ -1,4 +1,5 @@
 mod api;
+mod assets;
 mod detect;
 mod runner;
 mod safety;
@@ -4248,15 +4249,19 @@ fn centered(label: &str, cx: &App) -> AnyElement {
 
 fn main() {
     Application::new()
-        .with_assets(gpui_component_assets::Assets)
+        .with_assets(assets::Assets)
         .run(|cx: &mut App| {
             gpui_component::init(cx);
+            cx.text_system()
+                .add_fonts(assets::geist_fonts())
+                .expect("Geist should load");
             Theme::change(ThemeMode::Dark, None, cx);
 
             // Kloucy's chrome is monochrome, but the sidebar carries a faint tint so
             // it reads as a separate surface from the work area.
             {
                 let theme = Theme::global_mut(cx);
+                theme.font_family = assets::FONT_FAMILY.into();
                 theme.sidebar = hsla(80.0 / 360.0, 0.09, 0.09, 1.0);
                 theme.sidebar_accent = hsla(80.0 / 360.0, 0.07, 0.16, 1.0);
                 theme.sidebar_accent_foreground = theme.foreground;
