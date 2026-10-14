@@ -5,16 +5,17 @@ mod safety;
 mod typography;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight, Hsla,
-    IntoElement, KeyBinding, Render, SharedString, Window, WindowBounds, WindowOptions, actions,
-    div, prelude::*, px, rgb, size,
+    AnyElement, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight, IntoElement,
+    KeyBinding, Render, SharedString, Window, WindowBounds, WindowOptions, actions, div,
+    prelude::*, px, rgb, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Root, Selectable as _, Sizable as _, Theme, ThemeMode,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable as _, Sizable as _, Theme,
+    ThemeMode,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
-    sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
+    sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
 
@@ -171,18 +172,24 @@ enum Section {
     Settings,
 }
 
-const SECTIONS: [Section; 11] = [
-    Section::Home,
-    Section::Workspaces,
-    Section::Agents,
-    Section::Inbox,
-    Section::Sessions,
-    Section::Reviews,
-    Section::Decisions,
-    Section::Readiness,
-    Section::WeeklyReview,
-    Section::Pairing,
-    Section::Settings,
+/// Sidebar groups in reading order: the daily drivers first, then the work they
+/// produce, then what was decided, then the registry itself.
+const NAV_GROUPS: [(&str, &[Section]); 4] = [
+    ("Now", &[Section::Home, Section::Inbox]),
+    (
+        "Run",
+        &[Section::Sessions, Section::Reviews, Section::Readiness],
+    ),
+    ("History", &[Section::Decisions, Section::WeeklyReview]),
+    (
+        "Setup",
+        &[
+            Section::Workspaces,
+            Section::Agents,
+            Section::Pairing,
+            Section::Settings,
+        ],
+    ),
 ];
 
 impl Section {
@@ -199,6 +206,23 @@ impl Section {
             Section::WeeklyReview => "Weekly review",
             Section::Pairing => "Pairing",
             Section::Settings => "Settings",
+        }
+    }
+
+    /// The icon shown in the sidebar for this section.
+    fn icon(self) -> IconName {
+        match self {
+            Section::Agents => IconName::Bot,
+            Section::Decisions => IconName::BookOpen,
+            Section::Home => IconName::LayoutDashboard,
+            Section::Inbox => IconName::Inbox,
+            Section::Pairing => IconName::Globe,
+            Section::Readiness => IconName::ChartPie,
+            Section::Reviews => IconName::CircleCheck,
+            Section::Sessions => IconName::SquareTerminal,
+            Section::Settings => IconName::Settings,
+            Section::WeeklyReview => IconName::Calendar,
+            Section::Workspaces => IconName::Folder,
         }
     }
 
@@ -414,6 +438,23 @@ fn split_list(value: &str) -> Vec<String> {
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty())
         .collect()
+}
+
+/// How many loaded items match, and zero while loading or after a failure.
+fn count_where<T>(items: &LoadState<Vec<T>>, predicate: impl Fn(&T) -> bool) -> usize {
+    match items {
+        LoadState::Loaded(items) => items.iter().filter(|item| predicate(item)).count(),
+        _ => 0,
+    }
+}
+
+/// Up to two initials for the account row.
+fn initials(name: &str) -> String {
+    name.split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase()
 }
 
 fn session_titles(sessions: &LoadState<Vec<AgentSession>>, status: &str) -> Vec<String> {
@@ -2079,51 +2120,167 @@ impl DesktopShell {
             .into_any_element()
     }
 
-    fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (label, color): (String, Hsla) = match &self.session {
-            SessionStatus::Checking => ("Checking API…".to_string(), cx.theme().muted_foreground),
-            SessionStatus::SignedIn(user) => (
-                format!("{} ({})", user.name, user.email),
-                cx.theme().success_foreground,
-            ),
-            SessionStatus::SignedOut => {
-                ("Not signed in".to_string(), cx.theme().warning_foreground)
-            }
-            SessionStatus::Unreachable => ("API offline".to_string(), cx.theme().danger_foreground),
+    /// A sidebar row for a section: icon, active state, and any badge.
+    fn nav_item(&self, section: Section, cx: &mut Context<Self>) -> SidebarMenuItem {
+        let item = SidebarMenuItem::new(section.label())
+            .icon(Icon::new(section.icon()))
+            .active(self.section == section);
+
+        let item = match self.nav_badge(section, cx) {
+            Some(badge) => item.suffix(badge),
+            None => item,
         };
 
-        h_flex()
-            .gap_2()
-            .child(div().size(px(8.0)).rounded(px(4.0)).bg(color))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(label),
-            )
+        item.on_click(cx.listener(move |this, _, _, cx| {
+            this.section = section;
+            cx.notify();
+        }))
     }
 
-    fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut menu = SidebarMenu::new();
+    /// A badge for the sections that carry work a developer has to act on.
+    fn nav_badge(&self, section: Section, cx: &Context<Self>) -> Option<AnyElement> {
+        let (count, background, foreground) = match section {
+            Section::Inbox => (
+                count_where(&self.tasks, |task| task.status == "new"),
+                cx.theme().accent,
+                cx.theme().accent_foreground,
+            ),
+            Section::Reviews => (
+                count_where(&self.reviews, |review| review.action == "pending"),
+                cx.theme().warning,
+                cx.theme().warning_foreground,
+            ),
+            Section::Sessions => (
+                count_where(&self.sessions, |session| session.status == "waiting"),
+                cx.theme().warning,
+                cx.theme().warning_foreground,
+            ),
+            _ => return None,
+        };
 
-        for section in SECTIONS {
-            menu = menu.child(
-                SidebarMenuItem::new(section.label())
-                    .active(self.section == section)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.section = section;
-                        cx.notify();
-                    })),
-            );
+        if count == 0 {
+            return None;
         }
 
-        let mut footer = h_flex()
-            .gap_3()
+        Some(
+            div()
+                .min_w(px(18.0))
+                .px_1()
+                .rounded(px(9.0))
+                .bg(background)
+                .text_color(foreground)
+                .flex()
+                .justify_center()
+                .child(div().text_xs().child(count.to_string()))
+                .into_any_element(),
+        )
+    }
+
+    /// Wordmark plus the palette trigger, which is the sidebar's search row.
+    fn render_nav_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let shortcut = if cfg!(target_os = "macos") {
+            "⌘K"
+        } else {
+            "Ctrl K"
+        };
+
+        let search = h_flex()
+            .id("sidebar-search")
+            .w_full()
+            .gap_2()
             .items_center()
-            .child(self.render_status(cx));
+            .px_2()
+            .py_1()
+            .rounded(px(6.0))
+            .bg(cx.theme().sidebar_accent)
+            .text_color(cx.theme().muted_foreground)
+            .hover(|element| element.text_color(cx.theme().sidebar_accent_foreground))
+            .on_click(cx.listener(|this, _, window, cx| this.open_palette(window, cx)))
+            .child(Icon::new(IconName::Search).size_4())
+            .child(div().flex_1().text_sm().child("Search everything"))
+            .child(div().text_xs().child(shortcut));
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Kloucy"),
+            )
+            .child(search)
+            .into_any_element()
+    }
+
+    /// Who is signed in, how the API looks, and the way out.
+    fn render_nav_footer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (email, name, status, status_color) = match &self.session {
+            SessionStatus::Checking => (
+                None,
+                "Kloucy".to_string(),
+                "Checking API…".to_string(),
+                cx.theme().muted_foreground,
+            ),
+            SessionStatus::SignedIn(user) => (
+                Some(user.email.clone()),
+                user.name.clone(),
+                "API ok".to_string(),
+                cx.theme().success_foreground,
+            ),
+            SessionStatus::SignedOut => (
+                None,
+                "Kloucy".to_string(),
+                "Not signed in".to_string(),
+                cx.theme().warning_foreground,
+            ),
+            SessionStatus::Unreachable => (
+                None,
+                "Kloucy".to_string(),
+                "API offline".to_string(),
+                cx.theme().danger_foreground,
+            ),
+        };
+
+        let avatar = div()
+            .size_7()
+            .flex_shrink_0()
+            .rounded(px(999.0))
+            .bg(cx.theme().sidebar_accent)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().text_xs().child(match &email {
+                Some(_) => initials(&name),
+                None => "K".to_string(),
+            }));
+
+        let mut row = h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
+            .child(avatar)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_sm().truncate().child(email.unwrap_or(name)))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(div().size(px(6.0)).rounded(px(3.0)).bg(status_color))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(status),
+                            ),
+                    ),
+            );
 
         if matches!(self.session, SessionStatus::SignedIn(_)) {
-            footer = footer.child(
+            row = row.child(
                 Button::new("sign-out")
                     .ghost()
                     .small()
@@ -2132,15 +2289,29 @@ impl DesktopShell {
             );
         }
 
-        Sidebar::left()
-            .header(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Kloucy"),
-            )
-            .footer(footer)
-            .child(menu)
+        row.into_any_element()
+    }
+
+    fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut groups = Vec::new();
+
+        for (label, sections) in NAV_GROUPS {
+            let mut menu = SidebarMenu::new();
+
+            for section in sections {
+                menu = menu.child(self.nav_item(*section, cx));
+            }
+
+            groups.push(SidebarGroup::new(label).child(menu));
+        }
+
+        let mut sidebar = Sidebar::left().header(self.render_nav_header(cx));
+
+        for group in groups {
+            sidebar = sidebar.child(group);
+        }
+
+        sidebar.footer(self.render_nav_footer(cx))
     }
 
     fn render_intake(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -4099,6 +4270,51 @@ fn main() {
         )
         .expect("failed to open Kloucy desktop window");
     });
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::*;
+
+    #[test]
+    fn counts_only_matching_items() {
+        let loaded: LoadState<Vec<AgentSession>> = LoadState::Loaded(vec![
+            AgentSession {
+                agent_id: None,
+                id: "1".to_string(),
+                prompt: None,
+                status: "waiting".to_string(),
+            },
+            AgentSession {
+                agent_id: None,
+                id: "2".to_string(),
+                prompt: None,
+                status: "running".to_string(),
+            },
+        ]);
+
+        assert_eq!(
+            count_where(&loaded, |session| session.status == "waiting"),
+            1
+        );
+        assert_eq!(count_where(&loaded, |session| session.status == "done"), 0);
+    }
+
+    #[test]
+    fn counts_nothing_while_loading_or_after_a_failure() {
+        let loading: LoadState<Vec<AgentSession>> = LoadState::Loading;
+        let failed: LoadState<Vec<AgentSession>> = LoadState::Failed("nope".to_string());
+
+        assert_eq!(count_where(&loading, |_| true), 0);
+        assert_eq!(count_where(&failed, |_| true), 0);
+    }
+
+    #[test]
+    fn takes_two_initials() {
+        assert_eq!(initials("Alex Rivera"), "AR");
+        assert_eq!(initials("Valen"), "V");
+        assert_eq!(initials("  "), "");
+    }
 }
 
 #[cfg(test)]
