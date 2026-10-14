@@ -6,7 +6,7 @@ mod typography;
 
 use gpui::{
     AnyElement, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight, IntoElement,
-    KeyBinding, Render, SharedString, Window, WindowBounds, WindowOptions, actions, div,
+    KeyBinding, Render, SharedString, Window, WindowBounds, WindowOptions, actions, div, hsla,
     prelude::*, px, rgb, size,
 };
 use gpui_component::{
@@ -175,14 +175,14 @@ enum Section {
 /// Sidebar groups in reading order: the daily drivers first, then the work they
 /// produce, then what was decided, then the registry itself.
 const NAV_GROUPS: [(&str, &[Section]); 4] = [
-    ("Now", &[Section::Home, Section::Inbox]),
+    ("🧭 Now", &[Section::Home, Section::Inbox]),
     (
-        "Run",
+        "⚡ Run",
         &[Section::Sessions, Section::Reviews, Section::Readiness],
     ),
-    ("History", &[Section::Decisions, Section::WeeklyReview]),
+    ("🗂 History", &[Section::Decisions, Section::WeeklyReview]),
     (
-        "Setup",
+        "⚙️ Setup",
         &[
             Section::Workspaces,
             Section::Agents,
@@ -4247,29 +4247,41 @@ fn centered(label: &str, cx: &App) -> AnyElement {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
-        gpui_component::init(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
+    Application::new()
+        .with_assets(gpui_component_assets::Assets)
+        .run(|cx: &mut App| {
+            gpui_component::init(cx);
+            Theme::change(ThemeMode::Dark, None, cx);
 
-        cx.bind_keys([
-            KeyBinding::new("cmd-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
-            KeyBinding::new("ctrl-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
-        ]);
+            // Kloucy's chrome is monochrome, but the sidebar carries a faint tint so
+            // it reads as a separate surface from the work area.
+            {
+                let theme = Theme::global_mut(cx);
+                theme.sidebar = hsla(80.0 / 360.0, 0.09, 0.09, 1.0);
+                theme.sidebar_accent = hsla(80.0 / 360.0, 0.07, 0.16, 1.0);
+                theme.sidebar_accent_foreground = theme.foreground;
+                theme.sidebar_border = hsla(80.0 / 360.0, 0.06, 0.18, 1.0);
+            }
 
-        let bounds = Bounds::centered(None, size(px(1120.0), px(720.0)), cx);
+            cx.bind_keys([
+                KeyBinding::new("cmd-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
+            ]);
 
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            |window, cx| {
-                let view = cx.new(|cx| DesktopShell::new(window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            },
-        )
-        .expect("failed to open Kloucy desktop window");
-    });
+            let bounds = Bounds::centered(None, size(px(1120.0), px(720.0)), cx);
+
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let view = cx.new(|cx| DesktopShell::new(window, cx));
+                    cx.new(|cx| Root::new(view, window, cx))
+                },
+            )
+            .expect("failed to open Kloucy desktop window");
+        });
 }
 
 #[cfg(test)]
