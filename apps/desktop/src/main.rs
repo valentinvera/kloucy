@@ -3,6 +3,7 @@ mod assets;
 mod detect;
 mod runner;
 mod safety;
+mod settings;
 mod typography;
 
 use gpui::{
@@ -441,6 +442,50 @@ fn split_list(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// The stored name of a theme mode.
+fn mode_name(mode: ThemeMode) -> &'static str {
+    match mode {
+        ThemeMode::Light => "light",
+        _ => "dark",
+    }
+}
+
+/// A theme mode from its stored name, defaulting to Kloucy's dark.
+fn theme_mode(name: &str) -> ThemeMode {
+    match name {
+        "light" => ThemeMode::Light,
+        _ => ThemeMode::Dark,
+    }
+}
+
+/// Kloucy's app font and tinted sidebar, for the given mode.
+fn apply_theme(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
+    Theme::change(mode, window, cx);
+
+    let theme = Theme::global_mut(cx);
+    theme.font_family = assets::FONT_FAMILY.into();
+
+    // The sidebar is the one surface that carries a tint, so it reads as its
+    // own area: a faint olive over black, a light sage over white.
+    let (sidebar, sidebar_accent, sidebar_border) = match mode {
+        ThemeMode::Light => (
+            hsla(80.0 / 360.0, 0.24, 0.94, 1.0),
+            hsla(80.0 / 360.0, 0.20, 0.88, 1.0),
+            hsla(80.0 / 360.0, 0.12, 0.85, 1.0),
+        ),
+        _ => (
+            hsla(80.0 / 360.0, 0.09, 0.09, 1.0),
+            hsla(80.0 / 360.0, 0.07, 0.16, 1.0),
+            hsla(80.0 / 360.0, 0.06, 0.18, 1.0),
+        ),
+    };
+
+    theme.sidebar = sidebar;
+    theme.sidebar_accent = sidebar_accent;
+    theme.sidebar_accent_foreground = theme.foreground;
+    theme.sidebar_border = sidebar_border;
+}
+
 /// How many loaded items match, and zero while loading or after a failure.
 fn count_where<T>(items: &LoadState<Vec<T>>, predicate: impl Fn(&T) -> bool) -> usize {
     match items {
@@ -480,6 +525,7 @@ struct DesktopShell {
     registry: Arc<runner::RunRegistry>,
     focus_handle: FocusHandle,
     mono_font: SharedString,
+    theme_mode: ThemeMode,
     palette_open: bool,
     palette_query: Entity<InputState>,
     session: SessionStatus,
@@ -559,6 +605,10 @@ impl DesktopShell {
         let client = KloucyClient::new();
         let registry = runner::RunRegistry::new();
         let focus_handle = cx.focus_handle();
+        let theme_mode = theme_mode(
+            &settings::load_theme_mode()
+                .unwrap_or_else(|| settings::DEFAULT_THEME_MODE.to_string()),
+        );
         let mono_font = typography::pick_mono_family(&cx.text_system().all_font_names())
             .map(SharedString::from)
             .unwrap_or_else(|| cx.theme().font_family.clone());
@@ -646,6 +696,7 @@ impl DesktopShell {
             registry,
             focus_handle,
             mono_font,
+            theme_mode,
             palette_open: false,
             palette_query,
             agent_command,
@@ -1876,6 +1927,18 @@ impl DesktopShell {
         .detach();
     }
 
+    fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let next = match self.theme_mode {
+            ThemeMode::Light => ThemeMode::Dark,
+            _ => ThemeMode::Light,
+        };
+
+        self.theme_mode = next;
+        apply_theme(next, Some(window), cx);
+        settings::save_theme_mode(mode_name(next));
+        cx.notify();
+    }
+
     fn set_safety_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
         let Some(workspace_id) = self.selected_workspace.clone() else {
             return;
@@ -2279,6 +2342,19 @@ impl DesktopShell {
                             ),
                     ),
             );
+
+        let theme_icon = match self.theme_mode {
+            ThemeMode::Light => IconName::Moon,
+            _ => IconName::Sun,
+        };
+
+        row = row.child(
+            Button::new("toggle-theme")
+                .ghost()
+                .small()
+                .icon(Icon::new(theme_icon))
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_theme(window, cx))),
+        );
 
         if matches!(self.session, SessionStatus::SignedIn(_)) {
             row = row.child(
@@ -4255,18 +4331,10 @@ fn main() {
             cx.text_system()
                 .add_fonts(assets::geist_fonts())
                 .expect("Geist should load");
-            Theme::change(ThemeMode::Dark, None, cx);
 
-            // Kloucy's chrome is monochrome, but the sidebar carries a faint tint so
-            // it reads as a separate surface from the work area.
-            {
-                let theme = Theme::global_mut(cx);
-                theme.font_family = assets::FONT_FAMILY.into();
-                theme.sidebar = hsla(80.0 / 360.0, 0.09, 0.09, 1.0);
-                theme.sidebar_accent = hsla(80.0 / 360.0, 0.07, 0.16, 1.0);
-                theme.sidebar_accent_foreground = theme.foreground;
-                theme.sidebar_border = hsla(80.0 / 360.0, 0.06, 0.18, 1.0);
-            }
+            let stored = settings::load_theme_mode()
+                .unwrap_or_else(|| settings::DEFAULT_THEME_MODE.to_string());
+            apply_theme(theme_mode(&stored), None, cx);
 
             cx.bind_keys([
                 KeyBinding::new("cmd-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
