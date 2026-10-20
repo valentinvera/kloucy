@@ -1,3 +1,4 @@
+mod agents;
 mod api;
 mod assets;
 mod detect;
@@ -23,6 +24,7 @@ use gpui_component::{
     v_flex,
 };
 
+use crate::agents::AgentChoice;
 use crate::api::{
     Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, PairingSession,
     ReadinessSnapshot, Review, SessionLog, SessionStatus, SessionStep, WeeklyReview, Workspace,
@@ -41,10 +43,8 @@ const SHELL_CONTEXT: &str = "KloucyShell";
 /// A command offered by the palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaletteCommand {
-    DetectAgents,
     NewPairingCode,
     NewWorkspace,
-    RegisterAgent,
     Section(Section),
 }
 
@@ -55,7 +55,7 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 15] = [
+const PALETTE_ENTRIES: [PaletteEntry; 12] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
@@ -67,12 +67,6 @@ const PALETTE_ENTRIES: [PaletteEntry; 15] = [
         group: "Go to",
         keywords: "projects",
         label: "Open workspaces",
-    },
-    PaletteEntry {
-        command: PaletteCommand::Section(Section::Agents),
-        group: "Go to",
-        keywords: "registry providers",
-        label: "Open agents",
     },
     PaletteEntry {
         command: PaletteCommand::Section(Section::Inbox),
@@ -129,18 +123,6 @@ const PALETTE_ENTRIES: [PaletteEntry; 15] = [
         label: "New workspace",
     },
     PaletteEntry {
-        command: PaletteCommand::RegisterAgent,
-        group: "Action",
-        keywords: "agent add command",
-        label: "Register an agent",
-    },
-    PaletteEntry {
-        command: PaletteCommand::DetectAgents,
-        group: "Action",
-        keywords: "path detect installed",
-        label: "Detect installed agents",
-    },
-    PaletteEntry {
         command: PaletteCommand::NewPairingCode,
         group: "Action",
         keywords: "mobile qr code",
@@ -166,7 +148,6 @@ fn palette_matches(query: &str) -> Vec<&'static PaletteEntry> {
 enum Section {
     Home,
     Workspaces,
-    Agents,
     Inbox,
     Sessions,
     Reviews,
@@ -188,12 +169,7 @@ const NAV_GROUPS: [(&str, &[Section]); 4] = [
     ("🗂 History", &[Section::Decisions, Section::WeeklyReview]),
     (
         "⚙️ Setup",
-        &[
-            Section::Workspaces,
-            Section::Agents,
-            Section::Pairing,
-            Section::Settings,
-        ],
+        &[Section::Workspaces, Section::Pairing, Section::Settings],
     ),
 ];
 
@@ -202,7 +178,6 @@ impl Section {
         match self {
             Section::Home => "Home",
             Section::Workspaces => "Workspaces",
-            Section::Agents => "Agents",
             Section::Inbox => "Inbox",
             Section::Sessions => "Sessions",
             Section::Reviews => "Reviews",
@@ -217,7 +192,6 @@ impl Section {
     /// The icon shown in the sidebar for this section.
     fn icon(self) -> IconName {
         match self {
-            Section::Agents => IconName::Bot,
             Section::Decisions => IconName::BookOpen,
             Section::Home => IconName::LayoutDashboard,
             Section::Inbox => IconName::Inbox,
@@ -235,7 +209,6 @@ impl Section {
         match self {
             Section::Home => "What your agents are doing right now.",
             Section::Workspaces => "Local projects Kloucy can supervise.",
-            Section::Agents => "Local agents available to run tasks.",
             Section::Inbox => "Tasks captured before they run.",
             Section::Sessions => "Running, waiting, and finished agent work.",
             Section::Reviews => "Changed files and artifacts awaiting a decision.",
@@ -687,7 +660,7 @@ struct DesktopShell {
     composer_status: Option<ComposerStatus>,
     home_thread: Option<HomeThread>,
     sending_composer: bool,
-    home_agent: Option<String>,
+    home_provider: Option<String>,
     home_checkout: git::Checkout,
     home_menu: Option<HomeMenu>,
     palette_open: bool,
@@ -695,7 +668,7 @@ struct DesktopShell {
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
     agents: LoadState<Vec<Agent>>,
-    detected_agents: Option<Vec<DetectedAgent>>,
+    installed_agents: Vec<DetectedAgent>,
     selected_workspace: Option<String>,
     selected_session: Option<String>,
     session_logs: LoadState<Vec<SessionLog>>,
@@ -719,9 +692,6 @@ struct DesktopShell {
     task_prompt: Entity<InputState>,
     decision_title: Entity<InputState>,
     decision_summary: Entity<InputState>,
-    agent_name: Entity<InputState>,
-    agent_provider: Entity<InputState>,
-    agent_command: Entity<InputState>,
     intake_project_type: Entity<InputState>,
     intake_package_manager: Entity<InputState>,
     intake_runtime: Entity<InputState>,
@@ -737,15 +707,12 @@ struct DesktopShell {
     archiving_workspace: bool,
     settings_error: Option<String>,
     create_error: Option<String>,
-    agent_error: Option<String>,
     completing_intake: bool,
-    creating_agent: bool,
     intake_error: Option<String>,
     creating_decision: bool,
     creating_task: bool,
     creating_workspace: bool,
     decision_error: Option<String>,
-    show_agent_form: bool,
     show_create_form: bool,
     show_decision_form: bool,
     show_task_form: bool,
@@ -792,10 +759,6 @@ impl DesktopShell {
         let decision_title = cx.new(|cx| InputState::new(window, cx).placeholder("Decision"));
         let decision_summary =
             cx.new(|cx| InputState::new(window, cx).placeholder("What changed and why"));
-        let agent_name = cx.new(|cx| InputState::new(window, cx).placeholder("Agent name"));
-        let agent_provider = cx.new(|cx| InputState::new(window, cx).placeholder("claude-code"));
-        let agent_command =
-            cx.new(|cx| InputState::new(window, cx).placeholder("codex exec --full-auto"));
         let intake_project_type =
             cx.new(|cx| InputState::new(window, cx).placeholder("Project type (rust, node, …)"));
         let intake_package_manager =
@@ -832,13 +795,14 @@ impl DesktopShell {
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
-            let (session, workspaces, agents) = cx
+            let (session, workspaces, agents, installed) = cx
                 .background_executor()
                 .spawn(async move {
                     let session = task_client.session();
                     let workspaces = load_workspaces(&task_client, &session);
                     let agents = load_agents(&task_client, &session);
-                    (session, workspaces, agents)
+                    let installed = detect::detect_installed_agents();
+                    (session, workspaces, agents, installed)
                 })
                 .await;
 
@@ -846,6 +810,7 @@ impl DesktopShell {
                 this.session = session;
                 this.workspaces = workspaces;
                 this.agents = agents;
+                this.installed_agents = installed;
                 cx.notify();
 
                 let first = match &this.workspaces {
@@ -865,7 +830,7 @@ impl DesktopShell {
 
         Self {
             agents: LoadState::Loading,
-            detected_agents: None,
+            installed_agents: Vec::new(),
             client,
             registry,
             focus_handle,
@@ -876,18 +841,13 @@ impl DesktopShell {
             composer_status: None,
             home_thread: None,
             sending_composer: false,
-            home_agent: None,
+            home_provider: None,
             home_checkout: git::Checkout::None,
             home_menu: None,
             palette_open: false,
             palette_query,
-            agent_command,
-            agent_error: None,
-            agent_name,
-            agent_provider,
             completing_intake: false,
             create_error: None,
-            creating_agent: false,
             creating_step: false,
             intake_error: None,
             intake_ignored_paths,
@@ -927,7 +887,6 @@ impl DesktopShell {
             session_logs: LoadState::Loading,
             sessions: LoadState::Loading,
             weekly_review: LoadState::Loading,
-            show_agent_form: false,
             show_create_form: false,
             show_decision_form: false,
             show_task_form: false,
@@ -1057,7 +1016,6 @@ impl DesktopShell {
                 this.weekly_review = LoadState::Loading;
                 this.selected_workspace = None;
                 this.sessions = LoadState::Loading;
-                this.show_agent_form = false;
                 this.show_create_form = false;
                 this.tasks = LoadState::Loading;
                 cx.notify();
@@ -1082,7 +1040,7 @@ impl DesktopShell {
         self.sessions = LoadState::Loading;
         self.tasks = LoadState::Loading;
         self.weekly_review = LoadState::Loading;
-        self.home_agent = None;
+        self.home_provider = None;
         self.home_checkout = git::Checkout::None;
 
         let checkout = self
@@ -1446,17 +1404,46 @@ impl DesktopShell {
 
     /// The agent the composer assigns: the one picked in the pill, else the
     /// workspace default.
-    fn composer_agent(&self) -> Option<&Agent> {
-        let LoadState::Loaded(agents) = &self.agents else {
-            return None;
+    /// The agents the composer can start: installed on this machine, plus the
+    /// records previous messages created.
+    fn agent_choices(&self) -> Vec<AgentChoice> {
+        let agents = match &self.agents {
+            LoadState::Loaded(agents) => agents.as_slice(),
+            _ => &[],
         };
 
-        let selected = self.home_agent.clone().or_else(|| {
-            self.selected_workspace_data()
-                .and_then(|workspace| workspace.default_agent_id.clone())
+        agents::choices(agents, &self.installed_agents)
+    }
+
+    /// The agent the next message would start: the one picked in the pill, else
+    /// the workspace's default agent, else the first one available.
+    fn composer_choice(&self) -> Option<AgentChoice> {
+        let choices = self.agent_choices();
+
+        let preferred = self.home_provider.clone().or_else(|| {
+            let default = self
+                .selected_workspace_data()
+                .and_then(|workspace| workspace.default_agent_id.clone())?;
+
+            let agents = match &self.agents {
+                LoadState::Loaded(agents) => agents.as_slice(),
+                _ => return None,
+            };
+
+            agents
+                .iter()
+                .find(|agent| agent.id == default)
+                .map(|agent| agent.provider.clone())
         });
 
-        selected.and_then(|id| agents.iter().find(|agent| agent.id == id))
+        preferred
+            .and_then(|provider| {
+                choices
+                    .iter()
+                    .find(|choice| choice.provider == provider)
+                    .cloned()
+            })
+            .or_else(|| choices.first().cloned())
     }
 
     /// Start the agent on whatever the composer holds.
@@ -1487,22 +1474,16 @@ impl DesktopShell {
             return;
         };
 
-        let Some(agent) = self.composer_agent().cloned() else {
+        let Some(choice) = self.composer_choice() else {
             self.composer_status = Some(ComposerStatus::Failed(
-                "Pick the agent that should run this.".to_string(),
+                "No agent CLI found on this machine. Install codex, claude or opencode."
+                    .to_string(),
             ));
             cx.notify();
             return;
         };
 
-        let Some(command) = self.agent_command(&agent.id) else {
-            self.composer_status = Some(ComposerStatus::Failed(format!(
-                "{} has no command yet. Add one in Agents.",
-                agent.name
-            )));
-            cx.notify();
-            return;
-        };
+        let command = choice.command.clone();
 
         if !std::path::Path::new(&workspace.local_path).is_dir() {
             self.composer_status = Some(ComposerStatus::Failed(format!(
@@ -1541,11 +1522,25 @@ impl DesktopShell {
                 .background_executor()
                 .spawn({
                     let client = client.clone();
-                    let agent_id = agent.id.clone();
+                    let choice = choice.clone();
                     let workspace_id = workspace_id.clone();
                     let prompt = prompt.clone();
 
                     async move {
+                        // The first message that works stores the agent behind
+                        // it, so the registry fills itself by being used.
+                        let agent_id = match choice.agent_id.clone() {
+                            Some(agent_id) => agent_id,
+                            None => {
+                                let created = client.create_agent(
+                                    &choice.name,
+                                    &choice.provider,
+                                    &choice.command,
+                                )?;
+                                created.id
+                            }
+                        };
+
                         let session =
                             client.create_session(&workspace_id, Some(&agent_id), &prompt)?;
                         let session = match client.start_session(&session.id) {
@@ -1555,13 +1550,13 @@ impl DesktopShell {
                             }
                         };
 
-                        Ok::<_, ApiError>(session)
+                        Ok::<_, ApiError>((session, load_agents_list(&client)))
                     }
                 })
                 .await;
 
             match result {
-                Ok(session) => {
+                Ok((session, agents)) => {
                     let session_id = session.id.clone();
                     let runner_client = client.clone();
                     let runner_registry = registry.clone();
@@ -1581,6 +1576,7 @@ impl DesktopShell {
 
                     this.update_in(cx, |this, window, cx| {
                         this.sending_composer = false;
+                        this.agents = agents;
                         this.composer
                             .update(cx, |state, cx| state.set_value("", window, cx));
                         this.home_thread = Some(HomeThread {
@@ -2070,48 +2066,6 @@ impl DesktopShell {
                     .timer(std::time::Duration::from_secs(2))
                     .await;
             }
-        })
-        .detach();
-    }
-
-    fn submit_create_agent(&mut self, cx: &mut Context<Self>) {
-        let name = self.agent_name.read(cx).value().to_string();
-        let provider = self.agent_provider.read(cx).value().to_string();
-        let command = self.agent_command.read(cx).value().to_string();
-
-        self.agent_error = None;
-        self.creating_agent = true;
-
-        let client = self.client.clone();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    client.create_agent(&name, &provider, &command)?;
-                    Ok::<_, ApiError>(load_agents_list(&client))
-                })
-                .await;
-
-            this.update(cx, |this, cx| {
-                this.creating_agent = false;
-
-                match result {
-                    Ok(LoadState::Loaded(agents)) => {
-                        this.agents = LoadState::Loaded(agents);
-                        this.show_agent_form = false;
-                    }
-                    Ok(LoadState::Failed(message)) => {
-                        this.agent_error = Some(message);
-                    }
-                    Ok(LoadState::Loading) => {}
-                    Err(error) => {
-                        this.agent_error = Some(error_message(&error));
-                    }
-                }
-
-                cx.notify();
-            })
-            .ok();
         })
         .detach();
     }
@@ -3375,208 +3329,6 @@ impl DesktopShell {
         form.into_any_element()
     }
 
-    fn detect_agents(&mut self, cx: &mut Context<Self>) {
-        self.detected_agents = Some(detect::detect_installed_agents());
-        self.show_agent_form = false;
-        self.agent_error = None;
-        cx.notify();
-    }
-
-    fn register_detected_agent(
-        &mut self,
-        agent: DetectedAgent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_agent_form = true;
-        self.agent_error = None;
-
-        self.agent_name
-            .update(cx, |state, cx| state.set_value(agent.name, window, cx));
-        self.agent_provider
-            .update(cx, |state, cx| state.set_value(agent.provider, window, cx));
-        self.agent_command.update(cx, |state, cx| {
-            state.set_value(agent.executable_path, window, cx)
-        });
-
-        cx.notify();
-    }
-
-    fn render_create_agent(&self, cx: &mut Context<Self>) -> AnyElement {
-        let submit = Button::new("create-agent")
-            .primary()
-            .label(if self.creating_agent {
-                "Creating…"
-            } else {
-                "Create agent"
-            })
-            .disabled(self.creating_agent)
-            .on_click(cx.listener(|this, _, _, cx| this.submit_create_agent(cx)));
-
-        let cancel = Button::new("cancel-agent")
-            .label("Cancel")
-            .disabled(self.creating_agent)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.show_agent_form = false;
-                this.agent_error = None;
-                cx.notify();
-            }));
-
-        let mut form = v_flex()
-            .w(px(360.0))
-            .gap_3()
-            .child(Input::new(&self.agent_name))
-            .child(Input::new(&self.agent_provider))
-            .child(Input::new(&self.agent_command))
-            .child(h_flex().gap_2().child(submit).child(cancel));
-
-        if let Some(error) = &self.agent_error {
-            form = form.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().danger_foreground)
-                    .child(error.clone()),
-            );
-        }
-
-        form.into_any_element()
-    }
-
-    fn render_agents(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.show_agent_form {
-            return self.render_create_agent(cx);
-        }
-
-        let new_button = Button::new("new-agent")
-            .small()
-            .label("New agent")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.show_agent_form = true;
-                this.agent_error = None;
-                cx.notify();
-            }));
-
-        let detect_button = Button::new("detect-agents")
-            .small()
-            .label("Detect installed agents")
-            .on_click(cx.listener(|this, _, _, cx| this.detect_agents(cx)));
-
-        let content: AnyElement = match &self.agents {
-            LoadState::Loading => div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("Loading agents…")
-                .into_any_element(),
-            LoadState::Failed(message) => div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(message.clone())
-                .into_any_element(),
-            LoadState::Loaded(agents) if agents.is_empty() => v_flex()
-                .gap_1()
-                .child(div().text_sm().child("No agents configured yet."))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Register an agent to run tasks in a workspace."),
-                )
-                .into_any_element(),
-            LoadState::Loaded(agents) => {
-                let mut list = v_flex().gap_3();
-
-                for agent in agents {
-                    list = list.child(
-                        h_flex()
-                            .gap_2()
-                            .child(div().text_sm().child(agent.name.clone()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(agent.provider.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(agent.status.clone()),
-                            ),
-                    );
-                }
-
-                list.into_any_element()
-            }
-        };
-
-        let mut section = v_flex()
-            .gap_4()
-            .child(h_flex().gap_2().child(new_button).child(detect_button))
-            .child(content);
-
-        if let Some(detected) = &self.detected_agents {
-            section = section.child(self.render_detected_agents(detected, cx));
-        }
-
-        section.into_any_element()
-    }
-
-    fn render_detected_agents(
-        &self,
-        detected: &[DetectedAgent],
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut list = v_flex().gap_1().child(
-            div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child("Detected on your PATH"),
-        );
-
-        if detected.is_empty() {
-            return list
-                .child(
-                    div()
-                        .text_sm()
-                        .child("No known agent CLI was found on your PATH."),
-                )
-                .into_any_element();
-        }
-
-        for (index, agent) in detected.iter().enumerate() {
-            let detected_agent = agent.clone();
-
-            list = list.child(
-                h_flex()
-                    .gap_2()
-                    .child(div().text_sm().child(agent.name.clone()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(agent.provider.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .font_family(self.mono_font.clone())
-                            .child(agent.executable_path.clone()),
-                    )
-                    .child(
-                        Button::new(("add-detected-agent", index))
-                            .small()
-                            .label("Add")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.register_detected_agent(detected_agent.clone(), window, cx);
-                            })),
-                    ),
-            );
-        }
-
-        list.into_any_element()
-    }
-
     fn render_create_task(&self, cx: &mut Context<Self>) -> AnyElement {
         let submit = Button::new("create-task")
             .primary()
@@ -4654,9 +4406,9 @@ impl DesktopShell {
             .selected_workspace_data()
             .map(|workspace| workspace.safety_mode.clone());
         let agent_name = self
-            .composer_agent()
-            .map(|agent| agent.name.clone())
-            .unwrap_or_else(|| "No agent".to_string());
+            .composer_choice()
+            .map(|choice| choice.name)
+            .unwrap_or_else(|| "No agent installed".to_string());
         let working = self
             .home_thread
             .as_ref()
@@ -4993,55 +4745,38 @@ impl DesktopShell {
                 })
             }
             HomeMenu::Agent => {
-                let agents = match &self.agents {
-                    LoadState::Loaded(agents) => agents.clone(),
-                    _ => Vec::new(),
-                };
-                let selected = self.composer_agent().map(|agent| agent.id.clone());
+                let choices = self.agent_choices();
+                let selected = self.composer_choice().map(|choice| choice.provider);
 
                 Rc::new(move |cx| {
-                    let mut list = v_flex().w(px(260.0)).gap(px(2.0));
-
-                    if agents.is_empty() {
-                        list = list.child(menu_note("No agents registered yet.", cx));
-
-                        let entity = entity.clone();
-
-                        list = list.child(menu_row(
-                            ("home-agent-register", 0),
-                            cx,
-                            false,
-                            vec![
-                                Icon::new(IconName::Plus).size(px(14.0)).into_any_element(),
-                                div().child("Register an agent").into_any_element(),
-                            ],
-                            Some(Box::new(move |_, cx| {
-                                let _ = entity.update(cx, |this, cx| {
-                                    this.section = Section::Agents;
-                                    this.show_agent_form = true;
-                                    this.agent_error = None;
-                                    this.home_menu = None;
-                                    cx.notify();
-                                });
-                            })),
-                        ));
+                    if choices.is_empty() {
+                        return v_flex()
+                            .w(px(280.0))
+                            .gap(px(2.0))
+                            .child(menu_note(
+                                "No agent CLI found on this machine. Install codex, claude or opencode, then start Kloucy again.",
+                                cx,
+                            ))
+                            .into_any_element();
                     }
 
-                    for (index, agent) in agents.iter().enumerate() {
-                        let id = agent.id.clone();
-                        let is_selected = selected.as_deref() == Some(agent.id.as_str());
+                    let mut list = v_flex().w(px(260.0)).gap(px(2.0));
+
+                    for (index, choice) in choices.iter().enumerate() {
+                        let provider = choice.provider.clone();
+                        let is_selected = selected.as_deref() == Some(choice.provider.as_str());
                         let mut children = vec![
                             Icon::new(IconName::Bot).size(px(14.0)).into_any_element(),
                             div()
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .child(agent.name.clone())
+                                .child(choice.name.clone())
                                 .into_any_element(),
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(agent.provider.clone())
+                                .child(choice.provider.clone())
                                 .into_any_element(),
                         ];
 
@@ -5059,7 +4794,7 @@ impl DesktopShell {
                             children,
                             Some(Box::new(move |_, cx| {
                                 let _ = entity.update(cx, |this, cx| {
-                                    this.home_agent = Some(id.clone());
+                                    this.home_provider = Some(provider.clone());
                                     this.home_menu = None;
                                     this.composer_status = None;
                                     cx.notify();
@@ -5286,7 +5021,6 @@ impl DesktopShell {
         }
 
         let body: AnyElement = match self.section {
-            Section::Agents => self.render_agents(cx).into_any_element(),
             Section::Decisions => self.render_decisions(cx),
             Section::Home => self.render_home(cx),
             Section::Inbox => self.render_inbox(cx),
@@ -5410,15 +5144,6 @@ impl DesktopShell {
                 self.section = Section::Workspaces;
                 self.show_create_form = true;
                 self.create_error = None;
-            }
-            PaletteCommand::RegisterAgent => {
-                self.section = Section::Agents;
-                self.show_agent_form = true;
-                self.agent_error = None;
-            }
-            PaletteCommand::DetectAgents => {
-                self.section = Section::Agents;
-                self.detect_agents(cx);
             }
             PaletteCommand::NewPairingCode => {
                 self.section = Section::Pairing;

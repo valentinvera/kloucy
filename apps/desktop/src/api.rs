@@ -494,14 +494,14 @@ impl KloucyClient {
         name: &str,
         provider: &str,
         command_template: &str,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Agent, ApiError> {
         let mut input = serde_json::json!({ "name": name, "provider": provider });
 
         if !command_template.is_empty() {
             input["commandTemplate"] = Value::String(command_template.to_string());
         }
 
-        self.mutation::<Value>("agents.create", input).map(|_| ())
+        self.mutation::<Agent>("agents.create", input)
     }
 
     /// Append a log line to a session.

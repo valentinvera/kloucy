@@ -25,15 +25,18 @@ KLOUCY_API_URL=http://localhost:4040 ./target/release/kloucy-desktop
 `KLOUCY_API_URL` defaults to `http://localhost:3001`. If your API listens elsewhere (the local setup uses `4040`), set it explicitly.
 </Callout>
 
+## Agents
+
+There is no registry to fill in. Kloucy looks for agent CLIs on your `PATH` (`claude`, `codex`, `opencode`, and others) and offers them in the composer. The first message that runs one stores the agent record, so Agents, sessions and reviews fill themselves as you work. A CLI needs a one-shot command to answer (`codex exec`, `claude -p`, `opencode run`); Kloucy picks that form by default.
+
 ## Sign in
 
 Use the same account as the web app. Create it once through the API or the web sign-up screen, then sign in from the desktop.
 
 ## What you get
 
-- **Home** is the composer: write what you want done, pick the agent that should get it, and it is captured into the Inbox for that workspace. The same row shows the checkout's git branch, and the chips above switch workspace and account.
+- **Home** is the composer: write what you want done, pick the agent that should run it, and it starts in the workspace checkout. The answer streams into the thread, the composer stays at the bottom for the next message, and the run is kept as a session. The row under the composer shows the checkout's git branch, and the chips switch workspace and account.
 - **Workspaces** create a workspace and record its intake: project type, package manager, runtime, safe commands, ignored paths, safety mode and whether mobile may supervise it. **Detect project** reads the workspace directory names and fills the profile in, suggesting safe commands and ignored paths for that ecosystem.
-- **Agents** register agents by hand or detect installed CLIs on your `PATH`.
 - **Inbox** captures tasks; **Sessions** run them and stream logs. Starting a session is an explicit action, and a guarded workspace refuses a command that is not in its safe commands.
 - **Reviews** approve changes, reject them with a reason, and record follow-up conditions.
 - **Readiness** and **Weekly review** summarize progress over time. The weekly review is derived from stored activity: what shipped, what is blocked, what was rejected, risky patterns and next actions.
