@@ -17,12 +17,29 @@ const GEIST: [&[u8]; 4] = [
 /// The family name the embedded cuts register under, per their font metadata.
 pub const FONT_FAMILY: &str = "Geist";
 
+/// Lucide icons the component library does not ship, served at the same
+/// `icons/*.svg` paths so `gpui::svg()` can find them next to the rest.
+const EXTRA_ICONS: [(&str, &[u8]); 2] = [
+    (
+        "icons/paperclip.svg",
+        include_bytes!("../assets/icons/paperclip.svg"),
+    ),
+    (
+        "icons/git-branch.svg",
+        include_bytes!("../assets/icons/git-branch.svg"),
+    ),
+];
+
 /// Geist plus the Lucide icons [gpui_component::IconName] resolves to
 /// `icons/*.svg`.
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if let Some((_, icon)) = EXTRA_ICONS.iter().find(|(name, _)| *name == path) {
+            return Ok(Some(Cow::Borrowed(*icon)));
+        }
+
         gpui_component_assets::Assets.load(path)
     }
 
@@ -54,5 +71,14 @@ mod tests {
 
         assert!(icon.is_some());
         assert!(Assets.load("icons/not-a-real-icon.svg").is_err());
+    }
+
+    #[test]
+    fn serves_the_icons_the_component_library_lacks() {
+        for (name, _) in EXTRA_ICONS {
+            let icon = Assets.load(name).expect("an icon should load");
+
+            assert!(icon.is_some(), "{name} should be served");
+        }
     }
 }
