@@ -265,10 +265,18 @@ enum HomeMenu {
     Attach,
 }
 
+/// A run started from Home: the prompt, and what the agent has printed so far.
+struct HomeThread {
+    session_id: String,
+    title: String,
+    prompt: String,
+    status: String,
+    logs: Vec<SessionLog>,
+}
+
 /// What the composer last did, shown under the checkout row.
 #[derive(Clone, Debug)]
 enum ComposerStatus {
-    Captured(String),
     Notice(String),
     Failed(String),
 }
@@ -616,6 +624,23 @@ fn apply_theme(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
     theme.sidebar_border = sidebar_border;
 }
 
+/// How a run's status reads in the thread header.
+fn thread_status_label(status: &str) -> &'static str {
+    match status {
+        "running" | "ready" => "Working…",
+        "done" => "Done",
+        "failed" => "Failed",
+        "stopped" => "Stopped",
+        _ => "Waiting",
+    }
+}
+
+/// Whether a session log belongs in the thread. The runner echoes the command it
+/// ran, which repeats the prompt and is better read in Sessions.
+fn shows_in_thread(log: &SessionLog) -> bool {
+    !(log.stream == "system" && log.message.starts_with("$ "))
+}
+
 /// A one-line answer to "what are my agents doing?", when there is anything.
 fn session_activity(sessions: &LoadState<Vec<AgentSession>>) -> Option<String> {
     let waiting = count_where(sessions, |session| session.status == "waiting");
@@ -660,6 +685,7 @@ struct DesktopShell {
     composer: Entity<InputState>,
     _composer_subscription: Subscription,
     composer_status: Option<ComposerStatus>,
+    home_thread: Option<HomeThread>,
     sending_composer: bool,
     home_agent: Option<String>,
     home_checkout: git::Checkout,
@@ -848,6 +874,7 @@ impl DesktopShell {
             composer,
             _composer_subscription: composer_subscription,
             composer_status: None,
+            home_thread: None,
             sending_composer: false,
             home_agent: None,
             home_checkout: git::Checkout::None,
@@ -1432,8 +1459,11 @@ impl DesktopShell {
         selected.and_then(|id| agents.iter().find(|agent| agent.id == id))
     }
 
-    /// Capture whatever the composer holds as a task, assigned to the chosen
-    /// agent. Tasks do not run on their own; this only queues the work.
+    /// Start the agent on whatever the composer holds.
+    ///
+    /// One send is one run: a session is opened for the workspace, the agent
+    /// command is started with the prompt as its argument, and the thread on
+    /// Home streams what the agent prints until the session finishes.
     fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sending_composer {
             return;
@@ -1449,56 +1479,261 @@ impl DesktopShell {
             return;
         }
 
-        let Some(workspace_id) = self.selected_workspace.clone() else {
+        let Some(workspace) = self.selected_workspace_data().cloned() else {
             self.composer_status = Some(ComposerStatus::Failed(
-                "Create a workspace before capturing work.".to_string(),
+                "Create a workspace before starting an agent.".to_string(),
             ));
             cx.notify();
             return;
         };
 
-        let agent_id = self.composer_agent().map(|agent| agent.id.clone());
+        let Some(agent) = self.composer_agent().cloned() else {
+            self.composer_status = Some(ComposerStatus::Failed(
+                "Pick the agent that should run this.".to_string(),
+            ));
+            cx.notify();
+            return;
+        };
+
+        let Some(command) = self.agent_command(&agent.id) else {
+            self.composer_status = Some(ComposerStatus::Failed(format!(
+                "{} has no command yet. Add one in Agents.",
+                agent.name
+            )));
+            cx.notify();
+            return;
+        };
+
+        if !std::path::Path::new(&workspace.local_path).is_dir() {
+            self.composer_status = Some(ComposerStatus::Failed(format!(
+                "{} is not on this machine, so the agent has nowhere to run.",
+                workspace.local_path
+            )));
+            cx.notify();
+            return;
+        }
+
+        let invocation = runner::invocation(&command, &text);
+        let safe_commands = workspace.safe_commands.clone().unwrap_or_default();
+
+        if !safety::command_allowed(&workspace.safety_mode, &invocation, &safe_commands) {
+            self.blocked_command = Some(invocation);
+            self.composer_status = Some(ComposerStatus::Failed(
+                "This workspace only runs its safe commands.".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+
+        self.blocked_command = None;
+        self.composer_status = None;
+        self.sending_composer = true;
+
         let title = composer_title(&text);
         let prompt = text.clone();
-        let captured = title.clone();
-
-        self.sending_composer = true;
-        self.composer_status = None;
-
+        let workspace_id = workspace.id.clone();
+        let local_path = workspace.local_path.clone();
         let client = self.client.clone();
+        let registry = self.registry.clone();
+
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    client.create_task(&workspace_id, &title, &prompt, agent_id.as_deref())?;
-                    Ok::<_, ApiError>(load_tasks(&client, &workspace_id))
+                .spawn({
+                    let client = client.clone();
+                    let agent_id = agent.id.clone();
+                    let workspace_id = workspace_id.clone();
+                    let prompt = prompt.clone();
+
+                    async move {
+                        let session =
+                            client.create_session(&workspace_id, Some(&agent_id), &prompt)?;
+                        let session = match client.start_session(&session.id) {
+                            Ok(()) => session,
+                            Err(error) => {
+                                return Err(error);
+                            }
+                        };
+
+                        Ok::<_, ApiError>(session)
+                    }
                 })
                 .await;
 
-            this.update_in(cx, |this, window, cx| {
-                this.sending_composer = false;
+            match result {
+                Ok(session) => {
+                    let session_id = session.id.clone();
+                    let runner_client = client.clone();
+                    let runner_registry = registry.clone();
+                    let runner_workspace = workspace_id.clone();
+                    let runner_session = session_id.clone();
 
-                match result {
-                    Ok(LoadState::Loaded(tasks)) => {
-                        this.tasks = LoadState::Loaded(tasks);
+                    std::thread::spawn(move || {
+                        runner::run_agent(
+                            runner_registry,
+                            runner_client,
+                            runner_workspace,
+                            runner_session,
+                            invocation,
+                            local_path,
+                        );
+                    });
+
+                    this.update_in(cx, |this, window, cx| {
+                        this.sending_composer = false;
                         this.composer
                             .update(cx, |state, cx| state.set_value("", window, cx));
-                        this.composer_status = Some(ComposerStatus::Captured(captured));
-                    }
-                    Ok(LoadState::Failed(message)) => {
-                        this.composer_status = Some(ComposerStatus::Failed(message));
-                    }
-                    Ok(LoadState::Loading) => {}
-                    Err(error) => {
+                        this.home_thread = Some(HomeThread {
+                            session_id: session_id.clone(),
+                            title,
+                            prompt,
+                            status: "running".to_string(),
+                            logs: Vec::new(),
+                        });
+                        this.watch_home_thread(session_id, cx);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(error) => {
+                    this.update_in(cx, |this, _, cx| {
+                        this.sending_composer = false;
                         this.composer_status = Some(ComposerStatus::Failed(error_message(&error)));
-                    }
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Follow a thread's session until the run finishes, appending what it prints.
+    fn watch_home_thread(&mut self, session_id: String, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+
+        cx.spawn(async move |this, cx| {
+            let mut known = 0usize;
+
+            loop {
+                let watching = this
+                    .update(cx, |this, _| {
+                        this.home_thread
+                            .as_ref()
+                            .map(|thread| thread.session_id.as_str())
+                            == Some(session_id.as_str())
+                    })
+                    .unwrap_or(false);
+
+                if !watching {
+                    break;
                 }
 
+                let stream = cx
+                    .background_executor()
+                    .spawn({
+                        let client = client.clone();
+                        let session_id = session_id.clone();
+                        async move { client.stream_session(&session_id, known) }
+                    })
+                    .await;
+
+                let finished = this
+                    .update(cx, |this, cx| {
+                        let Some(thread) = this.home_thread.as_mut() else {
+                            return true;
+                        };
+
+                        if thread.session_id != session_id {
+                            return true;
+                        }
+
+                        match stream {
+                            Ok(stream) => {
+                                known += stream.logs.len();
+                                thread.logs.extend(stream.logs);
+                                thread.status = stream.session.status;
+                                cx.notify();
+
+                                !matches!(
+                                    thread.status.as_str(),
+                                    "running" | "ready" | "needs_setup"
+                                )
+                            }
+                            Err(_) => false,
+                        }
+                    })
+                    .unwrap_or(true);
+
+                if finished {
+                    break;
+                }
+
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(700))
+                    .await;
+            }
+
+            let workspace_id = this
+                .update(cx, |this, _| this.selected_workspace.clone())
+                .ok()
+                .flatten();
+
+            if let Some(workspace_id) = workspace_id {
+                let sessions = cx
+                    .background_executor()
+                    .spawn({
+                        let client = client.clone();
+                        async move { load_sessions(&client, &workspace_id) }
+                    })
+                    .await;
+
+                this.update(cx, |this, cx| {
+                    this.sessions = sessions;
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Stop the agent behind the current thread.
+    fn stop_home_thread(&mut self, cx: &mut Context<Self>) {
+        let Some(thread) = &self.home_thread else {
+            return;
+        };
+
+        let session_id = thread.session_id.clone();
+        self.registry.stop(&session_id);
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let _ = cx
+                .background_executor()
+                .spawn({
+                    let client = client.clone();
+                    let session_id = session_id.clone();
+                    async move { client.stop_session(&session_id) }
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                if let Some(thread) = &mut this.home_thread {
+                    thread.status = "stopped".to_string();
+                }
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Leave the thread and go back to the empty composer.
+    fn clear_home_thread(&mut self, cx: &mut Context<Self>) {
+        self.home_thread = None;
+        self.composer_status = None;
+        cx.notify();
     }
 
     fn submit_create_task(&mut self, cx: &mut Context<Self>) {
@@ -1517,7 +1752,7 @@ impl DesktopShell {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    client.create_task(&workspace_id, &title, &prompt, None)?;
+                    client.create_task(&workspace_id, &title, &prompt)?;
                     Ok::<_, ApiError>(load_tasks(&client, &workspace_id))
                 })
                 .await;
@@ -4190,29 +4425,196 @@ impl DesktopShell {
             .into_any_element()
     }
 
-    /// Home: capture work in one line, with the checkout and agent it belongs to
-    /// visible before it is captured.
+    /// Home: a composer while nothing runs, a thread while an agent works.
     fn render_home(&self, cx: &mut Context<Self>) -> AnyElement {
-        let workspace = self.selected_workspace_data();
-        let workspace_name = workspace
+        let card = self.render_composer_card(cx);
+        let details = self.render_home_details(cx);
+
+        if let Some(thread) = self.home_thread.as_ref() {
+            return self.render_thread(thread, card, details, cx);
+        }
+
+        // Nothing running: the composer sits in the middle of the surface, and
+        // the chips keep the top right corner.
+        div()
+            .size_full()
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .top(px(20.0))
+                    .right(px(24.0))
+                    .child(self.home_chips(cx)),
+            )
+            .child(
+                v_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .px(px(24.0))
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .max_w(px(720.0))
+                            .gap_3()
+                            .child(card)
+                            .child(details),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// A run in progress: what was asked, what the agent printed, and the
+    /// composer docked at the bottom for the next run.
+    fn render_thread(
+        &self,
+        thread: &HomeThread,
+        card: AnyElement,
+        details: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let working = matches!(thread.status.as_str(), "running" | "ready" | "needs_setup");
+
+        let header = h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .px(px(24.0))
+            .pt(px(20.0))
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(thread.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if thread.status == "failed" {
+                                cx.theme().danger_foreground
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .child(thread_status_label(&thread.status)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .child(if working {
+                        Button::new("thread-stop")
+                            .ghost()
+                            .small()
+                            .label("Stop")
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_home_thread(cx)))
+                    } else {
+                        Button::new("thread-new")
+                            .ghost()
+                            .small()
+                            .label("New")
+                            .on_click(cx.listener(|this, _, _, cx| this.clear_home_thread(cx)))
+                    })
+                    .child(self.home_chips(cx)),
+            );
+
+        let mut messages = v_flex().w_full().gap_4().px(px(24.0)).py(px(24.0));
+
+        messages = messages.child(
+            h_flex().w_full().justify_end().child(
+                div()
+                    .max_w(px(520.0))
+                    .rounded(px(12.0))
+                    .bg(cx.theme().secondary)
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .text_sm()
+                    .child(thread.prompt.clone()),
+            ),
+        );
+
+        let mut answer = v_flex().w_full().gap_1();
+
+        if thread.logs.iter().all(|log| !shows_in_thread(log)) {
+            answer = answer.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(if working {
+                        "Working…"
+                    } else {
+                        "The agent printed nothing."
+                    }),
+            );
+        }
+
+        for log in thread.logs.iter().filter(|log| shows_in_thread(log)) {
+            let color = match log.stream.as_str() {
+                "stdout" => cx.theme().foreground,
+                _ => cx.theme().muted_foreground,
+            };
+
+            answer = answer.child(
+                div()
+                    .font_family(self.mono_font.clone())
+                    .text_sm()
+                    .text_color(color)
+                    .child(log.message.clone()),
+            );
+        }
+
+        messages = messages.child(answer);
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(
+                div()
+                    .id("home-thread")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(messages),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .items_center()
+                    .px(px(24.0))
+                    .pb(px(16.0))
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .max_w(px(720.0))
+                            .gap_2()
+                            .child(card)
+                            .child(details),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn home_chips(&self, cx: &mut Context<Self>) -> AnyElement {
+        let workspace_name = self
+            .selected_workspace_data()
             .map(|workspace| workspace.name.clone())
             .unwrap_or_else(|| "No workspace".to_string());
-        let safety = workspace.map(|workspace| workspace.safety_mode.clone());
-        let has_workspace = workspace.is_some();
-        let checkout = self.home_checkout.clone();
         let account = match &self.session {
             SessionStatus::SignedIn(user) => user.name.clone(),
             _ => "Kloucy".to_string(),
         };
-        let agent_name = self
-            .composer_agent()
-            .map(|agent| agent.name.clone())
-            .unwrap_or_else(|| "No agent".to_string());
 
-        let chips = h_flex()
-            .w_full()
+        h_flex()
             .items_center()
-            .justify_end()
             .gap_1()
             .child(
                 self.home_popover(
@@ -4241,7 +4643,24 @@ impl DesktopShell {
                     HomeMenu::Account,
                     cx,
                 ),
-            );
+            )
+            .into_any_element()
+    }
+
+    /// The composer card: the field the work is typed into, the paperclip, the
+    /// agent that will run it, and send.
+    fn render_composer_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let safety = self
+            .selected_workspace_data()
+            .map(|workspace| workspace.safety_mode.clone());
+        let agent_name = self
+            .composer_agent()
+            .map(|agent| agent.name.clone())
+            .unwrap_or_else(|| "No agent".to_string());
+        let working = self
+            .home_thread
+            .as_ref()
+            .is_some_and(|thread| matches!(thread.status.as_str(), "running" | "ready"));
 
         let attach = h_flex()
             .id("composer-attach")
@@ -4279,7 +4698,7 @@ impl DesktopShell {
             })
             .into_any_element();
 
-        let can_send = !self.composer.read(cx).value().trim().is_empty();
+        let can_send = !working && !self.composer.read(cx).value().trim().is_empty();
         let send = div()
             .id("composer-send")
             .size(px(30.0))
@@ -4296,7 +4715,7 @@ impl DesktopShell {
             .on_click(cx.listener(|this, _, window, cx| this.submit_composer(window, cx)))
             .child(Icon::new(IconName::ArrowUp).size(px(16.0)));
 
-        let card = v_flex()
+        v_flex()
             .w_full()
             .rounded(px(16.0))
             .border_1()
@@ -4308,7 +4727,8 @@ impl DesktopShell {
                 Input::new(&self.composer)
                     .appearance(false)
                     .bordered(false)
-                    .focus_bordered(false),
+                    .focus_bordered(false)
+                    .disabled(working),
             )
             .child(
                 h_flex()
@@ -4327,7 +4747,15 @@ impl DesktopShell {
                             ))
                             .child(send),
                     ),
-            );
+            )
+            .into_any_element()
+    }
+
+    /// Under the composer: the checkout it runs in, what the last attempt did,
+    /// and what the agents are doing.
+    fn render_home_details(&self, cx: &mut Context<Self>) -> AnyElement {
+        let has_workspace = self.selected_workspace_data().is_some();
+        let checkout = self.home_checkout.clone();
 
         let mut checkout_row = h_flex().items_center().gap_1().child(
             self.home_popover(
@@ -4365,14 +4793,6 @@ impl DesktopShell {
         let mut details = v_flex().gap_1().px(px(6.0)).child(checkout_row);
 
         match &self.composer_status {
-            Some(ComposerStatus::Captured(title)) => {
-                details = details.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().success_foreground)
-                        .child(format!("Captured in Inbox: {title}")),
-                );
-            }
             Some(ComposerStatus::Notice(message)) => {
                 details = details.child(
                     div()
@@ -4442,28 +4862,7 @@ impl DesktopShell {
             );
         }
 
-        // The composer sits in the middle of the surface; the chips keep the top
-        // right corner, so the work has one clear focus.
-        div()
-            .size_full()
-            .relative()
-            .child(div().absolute().top(px(20.0)).right(px(24.0)).child(chips))
-            .child(
-                v_flex()
-                    .size_full()
-                    .items_center()
-                    .justify_center()
-                    .px(px(24.0))
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .max_w(px(720.0))
-                            .gap_3()
-                            .child(card)
-                            .child(details),
-                    ),
-            )
-            .into_any_element()
+        details.into_any_element()
     }
 
     /// The chip shape the home selectors share: icon, label, and the chevron
@@ -5305,6 +5704,31 @@ mod home_tests {
             ])),
             Some("2 waiting · 1 running".to_string())
         );
+    }
+
+    #[test]
+    fn labels_run_status() {
+        assert_eq!(thread_status_label("running"), "Working…");
+        assert_eq!(thread_status_label("done"), "Done");
+        assert_eq!(thread_status_label("failed"), "Failed");
+        assert_eq!(thread_status_label("stopped"), "Stopped");
+        assert_eq!(thread_status_label("anything-else"), "Waiting");
+    }
+
+    #[test]
+    fn keeps_the_echoed_command_out_of_the_thread() {
+        assert!(!shows_in_thread(&SessionLog {
+            message: "$ codex exec 'hola'".to_string(),
+            stream: "system".to_string(),
+        }));
+        assert!(shows_in_thread(&SessionLog {
+            message: "hola".to_string(),
+            stream: "stdout".to_string(),
+        }));
+        assert!(shows_in_thread(&SessionLog {
+            message: "Session stopped; the agent process was terminated.".to_string(),
+            stream: "system".to_string(),
+        }));
     }
 }
 

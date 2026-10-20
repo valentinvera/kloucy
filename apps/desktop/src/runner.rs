@@ -74,6 +74,27 @@ fn terminate(pid: u32) {
 #[cfg(not(unix))]
 fn terminate(_pid: u32) {}
 
+/// The command to run for a prompt.
+///
+/// A template may place the prompt with `{prompt}`; otherwise the prompt is
+/// appended as the last argument, which is what one-shot agent commands expect
+/// (`codex exec … "the prompt"`). The prompt is always single-quoted, so it
+/// reaches the agent as one argument and never as shell syntax.
+pub fn invocation(command: &str, prompt: &str) -> String {
+    let quoted = shell_quote(prompt);
+
+    if command.contains("{prompt}") {
+        return command.replace("{prompt}", &quoted);
+    }
+
+    format!("{command} {quoted}")
+}
+
+/// Quote a value for `sh -c`, where single quotes take everything literally.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 /// Run an agent command in the given directory, streaming its output to the
 /// session logs, marking the session finished, and creating a review when the
 /// run changed files.
@@ -92,6 +113,9 @@ pub fn run_agent(
         .arg("-c")
         .arg(&command)
         .current_dir(&cwd)
+        // Some agents read stdin when it is not a terminal and would wait
+        // forever for input the window cannot give them.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -236,5 +260,29 @@ mod tests {
         registry.register("session-1", next.id());
         assert!(!registry.take_stopped("session-1"));
         let _ = next.wait();
+    }
+
+    #[test]
+    fn appends_the_prompt_to_a_plain_command() {
+        assert_eq!(
+            invocation("codex exec --full-auto", "fix the login"),
+            "codex exec --full-auto 'fix the login'"
+        );
+    }
+
+    #[test]
+    fn fills_a_prompt_placeholder() {
+        assert_eq!(
+            invocation("opencode run {prompt}", "hola"),
+            "opencode run 'hola'"
+        );
+    }
+
+    #[test]
+    fn keeps_prompt_text_out_of_the_shell() {
+        assert_eq!(
+            invocation("agent", "it's $HOME; rm -rf /"),
+            r"agent 'it'\''s $HOME; rm -rf /'"
+        );
     }
 }
