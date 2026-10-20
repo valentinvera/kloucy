@@ -4442,19 +4442,26 @@ impl DesktopShell {
             );
         }
 
-        v_flex()
+        // The composer sits in the middle of the surface; the chips keep the top
+        // right corner, so the work has one clear focus.
+        div()
             .size_full()
-            .items_center()
-            .px(px(24.0))
-            .pt(px(20.0))
+            .relative()
+            .child(div().absolute().top(px(20.0)).right(px(24.0)).child(chips))
             .child(
                 v_flex()
-                    .w_full()
-                    .max_w(px(720.0))
-                    .gap_3()
-                    .child(chips)
-                    .child(card)
-                    .child(details),
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .px(px(24.0))
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .max_w(px(720.0))
+                            .gap_3()
+                            .child(card)
+                            .child(details),
+                    ),
             )
             .into_any_element()
     }
