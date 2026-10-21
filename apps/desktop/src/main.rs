@@ -11,9 +11,10 @@ mod typography;
 
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Div, Entity, FocusHandle,
-    FontStyle, FontWeight, IntoElement, KeyBinding, Pixels, Render, ScrollHandle, SharedString,
-    StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle, WeakEntity, Window,
-    WindowBounds, WindowOptions, actions, div, font, hsla, img, prelude::*, px, rgb, size,
+    FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render, ScrollHandle,
+    SharedString, StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle,
+    WeakEntity, Window, WindowBounds, WindowOptions, actions, div, font, hsla, prelude::*, px, rgb,
+    size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -323,29 +324,29 @@ fn safety_label(mode: &str) -> &'static str {
 fn agent_icon(provider: &str) -> &'static str {
     match provider {
         "codex" => "icons/agents/openai.svg",
-        // Claude's mark keeps its own colour, so it is painted as an image.
-        "claude-code" => "icons/agents/claude.png",
+        "claude-code" => "icons/agents/claude.svg",
         "opencode" => "icons/agents/opencode.svg",
         _ => "icons/bot.svg",
     }
 }
 
-/// An agent's mark: single-ink logos are icons the theme tints, while the one
-/// with its own colour is drawn as an image so it stays that colour.
-fn agent_mark(provider: &str, size: f32) -> AnyElement {
-    if provider == "claude-code" {
-        // `flex_none` is what the icon element sets by default: without it a
-        // mark in a tight row shrinks to nothing and looks missing.
-        return img(agent_icon(provider))
-            .flex_none()
-            .size(px(size))
-            .into_any_element();
+/// The ink an agent's mark is drawn in, when the brand has a colour of its own.
+/// OpenAI and OpenCode are single-ink marks, so they take the theme's text
+/// colour, which is how those brands are drawn on either background.
+fn agent_ink(provider: &str) -> Option<Hsla> {
+    match provider {
+        "claude-code" => Some(rgb(0xd97757).into()),
+        _ => None,
     }
+}
 
-    Icon::empty()
-        .path(agent_icon(provider))
-        .size(px(size))
-        .into_any_element()
+fn agent_mark(provider: &str, size: f32) -> AnyElement {
+    let mark = Icon::empty().path(agent_icon(provider)).size(px(size));
+
+    match agent_ink(provider) {
+        Some(ink) => mark.text_color(ink).into_any_element(),
+        None => mark.into_any_element(),
+    }
 }
 
 /// The last segment of a path, for chips that cannot show all of it.

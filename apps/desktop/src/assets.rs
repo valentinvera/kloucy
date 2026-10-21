@@ -39,11 +39,9 @@ const EXTRA_ICONS: [(&str, &[u8]); 5] = [
         "icons/agents/opencode.svg",
         include_bytes!("../assets/icons/agents/opencode.svg"),
     ),
-    // Claude's mark carries its own colour, which an SVG mask would flatten,
-    // so it ships as a small transparent PNG instead.
     (
-        "icons/agents/claude.png",
-        include_bytes!("../assets/icons/agents/claude.png"),
+        "icons/agents/claude.svg",
+        include_bytes!("../assets/icons/agents/claude.svg"),
     ),
 ];
 
@@ -92,13 +90,14 @@ mod tests {
 
     #[test]
     fn embeds_the_agent_marks() {
-        let png = Assets
-            .load("icons/agents/claude.png")
-            .expect("the mark should load")
-            .expect("the mark should be embedded");
+        for provider in ["openai", "claude", "opencode"] {
+            let mark = Assets
+                .load(&format!("icons/agents/{provider}.svg"))
+                .expect("the mark should load")
+                .expect("the mark should be embedded");
 
-        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
-        assert!(png.len() > 1024);
+            assert!(mark.starts_with(b"<svg") || mark.windows(4).any(|w| w == b"<svg"));
+        }
     }
 
     #[test]
