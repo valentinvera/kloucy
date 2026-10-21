@@ -2124,19 +2124,19 @@ impl DesktopShell {
     /// that go with it.
     fn apply_agent_menu(&mut self, action: AgentMenuAction, cx: &mut Context<Self>) {
         match action {
+            // The picker stays open while its options change: it is one card, and
+            // closing it after every pick would hide the step that follows.
             AgentMenuAction::Provider(provider) => {
                 self.home_provider = Some(provider);
                 self.home_fast = false;
-                self.home_menu = None;
+                self.picker_agents = false;
                 self.pick_default_model();
             }
             AgentMenuAction::Model(model) => {
                 self.apply_model(model);
-                self.home_menu = None;
             }
             AgentMenuAction::Effort(effort) => {
                 self.home_effort = Some(effort);
-                self.home_menu = None;
             }
             AgentMenuAction::Fast => {
                 self.home_fast = !self.home_fast;
