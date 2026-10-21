@@ -334,7 +334,12 @@ fn agent_icon(provider: &str) -> &'static str {
 /// with its own colour is drawn as an image so it stays that colour.
 fn agent_mark(provider: &str, size: f32) -> AnyElement {
     if provider == "claude-code" {
-        return img(agent_icon(provider)).size(px(size)).into_any_element();
+        // `flex_none` is what the icon element sets by default: without it a
+        // mark in a tight row shrinks to nothing and looks missing.
+        return img(agent_icon(provider))
+            .flex_none()
+            .size(px(size))
+            .into_any_element();
     }
 
     Icon::empty()

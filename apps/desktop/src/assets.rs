@@ -91,6 +91,17 @@ mod tests {
     }
 
     #[test]
+    fn embeds_the_agent_marks() {
+        let png = Assets
+            .load("icons/agents/claude.png")
+            .expect("the mark should load")
+            .expect("the mark should be embedded");
+
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
+        assert!(png.len() > 1024);
+    }
+
+    #[test]
     fn serves_the_icons_the_component_library_lacks() {
         for (name, _) in EXTRA_ICONS {
             let icon = Assets.load(name).expect("an icon should load");
