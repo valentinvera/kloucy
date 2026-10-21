@@ -10,11 +10,11 @@ mod settings;
 mod typography;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, DefiniteLength, Div,
-    Entity, FocusHandle, FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render,
-    ScrollHandle, SharedString, StrikethroughStyle, StyledText, Subscription, TextRun,
-    UnderlineStyle, Window, WindowBounds, WindowOptions, actions, div, font, hsla, prelude::*, px,
-    rgb, size,
+    AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Div, Entity, FocusHandle,
+    FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render, ScrollHandle,
+    SharedString, StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle,
+    WeakEntity, Window, WindowBounds, WindowOptions, actions, div, font, hsla, prelude::*, px, rgb,
+    size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -236,6 +236,7 @@ enum LoadState<T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HomeMenu {
     Workspace,
+    Agent,
     Account,
     Checkout,
     Branch,
@@ -262,6 +263,7 @@ struct HomeThread {
 #[derive(Clone, Debug)]
 enum AgentMenuAction {
     Effort(String),
+    Fast,
     Model(String),
     Provider(String),
 }
@@ -382,6 +384,18 @@ fn effort_label(level: &str) -> String {
             }
         }
     }
+}
+
+/// A control's click, applied to the shell that owns the menu it lives in.
+fn menu_action(
+    entity: &WeakEntity<DesktopShell>,
+    action: AgentMenuAction,
+) -> Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App)> {
+    let entity = entity.clone();
+
+    Box::new(move |_, _window, cx| {
+        let _ = entity.update(cx, |this, cx| this.apply_agent_menu(action.clone(), cx));
+    })
 }
 
 /// One row of a home menu: an icon, some content, and what happens on click.
@@ -859,8 +873,8 @@ struct DesktopShell {
     home_menu: Option<HomeMenu>,
     palette_open: bool,
     palette_query: Entity<InputState>,
-    agent_picker_open: bool,
     agent_search: Entity<InputState>,
+    _agent_search_subscription: Subscription,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
     agents: LoadState<Vec<Agent>>,
@@ -941,6 +955,9 @@ impl DesktopShell {
             .unwrap_or_else(|| cx.theme().font_family.clone());
         let palette_query = cx.new(|cx| InputState::new(window, cx).placeholder("Search commands"));
         let agent_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
+        let agent_search_subscription = cx.subscribe(&agent_search, |_, _, _: &InputEvent, cx| {
+            cx.notify();
+        });
         let email = cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
         let password = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1060,8 +1077,8 @@ impl DesktopShell {
             home_menu: None,
             palette_open: false,
             palette_query,
-            agent_picker_open: false,
             agent_search,
+            _agent_search_subscription: agent_search_subscription,
             completing_intake: false,
             create_error: None,
             creating_step: false,
@@ -2118,6 +2135,9 @@ impl DesktopShell {
                 self.home_effort = Some(effort);
                 self.home_menu = None;
             }
+            AgentMenuAction::Fast => {
+                self.home_fast = !self.home_fast;
+            }
         }
 
         self.composer_status = None;
@@ -2169,6 +2189,54 @@ impl DesktopShell {
             .find(|choice| choice.id == model)
             .map(|choice| choice.label.clone())
             .or(Some(model))
+    }
+
+    /// Ask the selected CLI what it can run, in the background. Startup does this
+    /// too; probing when the picker opens covers a CLI that answered late or was
+    /// installed since.
+    fn probe_models(&mut self, cx: &mut Context<Self>) {
+        let Some(choice) = self.composer_choice() else {
+            return;
+        };
+
+        if self
+            .model_catalogs
+            .get(&choice.provider)
+            .is_some_and(|catalog| !catalog.models.is_empty())
+        {
+            return;
+        }
+
+        let Some(executable) = self
+            .installed_agents
+            .iter()
+            .find(|cli| cli.provider == choice.provider)
+            .map(|cli| cli.executable_path.clone())
+        else {
+            return;
+        };
+
+        let provider = choice.provider.clone();
+
+        cx.spawn(async move |this, cx| {
+            let probed = provider.clone();
+            let catalog = cx
+                .background_executor()
+                .spawn(async move { agents::model_catalog(&probed, &executable) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                if catalog.models.is_empty() {
+                    return;
+                }
+
+                this.model_catalogs.insert(provider, catalog);
+                this.pick_default_model();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Leave the thread and go back to the empty composer.
@@ -5048,7 +5116,7 @@ impl DesktopShell {
             .when_some(safety, |element, mode| {
                 element.child(div().opacity(0.7).child(safety_label(&mode)))
             })
-            .on_click(cx.listener(|this, _, window, cx| this.open_agent_picker(window, cx)))
+            .on_click(cx.listener(|this, _, _, cx| this.probe_models(cx)))
             .into_any_element();
 
         let can_send = !working && !self.composer.read(cx).value().trim().is_empty();
@@ -5097,7 +5165,13 @@ impl DesktopShell {
                         h_flex()
                             .items_center()
                             .gap(px(8.0))
-                            .child(agent_trigger)
+                            .child(self.home_popover(
+                                "composer-agent",
+                                agent_trigger,
+                                HomeMenu::Agent,
+                                Corner::TopRight,
+                                cx,
+                            ))
                             .child(send),
                     ),
             )
@@ -5390,6 +5464,36 @@ impl DesktopShell {
                     list.into_any_element()
                 })
             }
+            HomeMenu::Agent => {
+                let choices = self.agent_choices();
+                let provider = self
+                    .composer_choice()
+                    .map(|choice| choice.provider)
+                    .unwrap_or_default();
+                let catalog = self
+                    .model_catalogs
+                    .get(&provider)
+                    .cloned()
+                    .unwrap_or_default();
+                let model = self.home_model.clone();
+                let effort = self.home_effort.clone();
+                let fast = self.home_fast;
+                let search = self.agent_search.clone();
+
+                Rc::new(move |cx| {
+                    Self::agent_picker_panel(
+                        &entity,
+                        &search,
+                        &choices,
+                        &provider,
+                        &catalog,
+                        model.as_deref(),
+                        effort.as_deref(),
+                        fast,
+                        cx,
+                    )
+                })
+            }
             HomeMenu::Account => {
                 let name = match &self.session {
                     SessionStatus::SignedIn(user) => user.name.clone(),
@@ -5662,10 +5766,6 @@ impl DesktopShell {
             shell = shell.child(self.render_command_palette(cx));
         }
 
-        if self.agent_picker_open {
-            shell = shell.child(self.render_agent_picker(cx));
-        }
-
         shell.into_any_element()
     }
 
@@ -5692,10 +5792,6 @@ impl DesktopShell {
     ) {
         if self.palette_open {
             self.close_palette(window, cx);
-        }
-
-        if self.agent_picker_open {
-            self.close_agent_picker(window, cx);
         }
     }
 
@@ -5746,75 +5842,77 @@ impl DesktopShell {
         cx.notify();
     }
 
-    /// The model picker: an agent rail, a search field, the models that agent
-    /// offers, and the knobs that go with them. It replaces a list in a popover
-    /// because there are too many models to read in one narrow column.
-    fn render_agent_picker(&self, cx: &mut Context<Self>) -> AnyElement {
-        let choices = self.agent_choices();
-        let selected = self.composer_choice();
-        let provider = selected
-            .as_ref()
-            .map(|choice| choice.provider.clone())
-            .unwrap_or_default();
-        let catalog = self
-            .model_catalogs
-            .get(&provider)
-            .cloned()
-            .unwrap_or_default();
-        let query = self.agent_search.read(cx).value().to_lowercase();
+    /// The model picker: an agent rail, a search field, the models that agent offers,
+    /// and the knobs that go with them.
+    #[allow(clippy::too_many_arguments)]
+    fn agent_picker_panel(
+        entity: &WeakEntity<DesktopShell>,
+        search: &Entity<InputState>,
+        choices: &[AgentChoice],
+        provider: &str,
+        catalog: &agents::ModelCatalog,
+        model: Option<&str>,
+        effort: Option<&str>,
+        fast: bool,
+        cx: &App,
+    ) -> AnyElement {
+        let query = search.read(cx).value().to_lowercase();
         let models = catalog
             .models
             .iter()
-            .filter(|model| {
+            .filter(|choice| {
                 query.is_empty()
-                    || model.label.to_lowercase().contains(&query)
-                    || model.id.to_lowercase().contains(&query)
+                    || choice.label.to_lowercase().contains(&query)
+                    || choice.id.to_lowercase().contains(&query)
             })
-            .cloned()
             .collect::<Vec<_>>();
-        let chosen_model = self.home_model.clone();
-        let chosen_effort = self.home_effort.clone();
 
         let mut rail = v_flex()
             .h_full()
-            .w(px(56.0))
+            .w(px(48.0))
             .flex_shrink_0()
             .items_center()
             .gap_2()
-            .py(px(12.0))
+            .py(px(8.0))
             .border_r_1()
             .border_color(cx.theme().border);
 
         for (index, choice) in choices.iter().enumerate() {
-            let next = choice.provider.clone();
             let is_selected = choice.provider == provider;
 
             rail = rail.child(
                 div()
                     .id(("picker-agent", index))
-                    .size(px(36.0))
+                    .size(px(32.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.0))
+                    .rounded(px(6.0))
                     .when(is_selected, |element| element.bg(cx.theme().list_hover))
                     .hover(|element| element.bg(cx.theme().list_hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.apply_agent_menu(AgentMenuAction::Provider(next.clone()), cx);
-                    }))
-                    .child(agent_mark(&choice.provider, 18.0)),
+                    .on_click(menu_action(
+                        entity,
+                        AgentMenuAction::Provider(choice.provider.clone()),
+                    ))
+                    .child(agent_mark(&choice.provider, 16.0)),
             );
         }
 
         let mut model_list = v_flex().w_full().gap(px(2.0));
 
         if models.is_empty() {
-            model_list = model_list.child(menu_note("No model matches.", cx));
+            model_list = model_list.child(menu_note(
+                if catalog.models.is_empty() {
+                    "This CLI did not report any model."
+                } else {
+                    "No model matches."
+                },
+                cx,
+            ));
         }
 
-        for (index, model) in models.iter().enumerate() {
-            let is_selected = chosen_model.as_deref() == Some(model.id.as_str());
-            let next = model.id.clone();
+        for (index, choice) in models.iter().enumerate() {
+            let is_selected = model == Some(choice.id.as_str());
 
             model_list = model_list.child(
                 h_flex()
@@ -5827,28 +5925,17 @@ impl DesktopShell {
                     .rounded(px(6.0))
                     .when(is_selected, |element| element.bg(cx.theme().list_hover))
                     .hover(|element| element.bg(cx.theme().list_hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.apply_agent_menu(AgentMenuAction::Model(next.clone()), cx);
-                    }))
+                    .on_click(menu_action(
+                        entity,
+                        AgentMenuAction::Model(choice.id.clone()),
+                    ))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
                             .text_sm()
-                            .child(model.label.clone()),
-                    )
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_1()
-                            .child(agent_mark(&provider, 12.0))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(provider.clone()),
-                            ),
+                            .child(choice.label.clone()),
                     )
                     .when(is_selected, |element| {
                         element.child(Icon::new(IconName::Check).size(px(14.0)))
@@ -5860,9 +5947,9 @@ impl DesktopShell {
             .flex_1()
             .min_w_0()
             .h_full()
-            .gap_3()
-            .p_3()
-            .child(Input::new(&self.agent_search).appearance(false))
+            .gap_2()
+            .p_2()
+            .child(Input::new(search))
             .child(
                 div()
                     .text_xs()
@@ -5882,8 +5969,7 @@ impl DesktopShell {
             let mut levels = h_flex().w_full().flex_wrap().gap_1();
 
             for (index, level) in catalog.efforts.iter().enumerate() {
-                let is_selected = chosen_effort.as_deref() == Some(level.as_str());
-                let next = level.clone();
+                let is_selected = effort == Some(level.as_str());
 
                 levels = levels.child(
                     div()
@@ -5902,9 +5988,7 @@ impl DesktopShell {
                                 .bg(cx.theme().muted)
                                 .hover(|element| element.bg(cx.theme().list_hover))
                         })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.apply_agent_menu(AgentMenuAction::Effort(next.clone()), cx);
-                        }))
+                        .on_click(menu_action(entity, AgentMenuAction::Effort(level.clone())))
                         .child(effort_label(level)),
                 );
             }
@@ -5929,58 +6013,26 @@ impl DesktopShell {
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .child(div().text_sm().child("Fast mode"))
-                    .child(Switch::new("picker-fast").checked(self.home_fast).on_click(
-                        cx.listener(|this, checked: &bool, _, cx| {
-                            this.home_fast = *checked;
-                            cx.notify();
-                        }),
-                    )),
+                    .child(Switch::new("picker-fast").checked(fast).on_click({
+                        let entity = entity.clone();
+
+                        move |_, _, cx| {
+                            let _ = entity.update(cx, |this, cx| {
+                                this.apply_agent_menu(AgentMenuAction::Fast, cx);
+                            });
+                        }
+                    })),
             );
         }
 
-        let panel = h_flex()
-            .id("agent-picker-panel")
-            .w(px(640.0))
-            .max_w(DefiniteLength::Fraction(0.92))
-            .h(px(440.0))
-            .max_h(DefiniteLength::Fraction(0.9))
+        h_flex()
+            .id("agent-picker")
+            .w(px(520.0))
+            .h(px(400.0))
             .overflow_hidden()
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
             .child(rail)
             .child(body)
-            .on_click(|_, _, cx| cx.stop_propagation());
-
-        div()
-            .id("agent-picker-backdrop")
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(cx.theme().overlay)
-            .on_click(cx.listener(|this, _, window, cx| this.close_agent_picker(window, cx)))
-            .child(panel)
             .into_any_element()
-    }
-
-    fn open_agent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.agent_picker_open = true;
-        self.agent_search
-            .update(cx, |state, cx| state.set_value("", window, cx));
-        self.agent_search
-            .update(cx, |state, cx| state.focus(window, cx));
-        cx.notify();
-    }
-
-    fn close_agent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.agent_picker_open = false;
-        self.agent_search
-            .update(cx, |state, cx| state.set_value("", window, cx));
-        self.focus_handle.focus(window);
-        cx.notify();
     }
 
     fn render_command_palette(&self, cx: &mut Context<Self>) -> AnyElement {

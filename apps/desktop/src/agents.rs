@@ -86,11 +86,16 @@ pub fn model_catalog(provider: &str, executable: &str) -> ModelCatalog {
         "codex" => run_capture(executable, &["debug", "models"])
             .map(|json| parse_codex_models(&json))
             .unwrap_or_default(),
-        "opencode" => run_capture(executable, &["models"])
+        // `--standalone` answers from a private server instead of depending on
+        // the background service the CLI normally talks to.
+        "opencode" => run_capture(executable, &["models", "--standalone"])
             .map(|text| parse_opencode_models(&text))
             .unwrap_or_default(),
         "claude-code" => ModelCatalog {
-            efforts: Vec::new(),
+            efforts: ["low", "medium", "high", "max"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
             fast: false,
             models: ["sonnet", "opus", "haiku"]
                 .into_iter()
