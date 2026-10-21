@@ -240,13 +240,20 @@ enum HomeMenu {
     Attach,
 }
 
-/// A run started from Home: the prompt, and what the agent has printed so far.
-struct HomeThread {
-    session_id: String,
-    title: String,
-    prompt: String,
-    status: String,
+/// One exchange in a conversation: what was asked and what the agent answered.
+struct HomeTurn {
     logs: Vec<SessionLog>,
+    prompt: String,
+    session_id: String,
+    status: String,
+}
+
+/// A conversation on Home. Each turn is its own run, and the agent-side session
+/// is what lets later turns carry the earlier ones as context.
+struct HomeThread {
+    agent_session: Option<String>,
+    title: String,
+    turns: Vec<HomeTurn>,
 }
 
 /// Where Home runs its messages: a project checkout, or Kloucy's own chat space
@@ -700,6 +707,23 @@ fn thread_answer(logs: &[SessionLog]) -> Option<String> {
         .collect::<Vec<_>>();
 
     (!printed.is_empty()).then(|| printed.join("\n"))
+}
+
+/// The agent-side session a run reported, which is what carries context into
+/// the next turn of the same conversation.
+fn agent_session_id(logs: &[SessionLog]) -> Option<String> {
+    logs.iter().find_map(|log| {
+        let event: serde_json::Value = serde_json::from_str(&log.message).ok()?;
+
+        if event.get("type")?.as_str()? != "thread.started" {
+            return None;
+        }
+
+        event
+            .get("thread_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    })
 }
 
 /// How a run's status reads in the thread header.
@@ -1600,7 +1624,7 @@ impl DesktopShell {
     /// command is started with the prompt as its argument, and the thread on
     /// Home streams what the agent prints until the session finishes.
     fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sending_composer {
+        if self.sending_composer || self.running_session().is_some() {
             return;
         }
 
@@ -1637,7 +1661,16 @@ impl DesktopShell {
             return;
         };
 
-        let command = choice.command.clone();
+        let mut command = choice.command.clone();
+
+        if let Some(agent_session) = self
+            .home_thread
+            .as_ref()
+            .and_then(|thread| thread.agent_session.clone())
+        {
+            command = agents::resume_command(&choice.provider, &command, &agent_session)
+                .unwrap_or(command);
+        }
 
         let invocation = runner::invocation(&command, &text);
         let (safety_mode, safe_commands) = match &plan {
@@ -1762,13 +1795,23 @@ impl DesktopShell {
                         this.refresh_home_checkout();
                         this.composer
                             .update(cx, |state, cx| state.set_value("", window, cx));
-                        this.home_thread = Some(HomeThread {
-                            session_id: session_id.clone(),
-                            title,
-                            prompt,
-                            status: "running".to_string(),
+                        let turn = HomeTurn {
                             logs: Vec::new(),
-                        });
+                            prompt,
+                            session_id: session_id.clone(),
+                            status: "running".to_string(),
+                        };
+
+                        match &mut this.home_thread {
+                            Some(thread) => thread.turns.push(turn),
+                            None => {
+                                this.home_thread = Some(HomeThread {
+                                    agent_session: None,
+                                    title,
+                                    turns: vec![turn],
+                                });
+                            }
+                        }
                         this.watch_home_thread(session_id, cx);
                         cx.notify();
                     })
@@ -1797,10 +1840,12 @@ impl DesktopShell {
             loop {
                 let watching = this
                     .update(cx, |this, _| {
-                        this.home_thread
-                            .as_ref()
-                            .map(|thread| thread.session_id.as_str())
-                            == Some(session_id.as_str())
+                        this.home_thread.as_ref().is_some_and(|thread| {
+                            thread
+                                .turns
+                                .iter()
+                                .any(|turn| turn.session_id == session_id)
+                        })
                     })
                     .unwrap_or(false);
 
@@ -1823,21 +1868,27 @@ impl DesktopShell {
                             return true;
                         };
 
-                        if thread.session_id != session_id {
+                        let Some(turn) = thread
+                            .turns
+                            .iter_mut()
+                            .find(|turn| turn.session_id == session_id)
+                        else {
                             return true;
-                        }
+                        };
 
                         match stream {
                             Ok(stream) => {
                                 known += stream.logs.len();
-                                thread.logs.extend(stream.logs);
-                                thread.status = stream.session.status;
+                                turn.logs.extend(stream.logs);
+                                turn.status = stream.session.status;
+
+                                if let Some(agent_session) = agent_session_id(&turn.logs) {
+                                    thread.agent_session = Some(agent_session);
+                                }
+
                                 cx.notify();
 
-                                !matches!(
-                                    thread.status.as_str(),
-                                    "running" | "ready" | "needs_setup"
-                                )
+                                !matches!(turn.status.as_str(), "running" | "ready" | "needs_setup")
                             }
                             Err(_) => false,
                         }
@@ -1877,13 +1928,24 @@ impl DesktopShell {
         .detach();
     }
 
+    /// The run still going in the thread, if there is one.
+    fn running_session(&self) -> Option<String> {
+        self.home_thread.as_ref().and_then(|thread| {
+            thread
+                .turns
+                .iter()
+                .rev()
+                .find(|turn| matches!(turn.status.as_str(), "running" | "ready" | "needs_setup"))
+                .map(|turn| turn.session_id.clone())
+        })
+    }
+
     /// Stop the agent behind the current thread.
     fn stop_home_thread(&mut self, cx: &mut Context<Self>) {
-        let Some(thread) = &self.home_thread else {
+        let Some(session_id) = self.running_session() else {
             return;
         };
 
-        let session_id = thread.session_id.clone();
         self.registry.stop(&session_id);
 
         let client = self.client.clone();
@@ -1899,7 +1961,13 @@ impl DesktopShell {
 
             this.update(cx, |this, cx| {
                 if let Some(thread) = &mut this.home_thread {
-                    thread.status = "stopped".to_string();
+                    if let Some(turn) = thread
+                        .turns
+                        .iter_mut()
+                        .find(|turn| turn.session_id == session_id)
+                    {
+                        turn.status = "stopped".to_string();
+                    }
                 }
                 cx.notify();
             })
@@ -4546,8 +4614,12 @@ impl DesktopShell {
         details: AnyElement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let working = matches!(thread.status.as_str(), "running" | "ready" | "needs_setup");
-        let answer = thread_answer(&thread.logs);
+        let working = self.running_session().is_some();
+        let status = thread
+            .turns
+            .last()
+            .map(|turn| turn.status.as_str())
+            .unwrap_or("done");
 
         let header = h_flex()
             .w_full()
@@ -4571,12 +4643,12 @@ impl DesktopShell {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(if thread.status == "failed" {
+                            .text_color(if status == "failed" {
                                 cx.theme().danger_foreground
                             } else {
                                 cx.theme().muted_foreground
                             })
-                            .child(thread_status_label(&thread.status)),
+                            .child(thread_status_label(status)),
                     ),
             )
             .child(
@@ -4602,37 +4674,43 @@ impl DesktopShell {
 
         // The conversation shares the composer's column, so both read as one
         // surface instead of a wide panel with a narrow field under it.
-        let mut messages = v_flex().w_full().gap_3().py(px(16.0));
+        let mut messages = v_flex().w_full().gap_4().py(px(16.0));
 
-        messages = messages.child(
-            h_flex().w_full().justify_end().child(
-                div()
-                    .max_w(px(520.0))
-                    .rounded(px(12.0))
-                    .bg(cx.theme().secondary)
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .text_sm()
-                    .child(thread.prompt.clone()),
-            ),
-        );
+        for (index, turn) in thread.turns.iter().enumerate() {
+            let last = index + 1 == thread.turns.len();
+            let turn_working =
+                last && matches!(turn.status.as_str(), "running" | "ready" | "needs_setup");
 
-        messages = messages.child(
-            h_flex().w_full().justify_start().child(
-                div()
-                    .max_w(px(620.0))
-                    .rounded(px(12.0))
-                    .bg(cx.theme().muted)
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .text_sm()
-                    .child(match &answer {
-                        Some(answer) => self.render_markdown(answer, cx),
-                        None if working => div().child("Working…").into_any_element(),
-                        None => div().child("The agent printed nothing.").into_any_element(),
-                    }),
-            ),
-        );
+            messages = messages.child(
+                h_flex().w_full().justify_end().child(
+                    div()
+                        .max_w(px(520.0))
+                        .rounded(px(12.0))
+                        .bg(cx.theme().secondary)
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .text_sm()
+                        .child(turn.prompt.clone()),
+                ),
+            );
+
+            messages = messages.child(
+                h_flex().w_full().justify_start().child(
+                    div()
+                        .max_w(px(620.0))
+                        .rounded(px(12.0))
+                        .bg(cx.theme().muted)
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .text_sm()
+                        .child(match thread_answer(&turn.logs) {
+                            Some(answer) => self.render_markdown(&answer, cx),
+                            None if turn_working => div().child("Working…").into_any_element(),
+                            None => div().child("The agent printed nothing.").into_any_element(),
+                        }),
+                ),
+            );
+        }
 
         div()
             .size_full()
@@ -4724,10 +4802,7 @@ impl DesktopShell {
             .composer_choice()
             .map(|choice| choice.name)
             .unwrap_or_else(|| "No agent installed".to_string());
-        let working = self
-            .home_thread
-            .as_ref()
-            .is_some_and(|thread| matches!(thread.status.as_str(), "running" | "ready"));
+        let working = self.running_session().is_some();
 
         let attach = h_flex()
             .id("composer-attach")
@@ -5826,6 +5901,23 @@ mod home_tests {
         assert_eq!(thread_answer(&logs), Some("hola\nmundo".to_string()));
         assert_eq!(thread_answer(&[]), None);
         assert_eq!(thread_answer(&[log("stdout", "   ")]), None);
+    }
+
+    #[test]
+    fn keeps_the_agent_session_for_the_next_turn() {
+        let logs = vec![
+            log(
+                "trace",
+                r#"{"type":"thread.started","thread_id":"01a15c92-515d-7001-bac2-b70033c7940a"}"#,
+            ),
+            log("answer", "hola"),
+        ];
+
+        assert_eq!(
+            agent_session_id(&logs),
+            Some("01a15c92-515d-7001-bac2-b70033c7940a".to_string())
+        );
+        assert_eq!(agent_session_id(&[log("answer", "hola")]), None);
     }
 }
 

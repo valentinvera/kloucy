@@ -62,6 +62,24 @@ fn has_arguments(command: &str) -> bool {
     command.split_whitespace().count() > 1
 }
 
+/// The command that continues an agent-side session, when the CLI can.
+///
+/// Only providers whose resume flag is known get one; the rest start a fresh
+/// run, and the thread still keeps the earlier turns on screen.
+pub fn resume_command(provider: &str, command: &str, agent_session: &str) -> Option<String> {
+    if provider != "codex" || !command.contains("exec") {
+        return None;
+    }
+
+    let command = command.trim_end();
+    let id = format!("'{agent_session}'");
+
+    match command.strip_suffix("--json") {
+        Some(base) => Some(format!("{} resume {id} --json", base.trim_end())),
+        None => Some(format!("{command} resume {id}")),
+    }
+}
+
 /// The agents the composer can start, one per provider: what is installed on
 /// this machine first, then stored agents for providers detection missed.
 pub fn choices(agents: &[Agent], detected: &[DetectedAgent]) -> Vec<AgentChoice> {
@@ -200,6 +218,18 @@ mod tests {
         let stored = agent("agent-1", "Codex", "codex", Some("codex exec"), "disabled");
 
         assert!(choices(&[stored], &[]).is_empty());
+    }
+
+    #[test]
+    fn resumes_a_conversation_when_the_cli_can() {
+        assert_eq!(
+            resume_command("codex", "/usr/bin/codex exec --json", "thread-1"),
+            Some("/usr/bin/codex exec resume 'thread-1' --json".to_string())
+        );
+        assert_eq!(
+            resume_command("claude-code", "/usr/bin/claude -p", "thread-1"),
+            None
+        );
     }
 
     #[test]
