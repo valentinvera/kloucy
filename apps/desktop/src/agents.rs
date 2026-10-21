@@ -62,6 +62,163 @@ fn has_arguments(command: &str) -> bool {
     command.split_whitespace().count() > 1
 }
 
+/// A model an agent can be asked to run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelChoice {
+    pub id: String,
+    pub label: String,
+}
+
+/// What an installed agent can run, as far as its CLI will say.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelCatalog {
+    pub efforts: Vec<String>,
+    pub fast: bool,
+    pub models: Vec<ModelChoice>,
+}
+
+/// Ask an installed CLI what it can run. A CLI that cannot list its models, or
+/// that fails, simply offers none and the picker keeps the default model.
+pub fn model_catalog(provider: &str, executable: &str) -> ModelCatalog {
+    match provider {
+        "codex" => run_capture(executable, &["debug", "models"])
+            .map(|json| parse_codex_models(&json))
+            .unwrap_or_default(),
+        "opencode" => run_capture(executable, &["models"])
+            .map(|text| parse_opencode_models(&text))
+            .unwrap_or_default(),
+        "claude-code" => ModelCatalog {
+            efforts: Vec::new(),
+            fast: false,
+            models: ["sonnet", "opus", "haiku"]
+                .into_iter()
+                .map(|id| ModelChoice {
+                    id: id.to_string(),
+                    label: id.to_string(),
+                })
+                .collect(),
+        },
+        _ => ModelCatalog::default(),
+    }
+}
+
+fn run_capture(executable: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(executable)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Codex reports its catalog as JSON (`codex debug models`).
+pub fn parse_codex_models(json: &str) -> ModelCatalog {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return ModelCatalog::default();
+    };
+
+    let mut catalog = ModelCatalog::default();
+
+    for model in value["models"].as_array().into_iter().flatten() {
+        let Some(id) = model["slug"].as_str() else {
+            continue;
+        };
+
+        catalog.models.push(ModelChoice {
+            id: id.to_string(),
+            label: model["display_name"].as_str().unwrap_or(id).to_string(),
+        });
+
+        for level in model["supported_reasoning_levels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let Some(effort) = level["effort"].as_str() {
+                if !catalog.efforts.iter().any(|known| known == effort) {
+                    catalog.efforts.push(effort.to_string());
+                }
+            }
+        }
+
+        if !catalog.fast
+            && model["service_tiers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|tier| tier["id"].as_str() == Some("priority"))
+        {
+            catalog.fast = true;
+        }
+    }
+
+    catalog
+}
+
+/// OpenCode prints one `provider/model` id per line (`opencode models`).
+pub fn parse_opencode_models(text: &str) -> ModelCatalog {
+    let models = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains('/'))
+        .map(|line| ModelChoice {
+            id: line.to_string(),
+            label: line.rsplit('/').next().unwrap_or(line).to_string(),
+        })
+        .collect();
+
+    ModelCatalog {
+        models,
+        ..ModelCatalog::default()
+    }
+}
+
+/// The arguments that ask an agent for a model, an effort and fast mode.
+pub fn model_args(
+    provider: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    fast: bool,
+) -> Vec<String> {
+    let mut args = Vec::new();
+
+    if let Some(model) = model {
+        let flag = if provider == "codex" { "-m" } else { "--model" };
+        args.extend([flag.to_string(), quote(model)]);
+
+        if provider == "claude-code" {
+            if let Some(effort) = effort {
+                args.extend(["--effort".to_string(), quote(effort)]);
+            }
+
+            return args;
+        }
+    }
+
+    if provider == "codex" {
+        if let Some(effort) = effort {
+            args.extend([
+                "-c".to_string(),
+                format!("model_reasoning_effort={}", quote(effort)),
+            ]);
+        }
+
+        if fast {
+            args.extend(["-c".to_string(), "service_tier='priority'".to_string()]);
+        }
+    }
+
+    args
+}
+
+fn quote(value: &str) -> String {
+    crate::runner::shell_quote(value)
+}
+
 /// The command that continues an agent-side session, when the CLI can.
 ///
 /// Only providers whose resume flag is known get one; the rest start a fresh
@@ -80,8 +237,9 @@ pub fn resume_command(provider: &str, command: &str, agent_session: &str) -> Opt
     }
 }
 
-/// The agents the composer can start, one per provider: what is installed on
-/// this machine first, then stored agents for providers detection missed.
+/// The agents the composer can start, one per provider, and only the ones that
+/// are actually installed: an agent record for a CLI that is not here cannot
+/// run, so offering it would be a dead entry in the picker.
 pub fn choices(agents: &[Agent], detected: &[DetectedAgent]) -> Vec<AgentChoice> {
     let mut choices: Vec<AgentChoice> = Vec::new();
 
@@ -105,27 +263,6 @@ pub fn choices(agents: &[Agent], detected: &[DetectedAgent]) -> Vec<AgentChoice>
                 .map(|agent| agent.name.clone())
                 .unwrap_or_else(|| cli.name.clone()),
             provider: cli.provider.clone(),
-        });
-    }
-
-    for agent in agents {
-        if agent.status == "disabled"
-            || choices
-                .iter()
-                .any(|choice| choice.provider == agent.provider)
-        {
-            continue;
-        }
-
-        let Some(command) = stored_command(agent) else {
-            continue;
-        };
-
-        choices.push(AgentChoice {
-            agent_id: Some(agent.id.clone()),
-            command: with_event_flag(&agent.provider, command),
-            name: agent.name.clone(),
-            provider: agent.provider.clone(),
         });
     }
 
@@ -205,12 +342,10 @@ mod tests {
     }
 
     #[test]
-    fn keeps_stored_agents_detection_missed() {
+    fn hides_agents_that_are_not_installed() {
         let stored = agent("agent-1", "Custom", "custom", Some("custom run"), "ready");
-        let choices = choices(&[stored], &[]);
 
-        assert_eq!(choices.len(), 1);
-        assert_eq!(choices[0].agent_id, Some("agent-1".to_string()));
+        assert!(choices(&[stored], &[]).is_empty());
     }
 
     #[test]
@@ -229,6 +364,81 @@ mod tests {
         assert_eq!(
             resume_command("claude-code", "/usr/bin/claude -p", "thread-1"),
             None
+        );
+    }
+
+    #[test]
+    fn reads_the_codex_model_catalog() {
+        let json = r#"{"models":[
+            {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol",
+             "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],
+             "service_tiers":[{"id":"priority","name":"Fast"}]},
+            {"slug":"gpt-6-sol","display_name":"GPT-6-Sol",
+             "supported_reasoning_levels":[{"effort":"medium"}],
+             "service_tiers":[]}
+        ]}"#;
+        let catalog = parse_codex_models(json);
+
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .map(|model| model.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["GPT-6.1-Sol", "GPT-6-Sol"]
+        );
+        assert_eq!(catalog.efforts, vec!["low", "high", "medium"]);
+        assert!(catalog.fast);
+    }
+
+    #[test]
+    fn reads_the_opencode_model_list() {
+        let catalog =
+            parse_opencode_models("opencode-go/gpt-6-luna\n\nopencode-go/glm-5.3\nnoise\n");
+
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .map(|model| (model.id.as_str(), model.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("opencode-go/gpt-6-luna", "gpt-6-luna"),
+                ("opencode-go/glm-5.3", "glm-5.3")
+            ]
+        );
+    }
+
+    #[test]
+    fn asks_codex_for_model_effort_and_fast_mode() {
+        assert_eq!(
+            model_args("codex", Some("gpt-6.1-sol"), Some("high"), true),
+            vec![
+                "-m",
+                "'gpt-6.1-sol'",
+                "-c",
+                "model_reasoning_effort='high'",
+                "-c",
+                "service_tier='priority'"
+            ]
+        );
+        assert!(model_args("codex", None, None, false).is_empty());
+    }
+
+    #[test]
+    fn asks_other_clis_for_a_model() {
+        assert_eq!(
+            model_args(
+                "opencode",
+                Some("opencode-go/gpt-6-luna"),
+                Some("high"),
+                true
+            ),
+            vec!["--model", "'opencode-go/gpt-6-luna'"]
+        );
+        assert_eq!(
+            model_args("claude-code", Some("sonnet"), Some("high"), false),
+            vec!["--model", "'sonnet'", "--effort", "'high'"]
         );
     }
 

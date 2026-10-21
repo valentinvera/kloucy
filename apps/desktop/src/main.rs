@@ -12,8 +12,8 @@ mod typography;
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Entity, FocusHandle,
     FontStyle, FontWeight, IntoElement, KeyBinding, Render, ScrollHandle, SharedString,
-    StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle, Window, WindowBounds,
-    WindowOptions, actions, div, font, hsla, prelude::*, px, rgb, size,
+    StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle, WeakEntity, Window,
+    WindowBounds, WindowOptions, actions, div, font, hsla, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -34,6 +34,7 @@ use crate::api::{
 
 use crate::detect::DetectedAgent;
 
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -256,6 +257,15 @@ struct HomeThread {
     turns: Vec<HomeTurn>,
 }
 
+/// What picking a row in the agent menu changes.
+#[derive(Clone, Debug)]
+enum AgentMenuAction {
+    Effort(Option<String>),
+    Fast,
+    Model(Option<String>),
+    Provider(String),
+}
+
 /// Where Home runs its messages: a project checkout, or Kloucy's own chat space
 /// when there is no project to run in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -309,6 +319,16 @@ fn safety_label(mode: &str) -> &'static str {
     }
 }
 
+/// The mark of an agent provider, as served from the asset bundle.
+fn agent_icon(provider: &str) -> &'static str {
+    match provider {
+        "codex" => "icons/agents/openai.svg",
+        "claude-code" => "icons/agents/claude.svg",
+        "opencode" => "icons/agents/opencode.svg",
+        _ => "icons/bot.svg",
+    }
+}
+
 /// The last segment of a path, for chips that cannot show all of it.
 fn folder_name(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
@@ -317,6 +337,31 @@ fn folder_name(path: &str) -> String {
         Some(name) if !name.is_empty() => name.to_string(),
         _ => path.to_string(),
     }
+}
+
+/// A menu row's click, applied to the shell that owns the menu.
+fn menu_action(
+    entity: &WeakEntity<DesktopShell>,
+    action: AgentMenuAction,
+) -> Box<dyn Fn(&mut Window, &mut App)> {
+    let entity = entity.clone();
+
+    Box::new(move |_, cx| {
+        let _ = entity.update(cx, |this, cx| this.apply_agent_menu(action.clone(), cx));
+    })
+}
+
+/// A tick, or the space a tick would take, so rows line up.
+fn check_slot(checked: bool) -> AnyElement {
+    div()
+        .size(px(14.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(checked, |element| {
+            element.child(Icon::new(IconName::Check).size(px(14.0)))
+        })
+        .into_any_element()
 }
 
 /// One row of a home menu: an icon, some content, and what happens on click.
@@ -784,6 +829,10 @@ struct DesktopShell {
     home_thread: Option<HomeThread>,
     sending_composer: bool,
     home_provider: Option<String>,
+    home_model: Option<String>,
+    home_effort: Option<String>,
+    home_fast: bool,
+    model_catalogs: HashMap<String, agents::ModelCatalog>,
     home_scroll: ScrollHandle,
     home_project: HomeProject,
     home_checkout: git::Checkout,
@@ -920,14 +969,23 @@ impl DesktopShell {
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
-            let (session, workspaces, agents, installed) = cx
+            let (session, workspaces, agents, installed, catalogs) = cx
                 .background_executor()
                 .spawn(async move {
                     let session = task_client.session();
                     let workspaces = load_workspaces(&task_client, &session);
                     let agents = load_agents(&task_client, &session);
                     let installed = detect::detect_installed_agents();
-                    (session, workspaces, agents, installed)
+                    let catalogs = installed
+                        .iter()
+                        .map(|cli| {
+                            (
+                                cli.provider.clone(),
+                                agents::model_catalog(&cli.provider, &cli.executable_path),
+                            )
+                        })
+                        .collect::<HashMap<_, _>>();
+                    (session, workspaces, agents, installed, catalogs)
                 })
                 .await;
 
@@ -936,6 +994,7 @@ impl DesktopShell {
                 this.workspaces = workspaces;
                 this.agents = agents;
                 this.installed_agents = installed;
+                this.model_catalogs = catalogs;
                 cx.notify();
 
                 let first = match &this.workspaces {
@@ -967,6 +1026,10 @@ impl DesktopShell {
             home_thread: None,
             sending_composer: false,
             home_provider: None,
+            home_model: None,
+            home_effort: None,
+            home_fast: false,
+            model_catalogs: HashMap::new(),
             home_scroll: ScrollHandle::new(),
             home_project: HomeProject::Auto,
             home_checkout: git::Checkout::None,
@@ -1682,6 +1745,17 @@ impl DesktopShell {
                 .unwrap_or(command);
         }
 
+        let model_args = agents::model_args(
+            &choice.provider,
+            self.home_model.as_deref(),
+            self.home_effort.as_deref(),
+            self.home_fast,
+        );
+
+        if !model_args.is_empty() {
+            command = format!("{command} {}", model_args.join(" "));
+        }
+
         let invocation = runner::invocation(&command, &text);
         let (safety_mode, safe_commands) = match &plan {
             RunPlan::Workspace(workspace) => (
@@ -1998,6 +2072,34 @@ impl DesktopShell {
             .ok();
         })
         .detach();
+    }
+
+    /// Apply a pick from the agent menu: the agent itself, or one of the knobs
+    /// that go with it.
+    fn apply_agent_menu(&mut self, action: AgentMenuAction, cx: &mut Context<Self>) {
+        match action {
+            AgentMenuAction::Provider(provider) => {
+                self.home_provider = Some(provider);
+                self.home_model = None;
+                self.home_effort = None;
+                self.home_fast = false;
+                self.home_menu = None;
+            }
+            AgentMenuAction::Model(model) => {
+                self.home_model = model;
+                self.home_menu = None;
+            }
+            AgentMenuAction::Effort(effort) => {
+                self.home_effort = effort;
+                self.home_menu = None;
+            }
+            AgentMenuAction::Fast => {
+                self.home_fast = !self.home_fast;
+            }
+        }
+
+        self.composer_status = None;
+        cx.notify();
     }
 
     /// Leave the thread and go back to the empty composer.
@@ -4823,10 +4925,16 @@ impl DesktopShell {
         let safety = self
             .selected_workspace_data()
             .map(|workspace| workspace.safety_mode.clone());
-        let agent_name = self
-            .composer_choice()
-            .map(|choice| choice.name)
+        let choice = self.composer_choice();
+        let agent_name = choice
+            .as_ref()
+            .map(|choice| choice.name.clone())
             .unwrap_or_else(|| "No agent installed".to_string());
+        let provider = choice
+            .as_ref()
+            .map(|choice| choice.provider.clone())
+            .unwrap_or_default();
+        let model = self.home_model.clone();
         let working = self.running_session().is_some();
 
         let attach = h_flex()
@@ -4858,8 +4966,14 @@ impl DesktopShell {
                     .bg(cx.theme().list_hover)
                     .text_color(cx.theme().foreground)
             })
-            .child(Icon::new(IconName::Bot).size(px(14.0)))
+            .child(Icon::empty().path(agent_icon(&provider)).size(px(14.0)))
             .child(div().child(agent_name))
+            .when_some(model, |element, model| {
+                element.child(div().opacity(0.7).child(model))
+            })
+            .when(self.home_fast, |element| {
+                element.child(div().opacity(0.7).child("fast"))
+            })
             .when_some(safety, |element, mode| {
                 element.child(div().opacity(0.7).child(safety_label(&mode)))
             })
@@ -5203,11 +5317,20 @@ impl DesktopShell {
             HomeMenu::Agent => {
                 let choices = self.agent_choices();
                 let selected = self.composer_choice().map(|choice| choice.provider);
+                let catalogs = self.model_catalogs.clone();
+                let catalog = selected
+                    .as_deref()
+                    .and_then(|provider| catalogs.get(provider))
+                    .cloned()
+                    .unwrap_or_default();
+                let model = self.home_model.clone();
+                let effort = self.home_effort.clone();
+                let fast = self.home_fast;
 
                 Rc::new(move |cx| {
                     if choices.is_empty() {
                         return v_flex()
-                            .w(px(280.0))
+                            .w(px(300.0))
                             .gap(px(2.0))
                             .child(menu_note(
                                 "No agent CLI found on this machine. Install codex, claude or opencode, then start Kloucy again.",
@@ -5216,13 +5339,15 @@ impl DesktopShell {
                             .into_any_element();
                     }
 
-                    let mut list = v_flex().w(px(260.0)).gap(px(2.0));
+                    let mut list = v_flex().w(px(300.0)).gap(px(2.0));
 
                     for (index, choice) in choices.iter().enumerate() {
-                        let provider = choice.provider.clone();
                         let is_selected = selected.as_deref() == Some(choice.provider.as_str());
                         let mut children = vec![
-                            Icon::new(IconName::Bot).size(px(14.0)).into_any_element(),
+                            Icon::empty()
+                                .path(agent_icon(&choice.provider))
+                                .size(px(14.0))
+                                .into_any_element(),
                             div()
                                 .flex_1()
                                 .min_w_0()
@@ -5241,21 +5366,105 @@ impl DesktopShell {
                                 .push(Icon::new(IconName::Check).size(px(14.0)).into_any_element());
                         }
 
-                        let entity = entity.clone();
-
                         list = list.child(menu_row(
                             ("home-agent-item", index),
                             cx,
                             is_selected,
                             children,
-                            Some(Box::new(move |_, cx| {
-                                let _ = entity.update(cx, |this, cx| {
-                                    this.home_provider = Some(provider.clone());
-                                    this.home_menu = None;
-                                    this.composer_status = None;
-                                    cx.notify();
-                                });
-                            })),
+                            Some(menu_action(
+                                &entity,
+                                AgentMenuAction::Provider(choice.provider.clone()),
+                            )),
+                        ));
+                    }
+
+                    if !catalog.models.is_empty() {
+                        list = list.child(menu_note("Model", cx)).child(menu_row(
+                            ("home-model-item", 0),
+                            cx,
+                            model.is_none(),
+                            vec![
+                                check_slot(model.is_none()),
+                                div().child("Default").into_any_element(),
+                            ],
+                            Some(menu_action(&entity, AgentMenuAction::Model(None))),
+                        ));
+
+                        for (index, choice) in catalog.models.iter().enumerate() {
+                            let is_selected = model.as_deref() == Some(choice.id.as_str());
+
+                            list = list.child(menu_row(
+                                ("home-model-item", index + 1),
+                                cx,
+                                is_selected,
+                                vec![
+                                    check_slot(is_selected),
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(choice.label.clone())
+                                        .into_any_element(),
+                                ],
+                                Some(menu_action(
+                                    &entity,
+                                    AgentMenuAction::Model(Some(choice.id.clone())),
+                                )),
+                            ));
+                        }
+                    }
+
+                    if !catalog.efforts.is_empty() {
+                        list = list.child(menu_note("Effort", cx)).child(menu_row(
+                            ("home-effort-item", 0),
+                            cx,
+                            effort.is_none(),
+                            vec![
+                                check_slot(effort.is_none()),
+                                div().child("Default").into_any_element(),
+                            ],
+                            Some(menu_action(&entity, AgentMenuAction::Effort(None))),
+                        ));
+
+                        for (index, level) in catalog.efforts.iter().enumerate() {
+                            let is_selected = effort.as_deref() == Some(level.as_str());
+
+                            list = list.child(menu_row(
+                                ("home-effort-item", index + 1),
+                                cx,
+                                is_selected,
+                                vec![
+                                    check_slot(is_selected),
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(level.clone())
+                                        .into_any_element(),
+                                ],
+                                Some(menu_action(
+                                    &entity,
+                                    AgentMenuAction::Effort(Some(level.clone())),
+                                )),
+                            ));
+                        }
+                    }
+
+                    if catalog.fast {
+                        list = list.child(menu_row(
+                            ("home-fast", 0),
+                            cx,
+                            fast,
+                            vec![
+                                check_slot(fast),
+                                div().flex_1().child("Fast mode").into_any_element(),
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(if fast { "On" } else { "Off" })
+                                    .into_any_element(),
+                            ],
+                            Some(menu_action(&entity, AgentMenuAction::Fast)),
                         ));
                     }
 
