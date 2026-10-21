@@ -5046,7 +5046,7 @@ impl DesktopShell {
                     .bg(cx.theme().list_hover)
                     .text_color(cx.theme().foreground)
             })
-            .child(Icon::empty().path(agent_icon(&provider)).size(px(14.0)))
+            .child(agent_mark(&provider, 14.0))
             .child(div().child(agent_name))
             .when_some(model, |element, model| {
                 element.child(div().opacity(0.7).child(model))
