@@ -4519,21 +4519,16 @@ impl DesktopShell {
             .flex_col()
             .child(header)
             .child(
-                h_flex()
+                // A row would centre its child vertically, which would drop the
+                // conversation into the middle of the window; this keeps it
+                // anchored at the top and scrolling upward from there.
+                div()
+                    .id("home-thread")
                     .flex_1()
                     .min_h_0()
-                    .justify_center()
+                    .overflow_y_scroll()
                     .px(px(24.0))
-                    .child(
-                        v_flex()
-                            .id("home-thread")
-                            .w_full()
-                            .max_w(px(720.0))
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .child(messages),
-                    ),
+                    .child(div().w_full().max_w(px(720.0)).mx_auto().child(messages)),
             )
             .child(
                 h_flex()
