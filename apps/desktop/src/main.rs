@@ -1886,17 +1886,25 @@ impl DesktopShell {
                                 turn.logs.extend(stream.logs);
                                 turn.status = stream.session.status;
 
-                                // The reply grows while it arrives; keep its
-                                // end in view the same way the prompt is.
-                                this.home_scroll.scroll_to_bottom();
-
                                 if let Some(agent_session) = agent_session_id(&turn.logs) {
                                     thread.agent_session = Some(agent_session);
                                 }
 
+                                // Reading the reply while it streams is the
+                                // point, so the view is left alone until the
+                                // run is over; then it lands on the answer.
+                                let finished = !matches!(
+                                    turn.status.as_str(),
+                                    "running" | "ready" | "needs_setup"
+                                );
+
+                                if finished {
+                                    this.home_scroll.scroll_to_bottom();
+                                }
+
                                 cx.notify();
 
-                                !matches!(turn.status.as_str(), "running" | "ready" | "needs_setup")
+                                finished
                             }
                             Err(_) => false,
                         }
