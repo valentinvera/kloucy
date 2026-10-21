@@ -28,20 +28,22 @@ const EXTRA_ICONS: [(&str, &[u8]); 5] = [
         "icons/git-branch.svg",
         include_bytes!("../assets/icons/git-branch.svg"),
     ),
-    // Agent marks, tinted by the UI like the rest of the icon set. The marks
-    // belong to their owners: OpenAI's blossom comes from Wikimedia Commons,
-    // Claude's and OpenCode's from Simple Icons.
+    // Agent marks. The marks belong to their owners: OpenAI's blossom comes
+    // from Wikimedia Commons, OpenCode's from Simple Icons; both are
+    // wordmarks in a single ink, so the UI tints them like the icon set.
     (
         "icons/agents/openai.svg",
         include_bytes!("../assets/icons/agents/openai.svg"),
     ),
     (
-        "icons/agents/claude.svg",
-        include_bytes!("../assets/icons/agents/claude.svg"),
-    ),
-    (
         "icons/agents/opencode.svg",
         include_bytes!("../assets/icons/agents/opencode.svg"),
+    ),
+    // Claude's mark carries its own colour, which an SVG mask would flatten,
+    // so it ships as a small transparent PNG instead.
+    (
+        "icons/agents/claude.png",
+        include_bytes!("../assets/icons/agents/claude.png"),
     ),
 ];
 

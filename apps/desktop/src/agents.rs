@@ -65,6 +65,8 @@ fn has_arguments(command: &str) -> bool {
 /// A model an agent can be asked to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelChoice {
+    /// The effort this model runs at when nothing is picked.
+    pub default_effort: Option<String>,
     pub id: String,
     pub label: String,
 }
@@ -93,6 +95,7 @@ pub fn model_catalog(provider: &str, executable: &str) -> ModelCatalog {
             models: ["sonnet", "opus", "haiku"]
                 .into_iter()
                 .map(|id| ModelChoice {
+                    default_effort: None,
                     id: id.to_string(),
                     label: id.to_string(),
                 })
@@ -129,6 +132,9 @@ pub fn parse_codex_models(json: &str) -> ModelCatalog {
         };
 
         catalog.models.push(ModelChoice {
+            default_effort: model["default_reasoning_level"]
+                .as_str()
+                .map(str::to_string),
             id: id.to_string(),
             label: model["display_name"].as_str().unwrap_or(id).to_string(),
         });
@@ -166,6 +172,7 @@ pub fn parse_opencode_models(text: &str) -> ModelCatalog {
         .map(str::trim)
         .filter(|line| line.contains('/'))
         .map(|line| ModelChoice {
+            default_effort: None,
             id: line.to_string(),
             label: line.rsplit('/').next().unwrap_or(line).to_string(),
         })
@@ -370,7 +377,7 @@ mod tests {
     #[test]
     fn reads_the_codex_model_catalog() {
         let json = r#"{"models":[
-            {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol",
+            {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","default_reasoning_level":"high",
              "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],
              "service_tiers":[{"id":"priority","name":"Fast"}]},
             {"slug":"gpt-6-sol","display_name":"GPT-6-Sol",
@@ -388,6 +395,8 @@ mod tests {
             vec!["GPT-6.1-Sol", "GPT-6-Sol"]
         );
         assert_eq!(catalog.efforts, vec!["low", "high", "medium"]);
+        assert_eq!(catalog.models[0].default_effort, Some("high".to_string()));
+        assert_eq!(catalog.models[1].default_effort, None);
         assert!(catalog.fast);
     }
 

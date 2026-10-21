@@ -13,7 +13,7 @@ use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Entity, FocusHandle,
     FontStyle, FontWeight, IntoElement, KeyBinding, Render, ScrollHandle, SharedString,
     StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle, WeakEntity, Window,
-    WindowBounds, WindowOptions, actions, div, font, hsla, prelude::*, px, rgb, size,
+    WindowBounds, WindowOptions, actions, div, font, hsla, img, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -260,9 +260,9 @@ struct HomeThread {
 /// What picking a row in the agent menu changes.
 #[derive(Clone, Debug)]
 enum AgentMenuAction {
-    Effort(Option<String>),
+    Effort(String),
     Fast,
-    Model(Option<String>),
+    Model(String),
     Provider(String),
 }
 
@@ -323,10 +323,24 @@ fn safety_label(mode: &str) -> &'static str {
 fn agent_icon(provider: &str) -> &'static str {
     match provider {
         "codex" => "icons/agents/openai.svg",
-        "claude-code" => "icons/agents/claude.svg",
+        // Claude's mark keeps its own colour, so it is painted as an image.
+        "claude-code" => "icons/agents/claude.png",
         "opencode" => "icons/agents/opencode.svg",
         _ => "icons/bot.svg",
     }
+}
+
+/// An agent's mark: single-ink logos are icons the theme tints, while the one
+/// with its own colour is drawn as an image so it stays that colour.
+fn agent_mark(provider: &str, size: f32) -> AnyElement {
+    if provider == "claude-code" {
+        return img(agent_icon(provider)).size(px(size)).into_any_element();
+    }
+
+    Icon::empty()
+        .path(agent_icon(provider))
+        .size(px(size))
+        .into_any_element()
 }
 
 /// The last segment of a path, for chips that cannot show all of it.
@@ -995,6 +1009,7 @@ impl DesktopShell {
                 this.agents = agents;
                 this.installed_agents = installed;
                 this.model_catalogs = catalogs;
+                this.pick_default_model();
                 cx.notify();
 
                 let first = match &this.workspaces {
@@ -2080,17 +2095,16 @@ impl DesktopShell {
         match action {
             AgentMenuAction::Provider(provider) => {
                 self.home_provider = Some(provider);
-                self.home_model = None;
-                self.home_effort = None;
                 self.home_fast = false;
                 self.home_menu = None;
+                self.pick_default_model();
             }
             AgentMenuAction::Model(model) => {
-                self.home_model = model;
+                self.apply_model(model);
                 self.home_menu = None;
             }
             AgentMenuAction::Effort(effort) => {
-                self.home_effort = effort;
+                self.home_effort = Some(effort);
                 self.home_menu = None;
             }
             AgentMenuAction::Fast => {
@@ -2100,6 +2114,53 @@ impl DesktopShell {
 
         self.composer_status = None;
         cx.notify();
+    }
+
+    /// The newest model the chosen agent offers, at the effort that model runs by
+    /// default. Home always runs a named model, so the picker never has to say
+    /// "Default" and leave the model unknown.
+    fn pick_default_model(&mut self) {
+        let Some(provider) = self.composer_choice().map(|choice| choice.provider) else {
+            return;
+        };
+
+        let Some(model) = self
+            .model_catalogs
+            .get(&provider)
+            .and_then(|catalog| catalog.models.first())
+            .cloned()
+        else {
+            return;
+        };
+
+        self.home_model = Some(model.id);
+        self.home_effort = model.default_effort;
+    }
+
+    /// Choose a model, and move the effort to that model's own default.
+    fn apply_model(&mut self, id: String) {
+        let default_effort = self
+            .composer_choice()
+            .and_then(|choice| self.model_catalogs.get(&choice.provider).cloned())
+            .and_then(|catalog| catalog.models.into_iter().find(|model| model.id == id))
+            .and_then(|model| model.default_effort);
+
+        self.home_model = Some(id);
+        self.home_effort = default_effort;
+    }
+
+    /// How the chosen model is named in the composer pill.
+    fn model_label(&self) -> Option<String> {
+        let provider = self.composer_choice()?.provider;
+        let model = self.home_model.clone()?;
+        let catalog = self.model_catalogs.get(&provider)?;
+
+        catalog
+            .models
+            .iter()
+            .find(|choice| choice.id == model)
+            .map(|choice| choice.label.clone())
+            .or(Some(model))
     }
 
     /// Leave the thread and go back to the empty composer.
@@ -4934,7 +4995,7 @@ impl DesktopShell {
             .as_ref()
             .map(|choice| choice.provider.clone())
             .unwrap_or_default();
-        let model = self.home_model.clone();
+        let model = self.model_label();
         let working = self.running_session().is_some();
 
         let attach = h_flex()
@@ -5344,10 +5405,7 @@ impl DesktopShell {
                     for (index, choice) in choices.iter().enumerate() {
                         let is_selected = selected.as_deref() == Some(choice.provider.as_str());
                         let mut children = vec![
-                            Icon::empty()
-                                .path(agent_icon(&choice.provider))
-                                .size(px(14.0))
-                                .into_any_element(),
+                            agent_mark(&choice.provider, 14.0),
                             div()
                                 .flex_1()
                                 .min_w_0()
@@ -5379,22 +5437,13 @@ impl DesktopShell {
                     }
 
                     if !catalog.models.is_empty() {
-                        list = list.child(menu_note("Model", cx)).child(menu_row(
-                            ("home-model-item", 0),
-                            cx,
-                            model.is_none(),
-                            vec![
-                                check_slot(model.is_none()),
-                                div().child("Default").into_any_element(),
-                            ],
-                            Some(menu_action(&entity, AgentMenuAction::Model(None))),
-                        ));
+                        list = list.child(menu_note("Model", cx));
 
                         for (index, choice) in catalog.models.iter().enumerate() {
                             let is_selected = model.as_deref() == Some(choice.id.as_str());
 
                             list = list.child(menu_row(
-                                ("home-model-item", index + 1),
+                                ("home-model-item", index),
                                 cx,
                                 is_selected,
                                 vec![
@@ -5408,29 +5457,20 @@ impl DesktopShell {
                                 ],
                                 Some(menu_action(
                                     &entity,
-                                    AgentMenuAction::Model(Some(choice.id.clone())),
+                                    AgentMenuAction::Model(choice.id.clone()),
                                 )),
                             ));
                         }
                     }
 
                     if !catalog.efforts.is_empty() {
-                        list = list.child(menu_note("Effort", cx)).child(menu_row(
-                            ("home-effort-item", 0),
-                            cx,
-                            effort.is_none(),
-                            vec![
-                                check_slot(effort.is_none()),
-                                div().child("Default").into_any_element(),
-                            ],
-                            Some(menu_action(&entity, AgentMenuAction::Effort(None))),
-                        ));
+                        list = list.child(menu_note("Effort", cx));
 
                         for (index, level) in catalog.efforts.iter().enumerate() {
                             let is_selected = effort.as_deref() == Some(level.as_str());
 
                             list = list.child(menu_row(
-                                ("home-effort-item", index + 1),
+                                ("home-effort-item", index),
                                 cx,
                                 is_selected,
                                 vec![
@@ -5442,10 +5482,7 @@ impl DesktopShell {
                                         .child(level.clone())
                                         .into_any_element(),
                                 ],
-                                Some(menu_action(
-                                    &entity,
-                                    AgentMenuAction::Effort(Some(level.clone())),
-                                )),
+                                Some(menu_action(&entity, AgentMenuAction::Effort(level.clone()))),
                             ));
                         }
                     }
