@@ -35,7 +35,7 @@ Use the same account as the web app. Create it once through the API or the web s
 
 ## What you get
 
-- **Home** is the composer: write what you want done, pick the agent that should run it, and it starts in the workspace checkout. The answer streams into the thread, the composer stays at the bottom for the next message, and the run is kept as a session. The row under the composer shows the checkout's git branch, and the chips switch workspace and account.
+- **Home** is the composer: write what you want done, pick the agent that should run it, and it starts. The answer streams into the thread, the composer stays at the bottom for the next message, and the run is kept as a session. The checkout chip chooses the project to work in, or **No project**, which runs in Kloucy's own git space under `~/.local/share/kloucy/chats` so a message never needs a repository. The row shows that checkout's git branch, and the chips switch workspace and account.
 - **Workspaces** create a workspace and record its intake: project type, package manager, runtime, safe commands, ignored paths, safety mode and whether mobile may supervise it. **Detect project** reads the workspace directory names and fills the profile in, suggesting safe commands and ignored paths for that ecosystem.
 - **Inbox** captures tasks; **Sessions** run them and stream logs. Starting a session is an explicit action, and a guarded workspace refuses a command that is not in its safe commands.
 - **Reviews** approve changes, reject them with a reason, and record follow-up conditions.

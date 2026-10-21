@@ -247,6 +247,26 @@ struct HomeThread {
     logs: Vec<SessionLog>,
 }
 
+/// Where Home runs its messages: a project checkout, or Kloucy's own chat space
+/// when there is no project to run in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HomeProject {
+    /// The app's selected workspace, when its path is on this machine.
+    Auto,
+    /// No project: run in Kloucy's chat space.
+    None,
+    Workspace(String),
+}
+
+/// What a message will actually run against.
+enum RunPlan {
+    Workspace(Workspace),
+    Chat,
+}
+
+/// The workspace chat-only runs belong to, created when one is first needed.
+const CHAT_WORKSPACE: &str = "Chats";
+
 /// What the composer last did, shown under the checkout row.
 #[derive(Clone, Debug)]
 enum ComposerStatus {
@@ -320,6 +340,33 @@ fn menu_row(
     row.into_any_element()
 }
 
+/// A workspace as a menu row: folder, name, and where it lives.
+fn workspace_row(workspace: &Workspace, cx: &App) -> Vec<AnyElement> {
+    let here = std::path::Path::new(&workspace.local_path).is_dir();
+    let detail = if here {
+        folder_name(&workspace.local_path)
+    } else {
+        "not on this machine".to_string()
+    };
+
+    vec![
+        Icon::new(IconName::Folder)
+            .size(px(14.0))
+            .into_any_element(),
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .child(workspace.name.clone())
+            .into_any_element(),
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(detail)
+            .into_any_element(),
+    ]
+}
+
 /// A read-only line inside a home menu: a fact, not an action.
 fn menu_note(text: impl Into<SharedString>, cx: &App) -> AnyElement {
     let text: SharedString = text.into();
@@ -376,6 +423,39 @@ fn load_workspaces(client: &KloucyClient, session: &SessionStatus) -> LoadState<
         Err(ApiError::Message(message)) => LoadState::Failed(message),
         Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
     }
+}
+
+fn load_workspaces_list(client: &KloucyClient) -> LoadState<Vec<Workspace>> {
+    match client.query::<Vec<Workspace>>("workspaces.list", None) {
+        Ok(workspaces) => LoadState::Loaded(workspaces),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load workspaces.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
+/// The workspace chat-only runs belong to: reused when it exists, created on the
+/// first message that has no project to run in.
+fn ensure_chat_workspace(client: &KloucyClient, path: &str) -> Result<String, ApiError> {
+    let find = |workspaces: Vec<Workspace>| {
+        workspaces
+            .into_iter()
+            .find(|workspace| workspace.name == CHAT_WORKSPACE)
+            .map(|workspace| workspace.id)
+    };
+
+    let existing = client.query::<Vec<Workspace>>("workspaces.list", None)?;
+
+    if let Some(id) = find(existing) {
+        return Ok(id);
+    }
+
+    client.create_workspace(CHAT_WORKSPACE, path)?;
+
+    let created = client.query::<Vec<Workspace>>("workspaces.list", None)?;
+
+    find(created)
+        .ok_or_else(|| ApiError::Message("Kloucy could not create its chat workspace.".to_string()))
 }
 
 fn load_agents_list(client: &KloucyClient) -> LoadState<Vec<Agent>> {
@@ -661,6 +741,7 @@ struct DesktopShell {
     home_thread: Option<HomeThread>,
     sending_composer: bool,
     home_provider: Option<String>,
+    home_project: HomeProject,
     home_checkout: git::Checkout,
     home_menu: Option<HomeMenu>,
     palette_open: bool,
@@ -842,6 +923,7 @@ impl DesktopShell {
             home_thread: None,
             sending_composer: false,
             home_provider: None,
+            home_project: HomeProject::Auto,
             home_checkout: git::Checkout::None,
             home_menu: None,
             palette_open: false,
@@ -1081,7 +1163,11 @@ impl DesktopShell {
                 this.sessions = sessions;
                 this.tasks = tasks;
                 this.weekly_review = weekly_review;
-                this.home_checkout = checkout;
+
+                if this.home_project == HomeProject::Auto {
+                    this.home_checkout = checkout;
+                }
+
                 cx.notify();
             })
             .ok();
@@ -1404,6 +1490,49 @@ impl DesktopShell {
 
     /// The agent the composer assigns: the one picked in the pill, else the
     /// workspace default.
+    /// A workspace by id, however the list was loaded.
+    fn workspace_by_id(&self, id: &str) -> Option<Workspace> {
+        match &self.workspaces {
+            LoadState::Loaded(workspaces) => workspaces
+                .iter()
+                .find(|workspace| workspace.id == id)
+                .cloned(),
+            _ => None,
+        }
+    }
+
+    /// The workspace Home would run in, once its path proves to be here. A
+    /// project whose directory is missing is not usable, so it resolves to none
+    /// and the message runs in the chat space instead.
+    fn home_workspace(&self) -> Option<Workspace> {
+        let workspace = match &self.home_project {
+            HomeProject::None => return None,
+            HomeProject::Workspace(id) => self.workspace_by_id(id),
+            HomeProject::Auto => self.selected_workspace_data().cloned(),
+        }?;
+
+        std::path::Path::new(&workspace.local_path)
+            .is_dir()
+            .then_some(workspace)
+    }
+
+    /// The project the user picked, whether or not it can run here.
+    fn chosen_workspace(&self) -> Option<Workspace> {
+        match &self.home_project {
+            HomeProject::None => None,
+            HomeProject::Workspace(id) => self.workspace_by_id(id),
+            HomeProject::Auto => self.selected_workspace_data().cloned(),
+        }
+    }
+
+    /// Recompute the branch Home shows for the checkout it will use.
+    fn refresh_home_checkout(&mut self) {
+        self.home_checkout = self
+            .home_workspace()
+            .map(|workspace| git::describe(std::path::Path::new(&workspace.local_path)))
+            .unwrap_or(git::Checkout::None);
+    }
+
     /// The agents the composer can start: installed on this machine, plus the
     /// records previous messages created.
     fn agent_choices(&self) -> Vec<AgentChoice> {
@@ -1466,13 +1595,19 @@ impl DesktopShell {
             return;
         }
 
-        let Some(workspace) = self.selected_workspace_data().cloned() else {
-            self.composer_status = Some(ComposerStatus::Failed(
-                "Create a workspace before starting an agent.".to_string(),
-            ));
-            cx.notify();
-            return;
+        let plan = match self.home_workspace() {
+            Some(workspace) => RunPlan::Workspace(workspace),
+            None => RunPlan::Chat,
         };
+
+        if let RunPlan::Chat = &plan {
+            if let Some(workspace) = self.chosen_workspace() {
+                self.composer_status = Some(ComposerStatus::Notice(format!(
+                    "{} is not on this machine, so this runs in Kloucy's chat space.",
+                    workspace.name
+                )));
+            }
+        }
 
         let Some(choice) = self.composer_choice() else {
             self.composer_status = Some(ComposerStatus::Failed(
@@ -1485,22 +1620,29 @@ impl DesktopShell {
 
         let command = choice.command.clone();
 
-        if !std::path::Path::new(&workspace.local_path).is_dir() {
-            self.composer_status = Some(ComposerStatus::Failed(format!(
-                "{} is not on this machine, so the agent has nowhere to run.",
-                workspace.local_path
-            )));
+        let invocation = runner::invocation(&command, &text);
+        let (safety_mode, safe_commands) = match &plan {
+            RunPlan::Workspace(workspace) => (
+                workspace.safety_mode.clone(),
+                workspace.safe_commands.clone().unwrap_or_default(),
+            ),
+            RunPlan::Chat => ("open".to_string(), Vec::new()),
+        };
+
+        if !safety::command_allowed(&safety_mode, &invocation, &safe_commands) {
+            self.blocked_command = Some(invocation);
+            self.composer_status = Some(ComposerStatus::Failed(
+                "This workspace only runs its safe commands.".to_string(),
+            ));
             cx.notify();
             return;
         }
 
-        let invocation = runner::invocation(&command, &text);
-        let safe_commands = workspace.safe_commands.clone().unwrap_or_default();
+        let chat_space = settings::ensure_chat_space();
 
-        if !safety::command_allowed(&workspace.safety_mode, &invocation, &safe_commands) {
-            self.blocked_command = Some(invocation);
+        if matches!(plan, RunPlan::Chat) && chat_space.is_none() {
             self.composer_status = Some(ComposerStatus::Failed(
-                "This workspace only runs its safe commands.".to_string(),
+                "Kloucy could not create its chat space.".to_string(),
             ));
             cx.notify();
             return;
@@ -1512,8 +1654,6 @@ impl DesktopShell {
 
         let title = composer_title(&text);
         let prompt = text.clone();
-        let workspace_id = workspace.id.clone();
-        let local_path = workspace.local_path.clone();
         let client = self.client.clone();
         let registry = self.registry.clone();
 
@@ -1523,10 +1663,26 @@ impl DesktopShell {
                 .spawn({
                     let client = client.clone();
                     let choice = choice.clone();
-                    let workspace_id = workspace_id.clone();
                     let prompt = prompt.clone();
+                    let plan = match plan {
+                        RunPlan::Workspace(workspace) => Ok((workspace.id, workspace.local_path)),
+                        RunPlan::Chat => chat_space
+                            .clone()
+                            .map(|path| path.display().to_string())
+                            .ok_or_else(|| {
+                                ApiError::Message(
+                                    "Kloucy could not create its chat space.".to_string(),
+                                )
+                            })
+                            .and_then(|path| {
+                                ensure_chat_workspace(&client, &path)
+                                    .map(|workspace_id| (workspace_id, path))
+                            }),
+                    };
 
                     async move {
+                        let (workspace_id, cwd) = plan?;
+
                         // The first message that works stores the agent behind
                         // it, so the registry fills itself by being used.
                         let agent_id = match choice.agent_id.clone() {
@@ -1550,17 +1706,23 @@ impl DesktopShell {
                             }
                         };
 
-                        Ok::<_, ApiError>((session, load_agents_list(&client)))
+                        Ok::<_, ApiError>((
+                            session,
+                            workspace_id,
+                            cwd,
+                            load_agents_list(&client),
+                            load_workspaces_list(&client),
+                        ))
                     }
                 })
                 .await;
 
             match result {
-                Ok((session, agents)) => {
+                Ok((session, workspace_id, cwd, agents, workspaces)) => {
                     let session_id = session.id.clone();
                     let runner_client = client.clone();
                     let runner_registry = registry.clone();
-                    let runner_workspace = workspace_id.clone();
+                    let runner_workspace = workspace_id;
                     let runner_session = session_id.clone();
 
                     std::thread::spawn(move || {
@@ -1570,13 +1732,15 @@ impl DesktopShell {
                             runner_workspace,
                             runner_session,
                             invocation,
-                            local_path,
+                            cwd,
                         );
                     });
 
                     this.update_in(cx, |this, window, cx| {
                         this.sending_composer = false;
                         this.agents = agents;
+                        this.workspaces = workspaces;
+                        this.refresh_home_checkout();
                         this.composer
                             .update(cx, |state, cx| state.set_value("", window, cx));
                         this.home_thread = Some(HomeThread {
@@ -4506,8 +4670,12 @@ impl DesktopShell {
     /// Under the composer: the checkout it runs in, what the last attempt did,
     /// and what the agents are doing.
     fn render_home_details(&self, cx: &mut Context<Self>) -> AnyElement {
-        let has_workspace = self.selected_workspace_data().is_some();
+        let project = self.home_workspace();
+        let has_workspace = project.is_some();
         let checkout = self.home_checkout.clone();
+        let project_label = project
+            .map(|workspace| workspace.name)
+            .unwrap_or_else(|| "No project".to_string());
 
         let mut checkout_row = h_flex().items_center().gap_1().child(
             self.home_popover(
@@ -4516,7 +4684,7 @@ impl DesktopShell {
                     Icon::new(IconName::Folder)
                         .size(px(14.0))
                         .into_any_element(),
-                    "Current checkout".to_string(),
+                    project_label,
                     cx,
                 ),
                 HomeMenu::Checkout,
@@ -4562,32 +4730,6 @@ impl DesktopShell {
                 );
             }
             None => {}
-        }
-
-        if !has_workspace {
-            details = details.child(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("No checkout yet."),
-                    )
-                    .child(
-                        Button::new("home-new-workspace")
-                            .ghost()
-                            .small()
-                            .label("New workspace")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.section = Section::Workspaces;
-                                this.show_create_form = true;
-                                this.create_error = None;
-                                cx.notify();
-                            })),
-                    ),
-            );
         }
 
         if let Some(activity) = session_activity(&self.sessions) {
@@ -4684,7 +4826,7 @@ impl DesktopShell {
         let entity = cx.entity().downgrade();
 
         match menu {
-            HomeMenu::Workspace | HomeMenu::Checkout => {
+            HomeMenu::Workspace => {
                 let workspaces = match &self.workspaces {
                     LoadState::Loaded(workspaces) => workspaces.clone(),
                     _ => Vec::new(),
@@ -4701,23 +4843,7 @@ impl DesktopShell {
                     for (index, workspace) in workspaces.iter().enumerate() {
                         let id = workspace.id.clone();
                         let is_selected = selected.as_deref() == Some(workspace.id.as_str());
-                        let folder = folder_name(&workspace.local_path);
-                        let mut children = vec![
-                            Icon::new(IconName::Folder)
-                                .size(px(14.0))
-                                .into_any_element(),
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(workspace.name.clone())
-                                .into_any_element(),
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(folder)
-                                .into_any_element(),
-                        ];
+                        let mut children = workspace_row(workspace, cx);
 
                         if is_selected {
                             children
@@ -4733,8 +4859,88 @@ impl DesktopShell {
                             children,
                             Some(Box::new(move |_, cx| {
                                 let _ = entity.update(cx, |this, cx| {
+                                    this.home_project = HomeProject::Auto;
                                     this.select_workspace(id.clone(), cx);
                                     this.home_menu = None;
+                                    cx.notify();
+                                });
+                            })),
+                        ));
+                    }
+
+                    list.into_any_element()
+                })
+            }
+            HomeMenu::Checkout => {
+                let workspaces = match &self.workspaces {
+                    LoadState::Loaded(workspaces) => workspaces
+                        .iter()
+                        .filter(|workspace| workspace.name != CHAT_WORKSPACE)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                };
+                let chosen = self.home_workspace().map(|workspace| workspace.id);
+
+                Rc::new(move |cx| {
+                    let mut list = v_flex().w(px(280.0)).gap(px(2.0));
+
+                    let no_project = chosen.is_none();
+                    let mut children = vec![
+                        Icon::new(IconName::Globe).size(px(14.0)).into_any_element(),
+                        div().child("No project").into_any_element(),
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("chat space")
+                            .into_any_element(),
+                    ];
+
+                    if no_project {
+                        children.push(Icon::new(IconName::Check).size(px(14.0)).into_any_element());
+                    }
+
+                    let entity_here = entity.clone();
+
+                    list = list.child(menu_row(
+                        ("home-project-none", 0),
+                        cx,
+                        no_project,
+                        children,
+                        Some(Box::new(move |_, cx| {
+                            let _ = entity_here.update(cx, |this, cx| {
+                                this.home_project = HomeProject::None;
+                                this.refresh_home_checkout();
+                                this.home_menu = None;
+                                this.composer_status = None;
+                                cx.notify();
+                            });
+                        })),
+                    ));
+
+                    for (index, workspace) in workspaces.iter().enumerate() {
+                        let id = workspace.id.clone();
+                        let is_selected = chosen.as_deref() == Some(workspace.id.as_str());
+                        let mut children = workspace_row(workspace, cx);
+
+                        if is_selected {
+                            children
+                                .push(Icon::new(IconName::Check).size(px(14.0)).into_any_element());
+                        }
+
+                        let entity = entity.clone();
+
+                        list = list.child(menu_row(
+                            ("home-checkout-item", index),
+                            cx,
+                            is_selected,
+                            children,
+                            Some(Box::new(move |_, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.home_project = HomeProject::Workspace(id.clone());
+                                    this.refresh_home_checkout();
+                                    this.home_menu = None;
+                                    this.composer_status = None;
                                     cx.notify();
                                 });
                             })),
