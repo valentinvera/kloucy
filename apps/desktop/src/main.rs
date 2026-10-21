@@ -3,6 +3,7 @@ mod api;
 mod assets;
 mod detect;
 mod git;
+mod markdown;
 mod runner;
 mod safety;
 mod settings;
@@ -10,8 +11,9 @@ mod typography;
 
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Entity, FocusHandle,
-    FontWeight, IntoElement, KeyBinding, Render, SharedString, Subscription, Window, WindowBounds,
-    WindowOptions, actions, div, hsla, prelude::*, px, rgb, size,
+    FontStyle, FontWeight, IntoElement, KeyBinding, Render, SharedString, StrikethroughStyle,
+    StyledText, Subscription, TextRun, UnderlineStyle, Window, WindowBounds, WindowOptions,
+    actions, div, font, hsla, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -298,21 +300,6 @@ fn safety_label(mode: &str) -> &'static str {
         "guarded" => "guarded",
         _ => "open",
     }
-}
-
-/// A name unique to this run, for the file the agent answers into.
-fn run_token() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or_default();
-
-    format!("{}-{nanos}", std::process::id())
-}
-
-/// Where an agent writes its final message for a run.
-fn answer_path(run: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("kloucy-answer-{run}.txt"))
 }
 
 /// The last segment of a path, for chips that cannot show all of it.
@@ -1458,7 +1445,6 @@ impl DesktopShell {
                                 let runner_registry = registry.clone();
                                 let runner_workspace_id = workspace_id.clone();
                                 let session_id = id.clone();
-                                let answer = answer_path(&run_token());
                                 std::thread::spawn(move || {
                                     runner::run_agent(
                                         runner_registry,
@@ -1467,7 +1453,6 @@ impl DesktopShell {
                                         session_id,
                                         command,
                                         cwd,
-                                        Some(answer),
                                     );
                                 });
                             }
@@ -1654,8 +1639,7 @@ impl DesktopShell {
 
         let command = choice.command.clone();
 
-        let answer = answer_path(&run_token());
-        let invocation = runner::invocation(&command, &text, &answer);
+        let invocation = runner::invocation(&command, &text);
         let (safety_mode, safe_commands) = match &plan {
             RunPlan::Workspace(workspace) => (
                 workspace.safety_mode.clone(),
@@ -1768,7 +1752,6 @@ impl DesktopShell {
                             runner_session,
                             invocation,
                             cwd,
-                            Some(answer),
                         );
                     });
 
@@ -4418,6 +4401,144 @@ impl DesktopShell {
 
     /// A run in progress: what was asked, what the agent printed, and the
     /// composer docked at the bottom for the next run.
+    /// An agent answer, rendered from Markdown: prose as prose, code as code.
+    fn render_markdown(&self, source: &str, cx: &App) -> AnyElement {
+        let blocks = markdown::parse(source);
+
+        if blocks.is_empty() {
+            return div().into_any_element();
+        }
+
+        let mut body = v_flex().w_full().gap(px(10.0));
+
+        for block in blocks {
+            body = body.child(match &block.kind {
+                markdown::BlockKind::Code { language } => {
+                    let mut code = v_flex()
+                        .w_full()
+                        .gap(px(6.0))
+                        .rounded(px(8.0))
+                        .bg(cx.theme().secondary)
+                        .px(px(10.0))
+                        .py(px(8.0));
+
+                    if let Some(language) = language {
+                        code = code.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(language.clone()),
+                        );
+                    }
+
+                    code.child(
+                        div()
+                            .w_full()
+                            .font_family(self.mono_font.clone())
+                            .text_xs()
+                            .child(block.text()),
+                    )
+                    .into_any_element()
+                }
+                markdown::BlockKind::Heading { level } => div()
+                    .text_size(px(match level {
+                        1 => 18.0,
+                        2 => 16.0,
+                        _ => 14.0,
+                    }))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(self.inline_runs(&block.spans, cx))
+                    .into_any_element(),
+                markdown::BlockKind::ListItem { depth, marker } => h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap(px(8.0))
+                    .pl(px(*depth as f32 * 16.0))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(marker.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .child(self.inline_runs(&block.spans, cx)),
+                    )
+                    .into_any_element(),
+                markdown::BlockKind::Quote => div()
+                    .w_full()
+                    .pl(px(10.0))
+                    .border_l_2()
+                    .border_color(cx.theme().border)
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.inline_runs(&block.spans, cx))
+                    .into_any_element(),
+                markdown::BlockKind::Rule => div()
+                    .w_full()
+                    .h(px(1.0))
+                    .bg(cx.theme().border)
+                    .into_any_element(),
+                markdown::BlockKind::Paragraph => div()
+                    .text_sm()
+                    .child(self.inline_runs(&block.spans, cx))
+                    .into_any_element(),
+            });
+        }
+
+        body.into_any_element()
+    }
+
+    /// Inline runs of one block: one text, styled per span, so it wraps as prose.
+    fn inline_runs(&self, spans: &[markdown::Span], cx: &App) -> StyledText {
+        let mut text = String::new();
+        let mut runs: Vec<TextRun> = Vec::with_capacity(spans.len());
+
+        for span in spans {
+            if span.text.is_empty() {
+                continue;
+            }
+
+            let mut style = font(if span.code {
+                self.mono_font.clone()
+            } else {
+                cx.theme().font_family.clone()
+            });
+            style.weight = if span.bold {
+                FontWeight::SEMIBOLD
+            } else {
+                FontWeight::NORMAL
+            };
+
+            if span.italic {
+                style.style = FontStyle::Italic;
+            }
+
+            runs.push(TextRun {
+                len: span.text.len(),
+                font: style,
+                color: cx.theme().foreground,
+                background_color: span.code.then(|| cx.theme().secondary),
+                underline: span.link.then_some(UnderlineStyle {
+                    color: None,
+                    thickness: px(1.0),
+                    wavy: false,
+                }),
+                strikethrough: span.strike.then_some(StrikethroughStyle {
+                    color: None,
+                    thickness: px(1.0),
+                }),
+            });
+
+            text.push_str(&span.text);
+        }
+
+        StyledText::new(text).with_runs(runs)
+    }
+
     fn render_thread(
         &self,
         thread: &HomeThread,
@@ -4506,9 +4627,9 @@ impl DesktopShell {
                     .py(px(8.0))
                     .text_sm()
                     .child(match &answer {
-                        Some(answer) => answer.clone(),
-                        None if working => "Working…".to_string(),
-                        None => "The agent printed nothing.".to_string(),
+                        Some(answer) => self.render_markdown(answer, cx),
+                        None if working => div().child("Working…").into_any_element(),
+                        None => div().child("The agent printed nothing.").into_any_element(),
                     }),
             ),
         );

@@ -8,6 +8,7 @@ publish = false
 gpui = "0.2.2"
 gpui-component = "0.5.1"
 gpui-component-assets = "0.5.1"
+pulldown-cmark = { version = "0.12", default-features = false }
 qrcode = "0.14"
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",

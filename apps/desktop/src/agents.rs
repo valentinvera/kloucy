@@ -22,7 +22,9 @@ pub struct AgentChoice {
 fn one_shot(provider: &str) -> Option<&'static str> {
     match provider {
         "claude-code" => Some("-p"),
-        "codex" => Some("exec"),
+        // `--json` makes the CLI answer as events, so the reply and the trace
+        // arrive apart instead of sharing one stream of text.
+        "codex" => Some("exec --json"),
         "opencode" => Some("run"),
         _ => None,
     }
@@ -35,21 +37,21 @@ fn command_for(provider: &str, executable: &str) -> String {
         None => executable.to_string(),
     };
 
-    with_answer_flag(provider, command)
+    with_event_flag(provider, command)
 }
 
-/// The flag that lets Kloucy keep the agent's answer apart from its trace.
-fn answer_flag(provider: &str) -> Option<&'static str> {
+/// The flag that makes a provider report as events, when it has one.
+fn event_flag(provider: &str) -> Option<&'static str> {
     match provider {
-        "codex" => Some("--output-last-message {answer}"),
+        "codex" => Some("--json"),
         _ => None,
     }
 }
 
-/// Add the answer-file flag to a command that does not ask for it yet.
-fn with_answer_flag(provider: &str, command: String) -> String {
-    match answer_flag(provider) {
-        Some(flag) if !command.contains("{answer}") => format!("{command} {flag}"),
+/// Add the events flag to a command that does not ask for it yet.
+fn with_event_flag(provider: &str, command: String) -> String {
+    match event_flag(provider) {
+        Some(flag) if !command.contains(flag) => format!("{command} {flag}"),
         _ => command,
     }
 }
@@ -75,7 +77,7 @@ pub fn choices(agents: &[Agent], detected: &[DetectedAgent]) -> Vec<AgentChoice>
         let stored_command = stored
             .and_then(stored_command)
             .filter(|command| has_arguments(command))
-            .map(|command| with_answer_flag(&cli.provider, command));
+            .map(|command| with_event_flag(&cli.provider, command));
 
         choices.push(AgentChoice {
             agent_id: stored.map(|agent| agent.id.clone()),
@@ -103,7 +105,7 @@ pub fn choices(agents: &[Agent], detected: &[DetectedAgent]) -> Vec<AgentChoice>
 
         choices.push(AgentChoice {
             agent_id: Some(agent.id.clone()),
-            command: with_answer_flag(&agent.provider, command),
+            command: with_event_flag(&agent.provider, command),
             name: agent.name.clone(),
             provider: agent.provider.clone(),
         });
@@ -153,7 +155,7 @@ mod tests {
             choices,
             vec![AgentChoice {
                 agent_id: None,
-                command: "/usr/bin/codex exec --output-last-message {answer}".to_string(),
+                command: "/usr/bin/codex exec --json".to_string(),
                 name: "Codex".to_string(),
                 provider: "codex".to_string(),
             }]
@@ -173,10 +175,7 @@ mod tests {
 
         assert_eq!(choices.len(), 1);
         assert_eq!(choices[0].agent_id, Some("agent-1".to_string()));
-        assert_eq!(
-            choices[0].command,
-            "/opt/codex exec --output-last-message {answer}"
-        );
+        assert_eq!(choices[0].command, "/opt/codex exec --json");
     }
 
     #[test]
@@ -184,10 +183,7 @@ mod tests {
         let stored = agent("agent-1", "Codex", "codex", Some("codex"), "ready");
         let choices = choices(&[stored], &[cli("Codex", "codex", "/usr/bin/codex")]);
 
-        assert_eq!(
-            choices[0].command,
-            "/usr/bin/codex exec --output-last-message {answer}"
-        );
+        assert_eq!(choices[0].command, "/usr/bin/codex exec --json");
     }
 
     #[test]
