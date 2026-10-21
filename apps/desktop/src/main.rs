@@ -1,26 +1,32 @@
+mod agents;
 mod api;
 mod assets;
 mod detect;
+mod git;
+mod markdown;
 mod runner;
 mod safety;
 mod settings;
 mod typography;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight, IntoElement,
-    KeyBinding, Render, SharedString, Window, WindowBounds, WindowOptions, actions, div, hsla,
-    prelude::*, px, rgb, size,
+    AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Entity, FocusHandle,
+    FontStyle, FontWeight, IntoElement, KeyBinding, Render, SharedString, StrikethroughStyle,
+    StyledText, Subscription, TextRun, UnderlineStyle, Window, WindowBounds, WindowOptions,
+    actions, div, font, hsla, prelude::*, px, rgb, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable as _, Sizable as _, Theme,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
     ThemeMode,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
+    popover::Popover,
     sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem},
     v_flex,
 };
 
+use crate::agents::AgentChoice;
 use crate::api::{
     Agent, AgentSession, AgentTask, ApiError, Decision, KloucyClient, PairingSession,
     ReadinessSnapshot, Review, SessionLog, SessionStatus, SessionStep, WeeklyReview, Workspace,
@@ -28,6 +34,7 @@ use crate::api::{
 
 use crate::detect::DetectedAgent;
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 actions!(kloucy, [OpenCommandPalette]);
@@ -38,10 +45,8 @@ const SHELL_CONTEXT: &str = "KloucyShell";
 /// A command offered by the palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaletteCommand {
-    DetectAgents,
     NewPairingCode,
     NewWorkspace,
-    RegisterAgent,
     Section(Section),
 }
 
@@ -52,7 +57,7 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 15] = [
+const PALETTE_ENTRIES: [PaletteEntry; 12] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
@@ -64,12 +69,6 @@ const PALETTE_ENTRIES: [PaletteEntry; 15] = [
         group: "Go to",
         keywords: "projects",
         label: "Open workspaces",
-    },
-    PaletteEntry {
-        command: PaletteCommand::Section(Section::Agents),
-        group: "Go to",
-        keywords: "registry providers",
-        label: "Open agents",
     },
     PaletteEntry {
         command: PaletteCommand::Section(Section::Inbox),
@@ -126,18 +125,6 @@ const PALETTE_ENTRIES: [PaletteEntry; 15] = [
         label: "New workspace",
     },
     PaletteEntry {
-        command: PaletteCommand::RegisterAgent,
-        group: "Action",
-        keywords: "agent add command",
-        label: "Register an agent",
-    },
-    PaletteEntry {
-        command: PaletteCommand::DetectAgents,
-        group: "Action",
-        keywords: "path detect installed",
-        label: "Detect installed agents",
-    },
-    PaletteEntry {
         command: PaletteCommand::NewPairingCode,
         group: "Action",
         keywords: "mobile qr code",
@@ -163,7 +150,6 @@ fn palette_matches(query: &str) -> Vec<&'static PaletteEntry> {
 enum Section {
     Home,
     Workspaces,
-    Agents,
     Inbox,
     Sessions,
     Reviews,
@@ -185,12 +171,7 @@ const NAV_GROUPS: [(&str, &[Section]); 4] = [
     ("🗂 History", &[Section::Decisions, Section::WeeklyReview]),
     (
         "⚙️ Setup",
-        &[
-            Section::Workspaces,
-            Section::Agents,
-            Section::Pairing,
-            Section::Settings,
-        ],
+        &[Section::Workspaces, Section::Pairing, Section::Settings],
     ),
 ];
 
@@ -199,7 +180,6 @@ impl Section {
         match self {
             Section::Home => "Home",
             Section::Workspaces => "Workspaces",
-            Section::Agents => "Agents",
             Section::Inbox => "Inbox",
             Section::Sessions => "Sessions",
             Section::Reviews => "Reviews",
@@ -214,7 +194,6 @@ impl Section {
     /// The icon shown in the sidebar for this section.
     fn icon(self) -> IconName {
         match self {
-            Section::Agents => IconName::Bot,
             Section::Decisions => IconName::BookOpen,
             Section::Home => IconName::LayoutDashboard,
             Section::Inbox => IconName::Inbox,
@@ -232,7 +211,6 @@ impl Section {
         match self {
             Section::Home => "What your agents are doing right now.",
             Section::Workspaces => "Local projects Kloucy can supervise.",
-            Section::Agents => "Local agents available to run tasks.",
             Section::Inbox => "Tasks captured before they run.",
             Section::Sessions => "Running, waiting, and finished agent work.",
             Section::Reviews => "Changed files and artifacts awaiting a decision.",
@@ -251,6 +229,195 @@ enum LoadState<T> {
     Failed(String),
 }
 
+/// The chip menus the home composer opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HomeMenu {
+    Workspace,
+    Agent,
+    Account,
+    Checkout,
+    Branch,
+    Attach,
+}
+
+/// One exchange in a conversation: what was asked and what the agent answered.
+struct HomeTurn {
+    logs: Vec<SessionLog>,
+    prompt: String,
+    session_id: String,
+    status: String,
+}
+
+/// A conversation on Home. Each turn is its own run, and the agent-side session
+/// is what lets later turns carry the earlier ones as context.
+struct HomeThread {
+    agent_session: Option<String>,
+    title: String,
+    turns: Vec<HomeTurn>,
+}
+
+/// Where Home runs its messages: a project checkout, or Kloucy's own chat space
+/// when there is no project to run in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HomeProject {
+    /// The app's selected workspace, when its path is on this machine.
+    Auto,
+    /// No project: run in Kloucy's chat space.
+    None,
+    Workspace(String),
+}
+
+/// What a message will actually run against.
+enum RunPlan {
+    Workspace(Workspace),
+    Chat,
+}
+
+/// The workspace chat-only runs belong to, created when one is first needed.
+const CHAT_WORKSPACE: &str = "Chats";
+
+/// What the composer last did, shown under the checkout row.
+#[derive(Clone, Debug)]
+enum ComposerStatus {
+    Notice(String),
+    Failed(String),
+}
+
+/// How much of a submission becomes the task title.
+const COMPOSER_TITLE_LIMIT: usize = 80;
+
+/// The title a composer submission is captured under: its first line, short
+/// enough to read in a list, with the full text kept as the prompt.
+fn composer_title(text: &str) -> String {
+    let first = text.lines().next().unwrap_or_default().trim();
+
+    if first.chars().count() <= COMPOSER_TITLE_LIMIT {
+        return first.to_string();
+    }
+
+    let mut title: String = first.chars().take(COMPOSER_TITLE_LIMIT).collect();
+    title.push('…');
+
+    title
+}
+
+/// How a workspace's safety mode reads in the composer pill.
+fn safety_label(mode: &str) -> &'static str {
+    match mode {
+        "guarded" => "guarded",
+        _ => "open",
+    }
+}
+
+/// The last segment of a path, for chips that cannot show all of it.
+fn folder_name(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+
+    match trimmed.rsplit('/').next() {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// One row of a home menu: an icon, some content, and what happens on click.
+fn menu_row(
+    id: (&'static str, usize),
+    cx: &App,
+    selected: bool,
+    children: Vec<AnyElement>,
+    on_click: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+) -> AnyElement {
+    let mut row = h_flex()
+        .id(id)
+        .items_center()
+        .gap_2()
+        .px_2()
+        .py_1()
+        .rounded(px(4.0))
+        .text_sm()
+        .when(selected, |element| element.bg(cx.theme().list_hover))
+        .hover(|element| element.bg(cx.theme().list_hover));
+
+    if let Some(on_click) = on_click {
+        row = row.on_click(move |_, window, cx| on_click(window, cx));
+    }
+
+    for child in children {
+        row = row.child(child);
+    }
+
+    row.into_any_element()
+}
+
+/// A workspace as a menu row: folder, name, and where it lives.
+fn workspace_row(workspace: &Workspace, cx: &App) -> Vec<AnyElement> {
+    let here = std::path::Path::new(&workspace.local_path).is_dir();
+    let detail = if here {
+        folder_name(&workspace.local_path)
+    } else {
+        "not on this machine".to_string()
+    };
+
+    vec![
+        Icon::new(IconName::Folder)
+            .size(px(14.0))
+            .into_any_element(),
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .child(workspace.name.clone())
+            .into_any_element(),
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(detail)
+            .into_any_element(),
+    ]
+}
+
+/// A read-only line inside a home menu: a fact, not an action.
+fn menu_note(text: impl Into<SharedString>, cx: &App) -> AnyElement {
+    let text: SharedString = text.into();
+
+    div()
+        .px_2()
+        .py_1()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(text)
+        .into_any_element()
+}
+
+/// A popover trigger that keeps Kloucy's chip styling.
+///
+/// `Popover` needs its trigger to be selectable, but it only uses that to style
+/// triggers it owns; the chip is already built, so the flag is recorded and
+/// ignored.
+struct Chip {
+    selected: bool,
+    element: AnyElement,
+}
+
+impl Selectable for Chip {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl IntoElement for Chip {
+    type Element = AnyElement;
+
+    fn into_element(self) -> Self::Element {
+        self.element
+    }
+}
+
 fn load_workspaces(client: &KloucyClient, session: &SessionStatus) -> LoadState<Vec<Workspace>> {
     if !matches!(session, SessionStatus::SignedIn(_)) {
         return LoadState::Failed(match session {
@@ -265,6 +432,39 @@ fn load_workspaces(client: &KloucyClient, session: &SessionStatus) -> LoadState<
         Err(ApiError::Message(message)) => LoadState::Failed(message),
         Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
     }
+}
+
+fn load_workspaces_list(client: &KloucyClient) -> LoadState<Vec<Workspace>> {
+    match client.query::<Vec<Workspace>>("workspaces.list", None) {
+        Ok(workspaces) => LoadState::Loaded(workspaces),
+        Err(ApiError::Unauthorized) => LoadState::Failed("Sign in to load workspaces.".to_string()),
+        Err(ApiError::Message(message)) => LoadState::Failed(message),
+        Err(ApiError::Unreachable) => LoadState::Failed("API offline.".to_string()),
+    }
+}
+
+/// The workspace chat-only runs belong to: reused when it exists, created on the
+/// first message that has no project to run in.
+fn ensure_chat_workspace(client: &KloucyClient, path: &str) -> Result<String, ApiError> {
+    let find = |workspaces: Vec<Workspace>| {
+        workspaces
+            .into_iter()
+            .find(|workspace| workspace.name == CHAT_WORKSPACE)
+            .map(|workspace| workspace.id)
+    };
+
+    let existing = client.query::<Vec<Workspace>>("workspaces.list", None)?;
+
+    if let Some(id) = find(existing) {
+        return Ok(id);
+    }
+
+    client.create_workspace(CHAT_WORKSPACE, path)?;
+
+    let created = client.query::<Vec<Workspace>>("workspaces.list", None)?;
+
+    find(created)
+        .ok_or_else(|| ApiError::Message("Kloucy could not create its chat workspace.".to_string()))
 }
 
 fn load_agents_list(client: &KloucyClient) -> LoadState<Vec<Agent>> {
@@ -486,6 +686,74 @@ fn apply_theme(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
     theme.sidebar_border = sidebar_border;
 }
 
+/// What the thread shows as the agent's reply: the message it reported, or the
+/// lines it printed when the CLI only prints.
+fn thread_answer(logs: &[SessionLog]) -> Option<String> {
+    let answers = logs
+        .iter()
+        .filter(|log| log.stream == "answer")
+        .map(|log| log.message.trim())
+        .filter(|message| !message.is_empty())
+        .collect::<Vec<_>>();
+
+    if !answers.is_empty() {
+        return Some(answers.join("\n\n"));
+    }
+
+    let printed = logs
+        .iter()
+        .filter(|log| log.stream == "stdout" && !log.message.trim().is_empty())
+        .map(|log| log.message.as_str())
+        .collect::<Vec<_>>();
+
+    (!printed.is_empty()).then(|| printed.join("\n"))
+}
+
+/// The agent-side session a run reported, which is what carries context into
+/// the next turn of the same conversation.
+fn agent_session_id(logs: &[SessionLog]) -> Option<String> {
+    logs.iter().find_map(|log| {
+        let event: serde_json::Value = serde_json::from_str(&log.message).ok()?;
+
+        if event.get("type")?.as_str()? != "thread.started" {
+            return None;
+        }
+
+        event
+            .get("thread_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+/// How a run's status reads in the thread header.
+fn thread_status_label(status: &str) -> &'static str {
+    match status {
+        "running" | "ready" => "Working…",
+        "done" => "Done",
+        "failed" => "Failed",
+        "stopped" => "Stopped",
+        _ => "Waiting",
+    }
+}
+
+/// A one-line answer to "what are my agents doing?", when there is anything.
+fn session_activity(sessions: &LoadState<Vec<AgentSession>>) -> Option<String> {
+    let waiting = count_where(sessions, |session| session.status == "waiting");
+    let running = count_where(sessions, |session| session.status == "running");
+    let mut parts = Vec::new();
+
+    if waiting > 0 {
+        parts.push(format!("{waiting} waiting"));
+    }
+
+    if running > 0 {
+        parts.push(format!("{running} running"));
+    }
+
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 /// How many loaded items match, and zero while loading or after a failure.
 fn count_where<T>(items: &LoadState<Vec<T>>, predicate: impl Fn(&T) -> bool) -> usize {
     match items {
@@ -503,22 +771,6 @@ fn initials(name: &str) -> String {
         .to_uppercase()
 }
 
-fn session_titles(sessions: &LoadState<Vec<AgentSession>>, status: &str) -> Vec<String> {
-    match sessions {
-        LoadState::Loaded(list) => list
-            .iter()
-            .filter(|session| session.status == status)
-            .map(|session| {
-                session
-                    .prompt
-                    .clone()
-                    .unwrap_or_else(|| "Untitled session".to_string())
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
 struct DesktopShell {
     section: Section,
     client: KloucyClient,
@@ -526,12 +778,21 @@ struct DesktopShell {
     focus_handle: FocusHandle,
     mono_font: SharedString,
     theme_mode: ThemeMode,
+    composer: Entity<InputState>,
+    _composer_subscription: Subscription,
+    composer_status: Option<ComposerStatus>,
+    home_thread: Option<HomeThread>,
+    sending_composer: bool,
+    home_provider: Option<String>,
+    home_project: HomeProject,
+    home_checkout: git::Checkout,
+    home_menu: Option<HomeMenu>,
     palette_open: bool,
     palette_query: Entity<InputState>,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
     agents: LoadState<Vec<Agent>>,
-    detected_agents: Option<Vec<DetectedAgent>>,
+    installed_agents: Vec<DetectedAgent>,
     selected_workspace: Option<String>,
     selected_session: Option<String>,
     session_logs: LoadState<Vec<SessionLog>>,
@@ -555,9 +816,6 @@ struct DesktopShell {
     task_prompt: Entity<InputState>,
     decision_title: Entity<InputState>,
     decision_summary: Entity<InputState>,
-    agent_name: Entity<InputState>,
-    agent_provider: Entity<InputState>,
-    agent_command: Entity<InputState>,
     intake_project_type: Entity<InputState>,
     intake_package_manager: Entity<InputState>,
     intake_runtime: Entity<InputState>,
@@ -573,15 +831,12 @@ struct DesktopShell {
     archiving_workspace: bool,
     settings_error: Option<String>,
     create_error: Option<String>,
-    agent_error: Option<String>,
     completing_intake: bool,
-    creating_agent: bool,
     intake_error: Option<String>,
     creating_decision: bool,
     creating_task: bool,
     creating_workspace: bool,
     decision_error: Option<String>,
-    show_agent_form: bool,
     show_create_form: bool,
     show_decision_form: bool,
     show_task_form: bool,
@@ -628,10 +883,6 @@ impl DesktopShell {
         let decision_title = cx.new(|cx| InputState::new(window, cx).placeholder("Decision"));
         let decision_summary =
             cx.new(|cx| InputState::new(window, cx).placeholder("What changed and why"));
-        let agent_name = cx.new(|cx| InputState::new(window, cx).placeholder("Agent name"));
-        let agent_provider = cx.new(|cx| InputState::new(window, cx).placeholder("claude-code"));
-        let agent_command =
-            cx.new(|cx| InputState::new(window, cx).placeholder("codex exec --full-auto"));
         let intake_project_type =
             cx.new(|cx| InputState::new(window, cx).placeholder("Project type (rust, node, …)"));
         let intake_package_manager =
@@ -655,16 +906,27 @@ impl DesktopShell {
         });
         let instruction =
             cx.new(|cx| InputState::new(window, cx).placeholder("Send a follow-up instruction"));
+        let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Do anything…"));
+        let composer_subscription = cx.subscribe_in(
+            &composer,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { secondary: false } = event {
+                    this.submit_composer(window, cx);
+                }
+            },
+        );
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
-            let (session, workspaces, agents) = cx
+            let (session, workspaces, agents, installed) = cx
                 .background_executor()
                 .spawn(async move {
                     let session = task_client.session();
                     let workspaces = load_workspaces(&task_client, &session);
                     let agents = load_agents(&task_client, &session);
-                    (session, workspaces, agents)
+                    let installed = detect::detect_installed_agents();
+                    (session, workspaces, agents, installed)
                 })
                 .await;
 
@@ -672,6 +934,7 @@ impl DesktopShell {
                 this.session = session;
                 this.workspaces = workspaces;
                 this.agents = agents;
+                this.installed_agents = installed;
                 cx.notify();
 
                 let first = match &this.workspaces {
@@ -691,21 +954,25 @@ impl DesktopShell {
 
         Self {
             agents: LoadState::Loading,
-            detected_agents: None,
+            installed_agents: Vec::new(),
             client,
             registry,
             focus_handle,
             mono_font,
             theme_mode,
+            composer,
+            _composer_subscription: composer_subscription,
+            composer_status: None,
+            home_thread: None,
+            sending_composer: false,
+            home_provider: None,
+            home_project: HomeProject::Auto,
+            home_checkout: git::Checkout::None,
+            home_menu: None,
             palette_open: false,
             palette_query,
-            agent_command,
-            agent_error: None,
-            agent_name,
-            agent_provider,
             completing_intake: false,
             create_error: None,
-            creating_agent: false,
             creating_step: false,
             intake_error: None,
             intake_ignored_paths,
@@ -745,7 +1012,6 @@ impl DesktopShell {
             session_logs: LoadState::Loading,
             sessions: LoadState::Loading,
             weekly_review: LoadState::Loading,
-            show_agent_form: false,
             show_create_form: false,
             show_decision_form: false,
             show_task_form: false,
@@ -875,7 +1141,6 @@ impl DesktopShell {
                 this.weekly_review = LoadState::Loading;
                 this.selected_workspace = None;
                 this.sessions = LoadState::Loading;
-                this.show_agent_form = false;
                 this.show_create_form = false;
                 this.tasks = LoadState::Loading;
                 cx.notify();
@@ -900,10 +1165,16 @@ impl DesktopShell {
         self.sessions = LoadState::Loading;
         self.tasks = LoadState::Loading;
         self.weekly_review = LoadState::Loading;
+        self.home_provider = None;
+        self.home_checkout = git::Checkout::None;
+
+        let checkout = self
+            .selected_workspace_data()
+            .map(|workspace| workspace.local_path.clone());
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let (tasks, sessions, reviews, decisions, readiness, weekly_review) = cx
+            let (tasks, sessions, reviews, decisions, readiness, weekly_review, checkout) = cx
                 .background_executor()
                 .spawn(async move {
                     let tasks = load_tasks(&client, &workspace_id);
@@ -912,6 +1183,10 @@ impl DesktopShell {
                     let decisions = load_decisions(&client, &workspace_id);
                     let readiness = load_readiness(&client, &workspace_id);
                     let weekly_review = load_weekly_review(&client, &workspace_id);
+                    let checkout = checkout
+                        .as_deref()
+                        .map(|path| git::describe(std::path::Path::new(path)))
+                        .unwrap_or(git::Checkout::None);
                     (
                         tasks,
                         sessions,
@@ -919,6 +1194,7 @@ impl DesktopShell {
                         decisions,
                         readiness,
                         weekly_review,
+                        checkout,
                     )
                 })
                 .await;
@@ -930,6 +1206,11 @@ impl DesktopShell {
                 this.sessions = sessions;
                 this.tasks = tasks;
                 this.weekly_review = weekly_review;
+
+                if this.home_project == HomeProject::Auto {
+                    this.home_checkout = checkout;
+                }
+
                 cx.notify();
             })
             .ok();
@@ -1248,6 +1529,458 @@ impl DesktopShell {
             .ok();
         })
         .detach();
+    }
+
+    /// The agent the composer assigns: the one picked in the pill, else the
+    /// workspace default.
+    /// A workspace by id, however the list was loaded.
+    fn workspace_by_id(&self, id: &str) -> Option<Workspace> {
+        match &self.workspaces {
+            LoadState::Loaded(workspaces) => workspaces
+                .iter()
+                .find(|workspace| workspace.id == id)
+                .cloned(),
+            _ => None,
+        }
+    }
+
+    /// The workspace Home would run in, once its path proves to be here. A
+    /// project whose directory is missing is not usable, so it resolves to none
+    /// and the message runs in the chat space instead.
+    fn home_workspace(&self) -> Option<Workspace> {
+        let workspace = match &self.home_project {
+            HomeProject::None => return None,
+            HomeProject::Workspace(id) => self.workspace_by_id(id),
+            HomeProject::Auto => self.selected_workspace_data().cloned(),
+        }?;
+
+        std::path::Path::new(&workspace.local_path)
+            .is_dir()
+            .then_some(workspace)
+    }
+
+    /// The project the user picked, whether or not it can run here.
+    fn chosen_workspace(&self) -> Option<Workspace> {
+        match &self.home_project {
+            HomeProject::None => None,
+            HomeProject::Workspace(id) => self.workspace_by_id(id),
+            HomeProject::Auto => self.selected_workspace_data().cloned(),
+        }
+    }
+
+    /// Recompute the branch Home shows for the checkout it will use.
+    fn refresh_home_checkout(&mut self) {
+        self.home_checkout = self
+            .home_workspace()
+            .map(|workspace| git::describe(std::path::Path::new(&workspace.local_path)))
+            .unwrap_or(git::Checkout::None);
+    }
+
+    /// The agents the composer can start: installed on this machine, plus the
+    /// records previous messages created.
+    fn agent_choices(&self) -> Vec<AgentChoice> {
+        let agents = match &self.agents {
+            LoadState::Loaded(agents) => agents.as_slice(),
+            _ => &[],
+        };
+
+        agents::choices(agents, &self.installed_agents)
+    }
+
+    /// The agent the next message would start: the one picked in the pill, else
+    /// the workspace's default agent, else the first one available.
+    fn composer_choice(&self) -> Option<AgentChoice> {
+        let choices = self.agent_choices();
+
+        let preferred = self.home_provider.clone().or_else(|| {
+            let default = self
+                .selected_workspace_data()
+                .and_then(|workspace| workspace.default_agent_id.clone())?;
+
+            let agents = match &self.agents {
+                LoadState::Loaded(agents) => agents.as_slice(),
+                _ => return None,
+            };
+
+            agents
+                .iter()
+                .find(|agent| agent.id == default)
+                .map(|agent| agent.provider.clone())
+        });
+
+        preferred
+            .and_then(|provider| {
+                choices
+                    .iter()
+                    .find(|choice| choice.provider == provider)
+                    .cloned()
+            })
+            .or_else(|| choices.first().cloned())
+    }
+
+    /// Start the agent on whatever the composer holds.
+    ///
+    /// One send is one run: a session is opened for the workspace, the agent
+    /// command is started with the prompt as its argument, and the thread on
+    /// Home streams what the agent prints until the session finishes.
+    fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sending_composer || self.running_session().is_some() {
+            return;
+        }
+
+        let text = self.composer.read(cx).value().trim().to_string();
+
+        if text.is_empty() {
+            self.composer_status = Some(ComposerStatus::Failed(
+                "Write what you want the agent to do.".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+
+        let plan = match self.home_workspace() {
+            Some(workspace) => RunPlan::Workspace(workspace),
+            None => RunPlan::Chat,
+        };
+
+        if let RunPlan::Chat = &plan {
+            if let Some(workspace) = self.chosen_workspace() {
+                self.composer_status = Some(ComposerStatus::Notice(format!(
+                    "{} is not on this machine, so this runs in Kloucy's chat space.",
+                    workspace.name
+                )));
+            }
+        }
+
+        let Some(choice) = self.composer_choice() else {
+            self.composer_status = Some(ComposerStatus::Failed(
+                "No agent CLI found on this machine. Install codex, claude or opencode."
+                    .to_string(),
+            ));
+            cx.notify();
+            return;
+        };
+
+        let mut command = choice.command.clone();
+
+        if let Some(agent_session) = self
+            .home_thread
+            .as_ref()
+            .and_then(|thread| thread.agent_session.clone())
+        {
+            command = agents::resume_command(&choice.provider, &command, &agent_session)
+                .unwrap_or(command);
+        }
+
+        let invocation = runner::invocation(&command, &text);
+        let (safety_mode, safe_commands) = match &plan {
+            RunPlan::Workspace(workspace) => (
+                workspace.safety_mode.clone(),
+                workspace.safe_commands.clone().unwrap_or_default(),
+            ),
+            RunPlan::Chat => ("open".to_string(), Vec::new()),
+        };
+
+        if !safety::command_allowed(&safety_mode, &invocation, &safe_commands) {
+            self.blocked_command = Some(invocation);
+            self.composer_status = Some(ComposerStatus::Failed(
+                "This workspace only runs its safe commands.".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+
+        let chat_space = settings::ensure_chat_space();
+
+        if matches!(plan, RunPlan::Chat) && chat_space.is_none() {
+            self.composer_status = Some(ComposerStatus::Failed(
+                "Kloucy could not create its chat space.".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+
+        self.blocked_command = None;
+        self.composer_status = None;
+        self.sending_composer = true;
+
+        let title = composer_title(&text);
+        let prompt = text.clone();
+        let client = self.client.clone();
+        let registry = self.registry.clone();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn({
+                    let client = client.clone();
+                    let choice = choice.clone();
+                    let prompt = prompt.clone();
+                    let plan = match plan {
+                        RunPlan::Workspace(workspace) => Ok((workspace.id, workspace.local_path)),
+                        RunPlan::Chat => chat_space
+                            .clone()
+                            .map(|path| path.display().to_string())
+                            .ok_or_else(|| {
+                                ApiError::Message(
+                                    "Kloucy could not create its chat space.".to_string(),
+                                )
+                            })
+                            .and_then(|path| {
+                                ensure_chat_workspace(&client, &path)
+                                    .map(|workspace_id| (workspace_id, path))
+                            }),
+                    };
+
+                    async move {
+                        let (workspace_id, cwd) = plan?;
+
+                        // The first message that works stores the agent behind
+                        // it, so the registry fills itself by being used.
+                        let agent_id = match choice.agent_id.clone() {
+                            Some(agent_id) => agent_id,
+                            None => {
+                                let created = client.create_agent(
+                                    &choice.name,
+                                    &choice.provider,
+                                    &choice.command,
+                                )?;
+                                created.id
+                            }
+                        };
+
+                        let session =
+                            client.create_session(&workspace_id, Some(&agent_id), &prompt)?;
+                        let session = match client.start_session(&session.id) {
+                            Ok(()) => session,
+                            Err(error) => {
+                                return Err(error);
+                            }
+                        };
+
+                        Ok::<_, ApiError>((
+                            session,
+                            workspace_id,
+                            cwd,
+                            load_agents_list(&client),
+                            load_workspaces_list(&client),
+                        ))
+                    }
+                })
+                .await;
+
+            match result {
+                Ok((session, workspace_id, cwd, agents, workspaces)) => {
+                    let session_id = session.id.clone();
+                    let runner_client = client.clone();
+                    let runner_registry = registry.clone();
+                    let runner_workspace = workspace_id;
+                    let runner_session = session_id.clone();
+
+                    std::thread::spawn(move || {
+                        runner::run_agent(
+                            runner_registry,
+                            runner_client,
+                            runner_workspace,
+                            runner_session,
+                            invocation,
+                            cwd,
+                        );
+                    });
+
+                    this.update_in(cx, |this, window, cx| {
+                        this.sending_composer = false;
+                        this.agents = agents;
+                        this.workspaces = workspaces;
+                        this.refresh_home_checkout();
+                        this.composer
+                            .update(cx, |state, cx| state.set_value("", window, cx));
+                        let turn = HomeTurn {
+                            logs: Vec::new(),
+                            prompt,
+                            session_id: session_id.clone(),
+                            status: "running".to_string(),
+                        };
+
+                        match &mut this.home_thread {
+                            Some(thread) => thread.turns.push(turn),
+                            None => {
+                                this.home_thread = Some(HomeThread {
+                                    agent_session: None,
+                                    title,
+                                    turns: vec![turn],
+                                });
+                            }
+                        }
+                        this.watch_home_thread(session_id, cx);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(error) => {
+                    this.update_in(cx, |this, _, cx| {
+                        this.sending_composer = false;
+                        this.composer_status = Some(ComposerStatus::Failed(error_message(&error)));
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Follow a thread's session until the run finishes, appending what it prints.
+    fn watch_home_thread(&mut self, session_id: String, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+
+        cx.spawn(async move |this, cx| {
+            let mut known = 0usize;
+
+            loop {
+                let watching = this
+                    .update(cx, |this, _| {
+                        this.home_thread.as_ref().is_some_and(|thread| {
+                            thread
+                                .turns
+                                .iter()
+                                .any(|turn| turn.session_id == session_id)
+                        })
+                    })
+                    .unwrap_or(false);
+
+                if !watching {
+                    break;
+                }
+
+                let stream = cx
+                    .background_executor()
+                    .spawn({
+                        let client = client.clone();
+                        let session_id = session_id.clone();
+                        async move { client.stream_session(&session_id, known) }
+                    })
+                    .await;
+
+                let finished = this
+                    .update(cx, |this, cx| {
+                        let Some(thread) = this.home_thread.as_mut() else {
+                            return true;
+                        };
+
+                        let Some(turn) = thread
+                            .turns
+                            .iter_mut()
+                            .find(|turn| turn.session_id == session_id)
+                        else {
+                            return true;
+                        };
+
+                        match stream {
+                            Ok(stream) => {
+                                known += stream.logs.len();
+                                turn.logs.extend(stream.logs);
+                                turn.status = stream.session.status;
+
+                                if let Some(agent_session) = agent_session_id(&turn.logs) {
+                                    thread.agent_session = Some(agent_session);
+                                }
+
+                                cx.notify();
+
+                                !matches!(turn.status.as_str(), "running" | "ready" | "needs_setup")
+                            }
+                            Err(_) => false,
+                        }
+                    })
+                    .unwrap_or(true);
+
+                if finished {
+                    break;
+                }
+
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(700))
+                    .await;
+            }
+
+            let workspace_id = this
+                .update(cx, |this, _| this.selected_workspace.clone())
+                .ok()
+                .flatten();
+
+            if let Some(workspace_id) = workspace_id {
+                let sessions = cx
+                    .background_executor()
+                    .spawn({
+                        let client = client.clone();
+                        async move { load_sessions(&client, &workspace_id) }
+                    })
+                    .await;
+
+                this.update(cx, |this, cx| {
+                    this.sessions = sessions;
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// The run still going in the thread, if there is one.
+    fn running_session(&self) -> Option<String> {
+        self.home_thread.as_ref().and_then(|thread| {
+            thread
+                .turns
+                .iter()
+                .rev()
+                .find(|turn| matches!(turn.status.as_str(), "running" | "ready" | "needs_setup"))
+                .map(|turn| turn.session_id.clone())
+        })
+    }
+
+    /// Stop the agent behind the current thread.
+    fn stop_home_thread(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.running_session() else {
+            return;
+        };
+
+        self.registry.stop(&session_id);
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let _ = cx
+                .background_executor()
+                .spawn({
+                    let client = client.clone();
+                    let session_id = session_id.clone();
+                    async move { client.stop_session(&session_id) }
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                if let Some(thread) = &mut this.home_thread {
+                    if let Some(turn) = thread
+                        .turns
+                        .iter_mut()
+                        .find(|turn| turn.session_id == session_id)
+                    {
+                        turn.status = "stopped".to_string();
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Leave the thread and go back to the empty composer.
+    fn clear_home_thread(&mut self, cx: &mut Context<Self>) {
+        self.home_thread = None;
+        self.composer_status = None;
+        cx.notify();
     }
 
     fn submit_create_task(&mut self, cx: &mut Context<Self>) {
@@ -1584,48 +2317,6 @@ impl DesktopShell {
                     .timer(std::time::Duration::from_secs(2))
                     .await;
             }
-        })
-        .detach();
-    }
-
-    fn submit_create_agent(&mut self, cx: &mut Context<Self>) {
-        let name = self.agent_name.read(cx).value().to_string();
-        let provider = self.agent_provider.read(cx).value().to_string();
-        let command = self.agent_command.read(cx).value().to_string();
-
-        self.agent_error = None;
-        self.creating_agent = true;
-
-        let client = self.client.clone();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    client.create_agent(&name, &provider, &command)?;
-                    Ok::<_, ApiError>(load_agents_list(&client))
-                })
-                .await;
-
-            this.update(cx, |this, cx| {
-                this.creating_agent = false;
-
-                match result {
-                    Ok(LoadState::Loaded(agents)) => {
-                        this.agents = LoadState::Loaded(agents);
-                        this.show_agent_form = false;
-                    }
-                    Ok(LoadState::Failed(message)) => {
-                        this.agent_error = Some(message);
-                    }
-                    Ok(LoadState::Loading) => {}
-                    Err(error) => {
-                        this.agent_error = Some(error_message(&error));
-                    }
-                }
-
-                cx.notify();
-            })
-            .ok();
         })
         .detach();
     }
@@ -2889,208 +3580,6 @@ impl DesktopShell {
         form.into_any_element()
     }
 
-    fn detect_agents(&mut self, cx: &mut Context<Self>) {
-        self.detected_agents = Some(detect::detect_installed_agents());
-        self.show_agent_form = false;
-        self.agent_error = None;
-        cx.notify();
-    }
-
-    fn register_detected_agent(
-        &mut self,
-        agent: DetectedAgent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_agent_form = true;
-        self.agent_error = None;
-
-        self.agent_name
-            .update(cx, |state, cx| state.set_value(agent.name, window, cx));
-        self.agent_provider
-            .update(cx, |state, cx| state.set_value(agent.provider, window, cx));
-        self.agent_command.update(cx, |state, cx| {
-            state.set_value(agent.executable_path, window, cx)
-        });
-
-        cx.notify();
-    }
-
-    fn render_create_agent(&self, cx: &mut Context<Self>) -> AnyElement {
-        let submit = Button::new("create-agent")
-            .primary()
-            .label(if self.creating_agent {
-                "Creating…"
-            } else {
-                "Create agent"
-            })
-            .disabled(self.creating_agent)
-            .on_click(cx.listener(|this, _, _, cx| this.submit_create_agent(cx)));
-
-        let cancel = Button::new("cancel-agent")
-            .label("Cancel")
-            .disabled(self.creating_agent)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.show_agent_form = false;
-                this.agent_error = None;
-                cx.notify();
-            }));
-
-        let mut form = v_flex()
-            .w(px(360.0))
-            .gap_3()
-            .child(Input::new(&self.agent_name))
-            .child(Input::new(&self.agent_provider))
-            .child(Input::new(&self.agent_command))
-            .child(h_flex().gap_2().child(submit).child(cancel));
-
-        if let Some(error) = &self.agent_error {
-            form = form.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().danger_foreground)
-                    .child(error.clone()),
-            );
-        }
-
-        form.into_any_element()
-    }
-
-    fn render_agents(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.show_agent_form {
-            return self.render_create_agent(cx);
-        }
-
-        let new_button = Button::new("new-agent")
-            .small()
-            .label("New agent")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.show_agent_form = true;
-                this.agent_error = None;
-                cx.notify();
-            }));
-
-        let detect_button = Button::new("detect-agents")
-            .small()
-            .label("Detect installed agents")
-            .on_click(cx.listener(|this, _, _, cx| this.detect_agents(cx)));
-
-        let content: AnyElement = match &self.agents {
-            LoadState::Loading => div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("Loading agents…")
-                .into_any_element(),
-            LoadState::Failed(message) => div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(message.clone())
-                .into_any_element(),
-            LoadState::Loaded(agents) if agents.is_empty() => v_flex()
-                .gap_1()
-                .child(div().text_sm().child("No agents configured yet."))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Register an agent to run tasks in a workspace."),
-                )
-                .into_any_element(),
-            LoadState::Loaded(agents) => {
-                let mut list = v_flex().gap_3();
-
-                for agent in agents {
-                    list = list.child(
-                        h_flex()
-                            .gap_2()
-                            .child(div().text_sm().child(agent.name.clone()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(agent.provider.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(agent.status.clone()),
-                            ),
-                    );
-                }
-
-                list.into_any_element()
-            }
-        };
-
-        let mut section = v_flex()
-            .gap_4()
-            .child(h_flex().gap_2().child(new_button).child(detect_button))
-            .child(content);
-
-        if let Some(detected) = &self.detected_agents {
-            section = section.child(self.render_detected_agents(detected, cx));
-        }
-
-        section.into_any_element()
-    }
-
-    fn render_detected_agents(
-        &self,
-        detected: &[DetectedAgent],
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut list = v_flex().gap_1().child(
-            div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child("Detected on your PATH"),
-        );
-
-        if detected.is_empty() {
-            return list
-                .child(
-                    div()
-                        .text_sm()
-                        .child("No known agent CLI was found on your PATH."),
-                )
-                .into_any_element();
-        }
-
-        for (index, agent) in detected.iter().enumerate() {
-            let detected_agent = agent.clone();
-
-            list = list.child(
-                h_flex()
-                    .gap_2()
-                    .child(div().text_sm().child(agent.name.clone()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(agent.provider.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .font_family(self.mono_font.clone())
-                            .child(agent.executable_path.clone()),
-                    )
-                    .child(
-                        Button::new(("add-detected-agent", index))
-                            .small()
-                            .label("Add")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.register_detected_agent(detected_agent.clone(), window, cx);
-                            })),
-                    ),
-            );
-        }
-
-        list.into_any_element()
-    }
-
     fn render_create_task(&self, cx: &mut Context<Self>) -> AnyElement {
         let submit = Button::new("create-task")
             .primary()
@@ -3939,115 +4428,1031 @@ impl DesktopShell {
             .into_any_element()
     }
 
-    fn meta_item(&self, label: &str, value: String, cx: &mut Context<Self>) -> AnyElement {
-        v_flex()
-            .gap_1()
+    /// Home: a composer while nothing runs, a thread while an agent works.
+    fn render_home(&self, cx: &mut Context<Self>) -> AnyElement {
+        let card = self.render_composer_card(cx);
+        let details = self.render_home_details(cx);
+
+        if let Some(thread) = self.home_thread.as_ref() {
+            return self.render_thread(thread, card, details, cx);
+        }
+
+        // Nothing running: the composer sits in the middle of the surface, and
+        // the chips keep the top right corner.
+        div()
+            .size_full()
+            .relative()
             .child(
                 div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(label.to_string()),
+                    .absolute()
+                    .top(px(20.0))
+                    .right(px(24.0))
+                    .child(self.home_chips(cx)),
             )
-            .child(div().text_sm().child(value))
+            .child(
+                v_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .px(px(24.0))
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .max_w(px(720.0))
+                            .gap_3()
+                            .child(card)
+                            .child(details),
+                    ),
+            )
             .into_any_element()
     }
 
-    fn render_home(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.selected_workspace.is_none() {
-            return div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("Select a workspace to see what its agents are doing.")
-                .into_any_element();
+    /// A run in progress: what was asked, what the agent printed, and the
+    /// composer docked at the bottom for the next run.
+    /// An agent answer, rendered from Markdown: prose as prose, code as code.
+    fn render_markdown(&self, source: &str, cx: &App) -> AnyElement {
+        let blocks = markdown::parse(source);
+
+        if blocks.is_empty() {
+            return div().into_any_element();
         }
 
-        let waiting = session_titles(&self.sessions, "waiting");
-        let running = session_titles(&self.sessions, "running");
+        let mut body = v_flex().w_full().gap(px(10.0));
 
-        let agent_count = match &self.agents {
-            LoadState::Loaded(agents) => agents.len(),
-            _ => 0,
-        };
-        let task_count = match &self.tasks {
-            LoadState::Loaded(tasks) => tasks.len(),
-            _ => 0,
-        };
-        let pairing = match &self.pairing {
-            LoadState::Loaded(Some(session)) => session.status.clone(),
-            _ => "not paired".to_string(),
-        };
+        for block in blocks {
+            body = body.child(match &block.kind {
+                markdown::BlockKind::Code { language } => {
+                    let mut code = v_flex()
+                        .w_full()
+                        .gap(px(6.0))
+                        .rounded(px(8.0))
+                        .bg(cx.theme().secondary)
+                        .px(px(10.0))
+                        .py(px(8.0));
 
-        let next_action = if !waiting.is_empty() {
-            format!("Review {} waiting session(s)", waiting.len())
-        } else if agent_count == 0 {
-            "Register an agent".to_string()
-        } else if task_count == 0 {
-            "Capture a task".to_string()
-        } else {
-            "All clear".to_string()
-        };
+                    if let Some(language) = language {
+                        code = code.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(language.clone()),
+                        );
+                    }
 
-        let mut body = v_flex().gap_6().child(
-            v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Next action"),
-                )
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(next_action),
-                ),
-        );
-
-        if !waiting.is_empty() {
-            let mut list = v_flex().gap_1().child(
-                div()
-                    .text_xs()
+                    code.child(
+                        div()
+                            .w_full()
+                            .font_family(self.mono_font.clone())
+                            .text_xs()
+                            .child(block.text()),
+                    )
+                    .into_any_element()
+                }
+                markdown::BlockKind::Heading { level } => div()
+                    .text_size(px(match level {
+                        1 => 18.0,
+                        2 => 16.0,
+                        _ => 14.0,
+                    }))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(self.inline_runs(&block.spans, cx))
+                    .into_any_element(),
+                markdown::BlockKind::ListItem { depth, marker } => h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap(px(8.0))
+                    .pl(px(*depth as f32 * 16.0))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(marker.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .child(self.inline_runs(&block.spans, cx)),
+                    )
+                    .into_any_element(),
+                markdown::BlockKind::Quote => div()
+                    .w_full()
+                    .pl(px(10.0))
+                    .border_l_2()
+                    .border_color(cx.theme().border)
+                    .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child("Waiting"),
-            );
-            for item in waiting {
-                list = list.child(div().text_sm().child(item));
-            }
-            body = body.child(list);
+                    .child(self.inline_runs(&block.spans, cx))
+                    .into_any_element(),
+                markdown::BlockKind::Rule => div()
+                    .w_full()
+                    .h(px(1.0))
+                    .bg(cx.theme().border)
+                    .into_any_element(),
+                markdown::BlockKind::Paragraph => div()
+                    .text_sm()
+                    .child(self.inline_runs(&block.spans, cx))
+                    .into_any_element(),
+            });
         }
-
-        if !running.is_empty() {
-            let mut list = v_flex().gap_1().child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Running"),
-            );
-            for item in running {
-                list = list.child(div().text_sm().child(item));
-            }
-            body = body.child(list);
-        }
-
-        let agents_meta = self.meta_item("Agents", agent_count.to_string(), cx);
-        let tasks_meta = self.meta_item("Captured tasks", task_count.to_string(), cx);
-        let pairing_meta = self.meta_item("Pairing", pairing, cx);
-
-        body = body.child(
-            h_flex()
-                .gap_6()
-                .child(agents_meta)
-                .child(tasks_meta)
-                .child(pairing_meta),
-        );
 
         body.into_any_element()
     }
 
-    fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Inline runs of one block: one text, styled per span, so it wraps as prose.
+    fn inline_runs(&self, spans: &[markdown::Span], cx: &App) -> StyledText {
+        let mut text = String::new();
+        let mut runs: Vec<TextRun> = Vec::with_capacity(spans.len());
+
+        for span in spans {
+            if span.text.is_empty() {
+                continue;
+            }
+
+            let mut style = font(if span.code {
+                self.mono_font.clone()
+            } else {
+                cx.theme().font_family.clone()
+            });
+            style.weight = if span.bold {
+                FontWeight::SEMIBOLD
+            } else {
+                FontWeight::NORMAL
+            };
+
+            if span.italic {
+                style.style = FontStyle::Italic;
+            }
+
+            runs.push(TextRun {
+                len: span.text.len(),
+                font: style,
+                color: cx.theme().foreground,
+                background_color: span.code.then(|| cx.theme().secondary),
+                underline: span.link.then_some(UnderlineStyle {
+                    color: None,
+                    thickness: px(1.0),
+                    wavy: false,
+                }),
+                strikethrough: span.strike.then_some(StrikethroughStyle {
+                    color: None,
+                    thickness: px(1.0),
+                }),
+            });
+
+            text.push_str(&span.text);
+        }
+
+        StyledText::new(text).with_runs(runs)
+    }
+
+    fn render_thread(
+        &self,
+        thread: &HomeThread,
+        card: AnyElement,
+        details: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let working = self.running_session().is_some();
+        let status = thread
+            .turns
+            .last()
+            .map(|turn| turn.status.as_str())
+            .unwrap_or("done");
+
+        let header = h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .px(px(24.0))
+            .pt(px(20.0))
+            .pb(px(12.0))
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(thread.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if status == "failed" {
+                                cx.theme().danger_foreground
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .child(thread_status_label(status)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .child(if working {
+                        Button::new("thread-stop")
+                            .ghost()
+                            .small()
+                            .label("Stop")
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_home_thread(cx)))
+                    } else {
+                        Button::new("thread-new")
+                            .ghost()
+                            .small()
+                            .label("New")
+                            .on_click(cx.listener(|this, _, _, cx| this.clear_home_thread(cx)))
+                    })
+                    .child(self.home_chips(cx)),
+            );
+
+        // The conversation shares the composer's column, so both read as one
+        // surface instead of a wide panel with a narrow field under it.
+        let mut messages = v_flex().w_full().gap_4().py(px(16.0));
+
+        for (index, turn) in thread.turns.iter().enumerate() {
+            let last = index + 1 == thread.turns.len();
+            let turn_working =
+                last && matches!(turn.status.as_str(), "running" | "ready" | "needs_setup");
+
+            messages = messages.child(
+                h_flex().w_full().justify_end().child(
+                    div()
+                        .max_w(px(520.0))
+                        .rounded(px(12.0))
+                        .bg(cx.theme().secondary)
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .text_sm()
+                        .child(turn.prompt.clone()),
+                ),
+            );
+
+            messages = messages.child(
+                h_flex().w_full().justify_start().child(
+                    div()
+                        .max_w(px(620.0))
+                        .rounded(px(12.0))
+                        .bg(cx.theme().muted)
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .text_sm()
+                        .child(match thread_answer(&turn.logs) {
+                            Some(answer) => self.render_markdown(&answer, cx),
+                            None if turn_working => div().child("Working…").into_any_element(),
+                            None => div().child("The agent printed nothing.").into_any_element(),
+                        }),
+                ),
+            );
+        }
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(
+                // A row would centre its child vertically, which would drop the
+                // conversation into the middle of the window; this keeps it
+                // anchored at the top and scrolling upward from there.
+                div()
+                    .id("home-thread")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(px(24.0))
+                    .child(div().w_full().max_w(px(720.0)).mx_auto().child(messages)),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_center()
+                    .px(px(24.0))
+                    .pt(px(12.0))
+                    .pb(px(16.0))
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .max_w(px(720.0))
+                            .gap_2()
+                            .child(card)
+                            .child(details),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn home_chips(&self, cx: &mut Context<Self>) -> AnyElement {
+        let workspace_name = self
+            .selected_workspace_data()
+            .map(|workspace| workspace.name.clone())
+            .unwrap_or_else(|| "No workspace".to_string());
+        let account = match &self.session {
+            SessionStatus::SignedIn(user) => user.name.clone(),
+            _ => "Kloucy".to_string(),
+        };
+
+        h_flex()
+            .items_center()
+            .gap_1()
+            .child(
+                self.home_popover(
+                    "home-workspace",
+                    Self::chip(
+                        Icon::new(IconName::Folder)
+                            .size(px(14.0))
+                            .into_any_element(),
+                        workspace_name,
+                        cx,
+                    ),
+                    HomeMenu::Workspace,
+                    cx,
+                ),
+            )
+            .child(
+                self.home_popover(
+                    "home-account",
+                    Self::chip(
+                        Icon::new(IconName::CircleUser)
+                            .size(px(14.0))
+                            .into_any_element(),
+                        account,
+                        cx,
+                    ),
+                    HomeMenu::Account,
+                    cx,
+                ),
+            )
+            .into_any_element()
+    }
+
+    /// The composer card: the field the work is typed into, the paperclip, the
+    /// agent that will run it, and send.
+    fn render_composer_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let safety = self
+            .selected_workspace_data()
+            .map(|workspace| workspace.safety_mode.clone());
+        let agent_name = self
+            .composer_choice()
+            .map(|choice| choice.name)
+            .unwrap_or_else(|| "No agent installed".to_string());
+        let working = self.running_session().is_some();
+
+        let attach = h_flex()
+            .id("composer-attach")
+            .size_7()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .text_color(cx.theme().muted_foreground)
+            .hover(|element| {
+                element
+                    .bg(cx.theme().list_hover)
+                    .text_color(cx.theme().foreground)
+            })
+            .child(Icon::empty().path("icons/paperclip.svg").size(px(16.0)))
+            .into_any_element();
+
+        let agent_trigger = h_flex()
+            .id("composer-agent")
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(6.0))
+            .px(px(6.0))
+            .py(px(3.0))
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .hover(|element| {
+                element
+                    .bg(cx.theme().list_hover)
+                    .text_color(cx.theme().foreground)
+            })
+            .child(Icon::new(IconName::Bot).size(px(14.0)))
+            .child(div().child(agent_name))
+            .when_some(safety, |element, mode| {
+                element.child(div().opacity(0.7).child(safety_label(&mode)))
+            })
+            .into_any_element();
+
+        let can_send = !working && !self.composer.read(cx).value().trim().is_empty();
+        let send = div()
+            .id("composer-send")
+            .size(px(30.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(15.0))
+            .bg(cx.theme().foreground)
+            .text_color(cx.theme().background)
+            .when(!can_send, |element| element.opacity(0.4))
+            .when(can_send, |element| {
+                element.hover(|element| element.opacity(0.85))
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.submit_composer(window, cx)))
+            .child(Icon::new(IconName::ArrowUp).size(px(16.0)));
+
+        v_flex()
+            .w_full()
+            .rounded(px(16.0))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .p(px(14.0))
+            .gap_4()
+            .child(
+                Input::new(&self.composer)
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .disabled(working),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .child(self.home_popover("composer-attach", attach, HomeMenu::Attach, cx))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(self.home_popover(
+                                "composer-agent",
+                                agent_trigger,
+                                HomeMenu::Agent,
+                                cx,
+                            ))
+                            .child(send),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Under the composer: the checkout it runs in, what the last attempt did,
+    /// and what the agents are doing.
+    fn render_home_details(&self, cx: &mut Context<Self>) -> AnyElement {
+        let project = self.home_workspace();
+        let has_workspace = project.is_some();
+        let checkout = self.home_checkout.clone();
+        let project_label = project
+            .map(|workspace| workspace.name)
+            .unwrap_or_else(|| "No project".to_string());
+
+        let mut checkout_row = h_flex().items_center().gap_1().child(
+            self.home_popover(
+                "home-checkout",
+                Self::chip(
+                    Icon::new(IconName::Folder)
+                        .size(px(14.0))
+                        .into_any_element(),
+                    project_label,
+                    cx,
+                ),
+                HomeMenu::Checkout,
+                cx,
+            ),
+        );
+
+        if has_workspace {
+            checkout_row = checkout_row.child(
+                self.home_popover(
+                    "home-branch",
+                    Self::chip(
+                        Icon::empty()
+                            .path("icons/git-branch.svg")
+                            .size(px(14.0))
+                            .into_any_element(),
+                        checkout.label().to_string(),
+                        cx,
+                    ),
+                    HomeMenu::Branch,
+                    cx,
+                ),
+            );
+        }
+
+        let mut details = v_flex().gap_1().px(px(6.0)).child(checkout_row);
+
+        match &self.composer_status {
+            Some(ComposerStatus::Notice(message)) => {
+                details = details.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(message.clone()),
+                );
+            }
+            Some(ComposerStatus::Failed(message)) => {
+                details = details.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger_foreground)
+                        .child(message.clone()),
+                );
+            }
+            None => {}
+        }
+
+        if let Some(activity) = session_activity(&self.sessions) {
+            details = details.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(activity),
+                    )
+                    .child(
+                        Button::new("home-open-sessions")
+                            .ghost()
+                            .small()
+                            .label("Open sessions")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.section = Section::Sessions;
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+
+        details.into_any_element()
+    }
+
+    /// The chip shape the home selectors share: icon, label, and the chevron
+    /// that says a menu opens.
+    fn chip(icon: AnyElement, label: String, cx: &App) -> AnyElement {
+        h_flex()
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(6.0))
+            .px(px(6.0))
+            .py(px(4.0))
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .hover(|element| {
+                element
+                    .bg(cx.theme().list_hover)
+                    .text_color(cx.theme().foreground)
+            })
+            .child(icon)
+            .child(div().min_w_0().max_w(px(220.0)).truncate().child(label))
+            .child(Icon::new(IconName::ChevronDown).size(px(12.0)))
+            .into_any_element()
+    }
+
+    /// A popover whose trigger is a home chip. The open state lives here so that
+    /// picking an item closes the menu.
+    fn home_popover(
+        &self,
+        id: &'static str,
+        trigger: AnyElement,
+        menu: HomeMenu,
+        cx: &mut Context<Self>,
+    ) -> Popover {
+        let open = self.home_menu == Some(menu);
+        let entity = cx.entity().downgrade();
+        let panel = self.home_menu_panel(menu, cx);
+
+        Popover::new(id)
+            .anchor(Corner::TopRight)
+            .open(open)
+            .on_open_change(move |is_open, _window, cx| {
+                let _ = entity.update(cx, |this, cx| {
+                    this.home_menu = if *is_open {
+                        Some(menu)
+                    } else if this.home_menu == Some(menu) {
+                        None
+                    } else {
+                        this.home_menu
+                    };
+                    cx.notify();
+                });
+            })
+            .trigger(Chip {
+                selected: open,
+                element: trigger,
+            })
+            .content(move |_, _, cx| panel.clone()(cx))
+    }
+
+    /// A menu panel is rebuilt on every frame the popover is open, so each one is
+    /// handed over as a factory of the data it needs.
+    fn home_menu_panel(
+        &self,
+        menu: HomeMenu,
+        cx: &mut Context<Self>,
+    ) -> Rc<dyn Fn(&App) -> AnyElement> {
+        let entity = cx.entity().downgrade();
+
+        match menu {
+            HomeMenu::Workspace => {
+                let workspaces = match &self.workspaces {
+                    LoadState::Loaded(workspaces) => workspaces.clone(),
+                    _ => Vec::new(),
+                };
+                let selected = self.selected_workspace.clone();
+
+                Rc::new(move |cx| {
+                    if workspaces.is_empty() {
+                        return menu_note("No workspaces yet.", cx);
+                    }
+
+                    let mut list = v_flex().w(px(260.0)).gap(px(2.0));
+
+                    for (index, workspace) in workspaces.iter().enumerate() {
+                        let id = workspace.id.clone();
+                        let is_selected = selected.as_deref() == Some(workspace.id.as_str());
+                        let mut children = workspace_row(workspace, cx);
+
+                        if is_selected {
+                            children
+                                .push(Icon::new(IconName::Check).size(px(14.0)).into_any_element());
+                        }
+
+                        let entity = entity.clone();
+
+                        list = list.child(menu_row(
+                            ("home-workspace-item", index),
+                            cx,
+                            is_selected,
+                            children,
+                            Some(Box::new(move |_, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.home_project = HomeProject::Auto;
+                                    this.select_workspace(id.clone(), cx);
+                                    this.home_menu = None;
+                                    cx.notify();
+                                });
+                            })),
+                        ));
+                    }
+
+                    list.into_any_element()
+                })
+            }
+            HomeMenu::Checkout => {
+                let workspaces = match &self.workspaces {
+                    LoadState::Loaded(workspaces) => workspaces
+                        .iter()
+                        .filter(|workspace| workspace.name != CHAT_WORKSPACE)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                };
+                let chosen = self.home_workspace().map(|workspace| workspace.id);
+
+                Rc::new(move |cx| {
+                    let mut list = v_flex().w(px(280.0)).gap(px(2.0));
+
+                    let no_project = chosen.is_none();
+                    let mut children = vec![
+                        Icon::new(IconName::Globe).size(px(14.0)).into_any_element(),
+                        div().child("No project").into_any_element(),
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("chat space")
+                            .into_any_element(),
+                    ];
+
+                    if no_project {
+                        children.push(Icon::new(IconName::Check).size(px(14.0)).into_any_element());
+                    }
+
+                    let entity_here = entity.clone();
+
+                    list = list.child(menu_row(
+                        ("home-project-none", 0),
+                        cx,
+                        no_project,
+                        children,
+                        Some(Box::new(move |_, cx| {
+                            let _ = entity_here.update(cx, |this, cx| {
+                                this.home_project = HomeProject::None;
+                                this.refresh_home_checkout();
+                                this.home_menu = None;
+                                this.composer_status = None;
+                                cx.notify();
+                            });
+                        })),
+                    ));
+
+                    for (index, workspace) in workspaces.iter().enumerate() {
+                        let id = workspace.id.clone();
+                        let is_selected = chosen.as_deref() == Some(workspace.id.as_str());
+                        let mut children = workspace_row(workspace, cx);
+
+                        if is_selected {
+                            children
+                                .push(Icon::new(IconName::Check).size(px(14.0)).into_any_element());
+                        }
+
+                        let entity = entity.clone();
+
+                        list = list.child(menu_row(
+                            ("home-checkout-item", index),
+                            cx,
+                            is_selected,
+                            children,
+                            Some(Box::new(move |_, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.home_project = HomeProject::Workspace(id.clone());
+                                    this.refresh_home_checkout();
+                                    this.home_menu = None;
+                                    this.composer_status = None;
+                                    cx.notify();
+                                });
+                            })),
+                        ));
+                    }
+
+                    list.into_any_element()
+                })
+            }
+            HomeMenu::Agent => {
+                let choices = self.agent_choices();
+                let selected = self.composer_choice().map(|choice| choice.provider);
+
+                Rc::new(move |cx| {
+                    if choices.is_empty() {
+                        return v_flex()
+                            .w(px(280.0))
+                            .gap(px(2.0))
+                            .child(menu_note(
+                                "No agent CLI found on this machine. Install codex, claude or opencode, then start Kloucy again.",
+                                cx,
+                            ))
+                            .into_any_element();
+                    }
+
+                    let mut list = v_flex().w(px(260.0)).gap(px(2.0));
+
+                    for (index, choice) in choices.iter().enumerate() {
+                        let provider = choice.provider.clone();
+                        let is_selected = selected.as_deref() == Some(choice.provider.as_str());
+                        let mut children = vec![
+                            Icon::new(IconName::Bot).size(px(14.0)).into_any_element(),
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(choice.name.clone())
+                                .into_any_element(),
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(choice.provider.clone())
+                                .into_any_element(),
+                        ];
+
+                        if is_selected {
+                            children
+                                .push(Icon::new(IconName::Check).size(px(14.0)).into_any_element());
+                        }
+
+                        let entity = entity.clone();
+
+                        list = list.child(menu_row(
+                            ("home-agent-item", index),
+                            cx,
+                            is_selected,
+                            children,
+                            Some(Box::new(move |_, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.home_provider = Some(provider.clone());
+                                    this.home_menu = None;
+                                    this.composer_status = None;
+                                    cx.notify();
+                                });
+                            })),
+                        ));
+                    }
+
+                    list.into_any_element()
+                })
+            }
+            HomeMenu::Account => {
+                let name = match &self.session {
+                    SessionStatus::SignedIn(user) => user.name.clone(),
+                    _ => "Kloucy".to_string(),
+                };
+                let email = match &self.session {
+                    SessionStatus::SignedIn(user) => user.email.clone(),
+                    _ => "Not signed in".to_string(),
+                };
+                let next_theme = match self.theme_mode {
+                    ThemeMode::Light => "Switch to dark",
+                    _ => "Switch to light",
+                };
+
+                Rc::new(move |cx| {
+                    let light = next_theme == "Switch to light";
+
+                    v_flex()
+                        .w(px(240.0))
+                        .gap(px(2.0))
+                        .child(
+                            v_flex()
+                                .px_2()
+                                .py_1()
+                                .child(div().text_sm().child(name.clone()))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(email.clone()),
+                                ),
+                        )
+                        .child(menu_row(
+                            ("home-account-theme", 0),
+                            cx,
+                            false,
+                            vec![
+                                Icon::new(if light { IconName::Sun } else { IconName::Moon })
+                                    .size(px(14.0))
+                                    .into_any_element(),
+                                div().child(next_theme).into_any_element(),
+                            ],
+                            Some(Box::new({
+                                let entity = entity.clone();
+                                move |window, cx| {
+                                    let _ =
+                                        entity.update(cx, |this, cx| this.toggle_theme(window, cx));
+                                }
+                            })),
+                        ))
+                        .child(menu_row(
+                            ("home-account-sign-out", 1),
+                            cx,
+                            false,
+                            vec![
+                                Icon::new(IconName::SquareTerminal)
+                                    .size(px(14.0))
+                                    .into_any_element(),
+                                div().child("Sign out").into_any_element(),
+                            ],
+                            Some(Box::new({
+                                let entity = entity.clone();
+                                move |_, cx| {
+                                    let _ = entity.update(cx, |this, cx| {
+                                        this.home_menu = None;
+                                        this.submit_sign_out(cx);
+                                    });
+                                }
+                            })),
+                        ))
+                        .into_any_element()
+                })
+            }
+            HomeMenu::Branch => {
+                let checkout = self.home_checkout.clone();
+                let path = self
+                    .selected_workspace_data()
+                    .map(|workspace| workspace.local_path.clone());
+
+                Rc::new(move |cx| {
+                    let mut list = v_flex().w(px(300.0)).gap(px(2.0));
+
+                    list = list.child(menu_note(checkout.detail(), cx));
+
+                    if let Some(path) = &path {
+                        list = list.child(menu_note(path.clone(), cx));
+                    }
+
+                    let Some(branch) = checkout.branch() else {
+                        return list.into_any_element();
+                    };
+
+                    let copy = branch.to_string();
+                    let entity = entity.clone();
+
+                    list.child(menu_row(
+                        ("home-branch-copy", 0),
+                        cx,
+                        false,
+                        vec![
+                            Icon::new(IconName::Copy).size(px(14.0)).into_any_element(),
+                            div().child("Copy branch name").into_any_element(),
+                        ],
+                        Some(Box::new(move |_, cx| {
+                            let _ = entity.update(cx, |this, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                                this.home_menu = None;
+                                this.composer_status =
+                                    Some(ComposerStatus::Notice(format!("Copied {copy}")));
+                                cx.notify();
+                            });
+                        })),
+                    ))
+                    .into_any_element()
+                })
+            }
+            HomeMenu::Attach => {
+                let checkout = self
+                    .selected_workspace_data()
+                    .map(|workspace| workspace.local_path.clone());
+                let branch = self.home_checkout.branch().map(str::to_string);
+
+                Rc::new(move |cx| {
+                    let mut list = v_flex().w(px(260.0)).gap(px(2.0));
+
+                    let checkout_row = checkout.clone().map(|checkout| {
+                        let value = checkout.clone();
+                        let entity = entity.clone();
+
+                        menu_row(
+                            ("home-attach-checkout", 0),
+                            cx,
+                            false,
+                            vec![
+                                Icon::new(IconName::Folder)
+                                    .size(px(14.0))
+                                    .into_any_element(),
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child("Attach checkout path")
+                                    .into_any_element(),
+                            ],
+                            Some(Box::new(move |window, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.insert_composer(value.clone(), window, cx);
+                                });
+                            })),
+                        )
+                    });
+
+                    list = match checkout_row {
+                        Some(row) => list.child(row),
+                        None => list.child(menu_note("Select a workspace first.", cx)),
+                    };
+
+                    if let Some(branch) = branch.clone() {
+                        let entity = entity.clone();
+
+                        list = list.child(menu_row(
+                            ("home-attach-branch", 1),
+                            cx,
+                            false,
+                            vec![
+                                Icon::empty()
+                                    .path("icons/git-branch.svg")
+                                    .size(px(14.0))
+                                    .into_any_element(),
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child("Attach branch name")
+                                    .into_any_element(),
+                            ],
+                            Some(Box::new(move |window, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.insert_composer(branch.clone(), window, cx);
+                                });
+                            })),
+                        ));
+                    }
+
+                    list.into_any_element()
+                })
+            }
+        }
+    }
+
+    /// Put text in the composer without losing what is already there.
+    fn insert_composer(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let existing = self.composer.read(cx).value().to_string();
+        let separator = if existing.is_empty() || existing.ends_with(' ') {
+            ""
+        } else {
+            " "
+        };
+        let value = format!("{existing}{separator}{text} ");
+
+        self.composer
+            .update(cx, |state, cx| state.set_value(value, window, cx));
+        self.home_menu = None;
+        self.composer_status = None;
+        cx.notify();
+    }
+
+    fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
+        // Home is the composer, so it owns its whole surface instead of sitting
+        // under a section heading.
+        if self.section == Section::Home {
+            return self.render_home(cx);
+        }
+
         let body: AnyElement = match self.section {
-            Section::Agents => self.render_agents(cx).into_any_element(),
             Section::Decisions => self.render_decisions(cx),
             Section::Home => self.render_home(cx),
             Section::Inbox => self.render_inbox(cx),
@@ -4086,6 +5491,7 @@ impl DesktopShell {
                     .border_color(cx.theme().border)
                     .child(body),
             )
+            .into_any_element()
     }
 
     fn render_shell(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -4170,15 +5576,6 @@ impl DesktopShell {
                 self.section = Section::Workspaces;
                 self.show_create_form = true;
                 self.create_error = None;
-            }
-            PaletteCommand::RegisterAgent => {
-                self.section = Section::Agents;
-                self.show_agent_form = true;
-                self.agent_error = None;
-            }
-            PaletteCommand::DetectAgents => {
-                self.section = Section::Agents;
-                self.detect_agents(cx);
             }
             PaletteCommand::NewPairingCode => {
                 self.section = Section::Pairing;
@@ -4399,6 +5796,128 @@ mod nav_tests {
         assert_eq!(initials("Alex Rivera"), "AR");
         assert_eq!(initials("Valen"), "V");
         assert_eq!(initials("  "), "");
+    }
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+
+    #[test]
+    fn takes_the_first_line_as_the_title() {
+        assert_eq!(
+            composer_title("Fix the login redirect\n\nAnd the tests"),
+            "Fix the login redirect"
+        );
+        assert_eq!(composer_title("   Capture me  "), "Capture me");
+        assert_eq!(composer_title(""), "");
+    }
+
+    #[test]
+    fn shortens_long_titles() {
+        let long = "a".repeat(COMPOSER_TITLE_LIMIT * 2);
+        let title = composer_title(&long);
+
+        assert_eq!(title.chars().count(), COMPOSER_TITLE_LIMIT + 1);
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn reads_the_folder_out_of_a_path() {
+        assert_eq!(folder_name("/home/valen/projects/plata"), "plata");
+        assert_eq!(folder_name("/home/valen/projects/plata/"), "plata");
+        assert_eq!(folder_name("plata"), "plata");
+        assert_eq!(folder_name("/"), "/");
+    }
+
+    #[test]
+    fn labels_the_known_safety_modes() {
+        assert_eq!(safety_label("guarded"), "guarded");
+        assert_eq!(safety_label("open"), "open");
+        assert_eq!(safety_label("something-new"), "open");
+    }
+
+    fn session(id: &str, status: &str) -> AgentSession {
+        AgentSession {
+            agent_id: None,
+            id: id.to_string(),
+            prompt: None,
+            status: status.to_string(),
+        }
+    }
+
+    #[test]
+    fn summarises_what_agents_are_doing() {
+        assert_eq!(session_activity(&LoadState::Loading), None);
+        assert_eq!(
+            session_activity(&LoadState::Loaded(vec![session("1", "done")])),
+            None
+        );
+        assert_eq!(
+            session_activity(&LoadState::Loaded(vec![
+                session("1", "waiting"),
+                session("2", "waiting"),
+                session("3", "running"),
+            ])),
+            Some("2 waiting · 1 running".to_string())
+        );
+    }
+
+    #[test]
+    fn labels_run_status() {
+        assert_eq!(thread_status_label("running"), "Working…");
+        assert_eq!(thread_status_label("done"), "Done");
+        assert_eq!(thread_status_label("failed"), "Failed");
+        assert_eq!(thread_status_label("stopped"), "Stopped");
+        assert_eq!(thread_status_label("anything-else"), "Waiting");
+    }
+
+    fn log(stream: &str, message: &str) -> SessionLog {
+        SessionLog {
+            message: message.to_string(),
+            stream: stream.to_string(),
+        }
+    }
+
+    #[test]
+    fn answers_with_the_last_message_the_agent_reported() {
+        let logs = vec![
+            log("stdout", "OpenAI Codex v0.163.0"),
+            log("stdout", "tokens used"),
+            log("stdout", "7,446"),
+            log("answer", "¡Hola! ¿En qué te ayudo?"),
+        ];
+
+        assert_eq!(
+            thread_answer(&logs),
+            Some("¡Hola! ¿En qué te ayudo?".to_string())
+        );
+    }
+
+    #[test]
+    fn falls_back_to_what_the_agent_printed() {
+        let logs = vec![log("stdout", "hola"), log("stdout", "mundo")];
+
+        assert_eq!(thread_answer(&logs), Some("hola\nmundo".to_string()));
+        assert_eq!(thread_answer(&[]), None);
+        assert_eq!(thread_answer(&[log("stdout", "   ")]), None);
+    }
+
+    #[test]
+    fn keeps_the_agent_session_for_the_next_turn() {
+        let logs = vec![
+            log(
+                "trace",
+                r#"{"type":"thread.started","thread_id":"01a15c92-515d-7001-bac2-b70033c7940a"}"#,
+            ),
+            log("answer", "hola"),
+        ];
+
+        assert_eq!(
+            agent_session_id(&logs),
+            Some("01a15c92-515d-7001-bac2-b70033c7940a".to_string())
+        );
+        assert_eq!(agent_session_id(&[log("answer", "hola")]), None);
     }
 }
 

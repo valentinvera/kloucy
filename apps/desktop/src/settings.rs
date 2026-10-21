@@ -27,6 +27,42 @@ fn config_path() -> Option<PathBuf> {
     Some(base.join("kloucy").join("desktop.json"))
 }
 
+/// Where Kloucy runs messages that target no project.
+pub fn chat_space() -> Option<PathBuf> {
+    let base = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".local").join("share"))
+        })?;
+
+    Some(base.join("kloucy").join("chats"))
+}
+
+/// The chat space, created as a git checkout the first time it is needed.
+///
+/// Agent CLIs refuse to run outside a repository, and having one here keeps
+/// whatever they write out of the user's home directory.
+pub fn ensure_chat_space() -> Option<PathBuf> {
+    let path = chat_space()?;
+
+    fs::create_dir_all(&path).ok()?;
+
+    if !path.join(".git").exists() {
+        let _ = std::process::Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .current_dir(&path)
+            .status();
+    }
+
+    Some(path)
+}
+
 /// The stored theme mode as a plain string, if it was readable.
 pub fn load_theme_mode() -> Option<String> {
     let path = config_path()?;
@@ -103,5 +139,12 @@ mod tests {
     #[test]
     fn defaults_to_dark() {
         assert_eq!(DEFAULT_THEME_MODE, "dark");
+    }
+
+    #[test]
+    fn keeps_chat_runs_out_of_the_home_directory() {
+        let path = chat_space().expect("a data directory");
+
+        assert!(path.ends_with("kloucy/chats"), "{path:?}");
     }
 }

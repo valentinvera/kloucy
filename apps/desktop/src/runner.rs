@@ -74,6 +74,88 @@ fn terminate(pid: u32) {
 #[cfg(not(unix))]
 fn terminate(_pid: u32) {}
 
+/// The command to run for a prompt.
+///
+/// A template may place the prompt with `{prompt}`; otherwise the prompt is
+/// appended as the last argument, which is what one-shot agent commands expect
+/// (`codex exec … "the prompt"`).
+///
+/// The prompt is always single-quoted, so it reaches the agent as one argument
+/// and never as shell syntax.
+pub fn invocation(command: &str, prompt: &str) -> String {
+    let quoted = shell_quote(prompt);
+
+    if command.contains("{prompt}") {
+        return command.replace("{prompt}", &quoted);
+    }
+
+    format!("{command} {quoted}")
+}
+
+/// The log stream a line of agent output belongs to.
+///
+/// Agents that answer as events (codex with `--json`) report the reply, the
+/// reasoning and the tool work separately; the reply is what the thread shows
+/// and the rest is trace. Anything else is plain output, passed through.
+pub fn classify(line: &str) -> (&'static str, String) {
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+        return ("stdout", line.to_string());
+    };
+
+    match event.get("type").and_then(serde_json::Value::as_str) {
+        Some("item.completed") => classify_item(&event),
+        // Partial updates of an item repeat text the completion carries.
+        Some("item.updated") => ("trace", String::new()),
+        Some("turn.completed") => {
+            let usage = &event["usage"];
+            let input = usage["input_tokens"].as_u64().unwrap_or_default();
+            let output = usage["output_tokens"].as_u64().unwrap_or_default();
+
+            (
+                "trace",
+                format!("turn completed · {input} tokens in · {output} out"),
+            )
+        }
+        Some("error") => (
+            "answer",
+            event
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("The agent reported an error.")
+                .to_string(),
+        ),
+        Some(_) => ("trace", line.to_string()),
+        None => ("stdout", line.to_string()),
+    }
+}
+
+fn classify_item(event: &serde_json::Value) -> (&'static str, String) {
+    let item = &event["item"];
+    let kind = item.get("type").and_then(serde_json::Value::as_str);
+    let text = item.get("text").and_then(serde_json::Value::as_str);
+
+    match kind {
+        Some("agent_message") => ("answer", text.unwrap_or_default().to_string()),
+        Some("reasoning") => ("trace", format!("reasoning: {}", text.unwrap_or_default())),
+        Some("command_execution") => (
+            "trace",
+            format!(
+                "$ {}",
+                item.get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            ),
+        ),
+        Some("file_change") => ("trace", "file changes".to_string()),
+        _ => ("trace", event.to_string()),
+    }
+}
+
+/// Quote a value for `sh -c`, where single quotes take everything literally.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 /// Run an agent command in the given directory, streaming its output to the
 /// session logs, marking the session finished, and creating a review when the
 /// run changed files.
@@ -92,6 +174,9 @@ pub fn run_agent(
         .arg("-c")
         .arg(&command)
         .current_dir(&cwd)
+        // Some agents read stdin when it is not a terminal and would wait
+        // forever for input the window cannot give them.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -131,7 +216,17 @@ pub fn run_agent(
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
-            let _ = client.append_log(&session_id, "stdout", &line);
+            let (stream, message) = classify(&line);
+
+            if message.is_empty() {
+                continue;
+            }
+
+            // An API that does not know the newer streams would drop the line,
+            // and the thread would look empty; stdout is always accepted.
+            if client.append_log(&session_id, stream, &message).is_err() {
+                let _ = client.append_log(&session_id, "stdout", &message);
+            }
         }
     }
 
@@ -236,5 +331,79 @@ mod tests {
         registry.register("session-1", next.id());
         assert!(!registry.take_stopped("session-1"));
         let _ = next.wait();
+    }
+
+    #[test]
+    fn appends_the_prompt_to_a_plain_command() {
+        assert_eq!(
+            invocation("codex exec --full-auto", "fix the login"),
+            "codex exec --full-auto 'fix the login'"
+        );
+    }
+
+    #[test]
+    fn fills_a_prompt_placeholder() {
+        assert_eq!(
+            invocation("opencode run {prompt}", "hola"),
+            "opencode run 'hola'"
+        );
+    }
+
+    #[test]
+    fn reads_an_answer_out_of_codex_events() {
+        assert_eq!(
+            classify(
+                r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hola"}}"#
+            ),
+            ("answer", "hola".to_string())
+        );
+    }
+
+    #[test]
+    fn keeps_the_rest_of_a_run_as_trace() {
+        assert_eq!(
+            classify(
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"ls -la"}}"#
+            ),
+            ("trace", "$ ls -la".to_string())
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"turn.completed","usage":{"input_tokens":14087,"output_tokens":5}}"#
+            ),
+            (
+                "trace",
+                "turn completed · 14087 tokens in · 5 out".to_string()
+            )
+        );
+        assert_eq!(
+            classify(r#"{"type":"item.updated","item":{"type":"agent_message","text":"ho"}}"#),
+            ("trace", String::new())
+        );
+    }
+
+    #[test]
+    fn surfaces_an_agent_error_as_the_reply() {
+        assert_eq!(
+            classify(r#"{"type":"error","message":"model overloaded"}"#),
+            ("answer", "model overloaded".to_string())
+        );
+    }
+
+    #[test]
+    fn passes_plain_output_through() {
+        assert_eq!(classify("hola"), ("stdout", "hola".to_string()));
+        assert_eq!(
+            classify(r#"{"no":"type here"}"#),
+            ("stdout", r#"{"no":"type here"}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn keeps_prompt_text_out_of_the_shell() {
+        assert_eq!(
+            invocation("agent", "it's $HOME; rm -rf /"),
+            "agent 'it'\\''s $HOME; rm -rf /'"
+        );
     }
 }

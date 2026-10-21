@@ -6,6 +6,8 @@ export const sessionLogStreamEnum = pgEnum("session_log_stream", [
   "stdout",
   "stderr",
   "system",
+  "answer",
+  "trace",
 ])
 
 export const sessionLog = pgTable(
