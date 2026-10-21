@@ -30,9 +30,27 @@ fn one_shot(provider: &str) -> Option<&'static str> {
 
 /// The command to run for a provider's executable.
 fn command_for(provider: &str, executable: &str) -> String {
-    match one_shot(provider) {
+    let command = match one_shot(provider) {
         Some(flag) => format!("{executable} {flag}"),
         None => executable.to_string(),
+    };
+
+    with_answer_flag(provider, command)
+}
+
+/// The flag that lets Kloucy keep the agent's answer apart from its trace.
+fn answer_flag(provider: &str) -> Option<&'static str> {
+    match provider {
+        "codex" => Some("--output-last-message {answer}"),
+        _ => None,
+    }
+}
+
+/// Add the answer-file flag to a command that does not ask for it yet.
+fn with_answer_flag(provider: &str, command: String) -> String {
+    match answer_flag(provider) {
+        Some(flag) if !command.contains("{answer}") => format!("{command} {flag}"),
+        _ => command,
     }
 }
 
@@ -52,9 +70,12 @@ pub fn choices(agents: &[Agent], detected: &[DetectedAgent]) -> Vec<AgentChoice>
             .iter()
             .find(|agent| agent.provider == cli.provider && agent.status != "disabled");
 
+        // The stored form wins, but the answer file still has to be asked for
+        // or the thread would show the agent's whole trace.
         let stored_command = stored
             .and_then(stored_command)
-            .filter(|command| has_arguments(command));
+            .filter(|command| has_arguments(command))
+            .map(|command| with_answer_flag(&cli.provider, command));
 
         choices.push(AgentChoice {
             agent_id: stored.map(|agent| agent.id.clone()),
@@ -82,7 +103,7 @@ pub fn choices(agents: &[Agent], detected: &[DetectedAgent]) -> Vec<AgentChoice>
 
         choices.push(AgentChoice {
             agent_id: Some(agent.id.clone()),
-            command,
+            command: with_answer_flag(&agent.provider, command),
             name: agent.name.clone(),
             provider: agent.provider.clone(),
         });
@@ -132,7 +153,7 @@ mod tests {
             choices,
             vec![AgentChoice {
                 agent_id: None,
-                command: "/usr/bin/codex exec".to_string(),
+                command: "/usr/bin/codex exec --output-last-message {answer}".to_string(),
                 name: "Codex".to_string(),
                 provider: "codex".to_string(),
             }]
@@ -152,7 +173,10 @@ mod tests {
 
         assert_eq!(choices.len(), 1);
         assert_eq!(choices[0].agent_id, Some("agent-1".to_string()));
-        assert_eq!(choices[0].command, "/opt/codex exec");
+        assert_eq!(
+            choices[0].command,
+            "/opt/codex exec --output-last-message {answer}"
+        );
     }
 
     #[test]
@@ -160,7 +184,10 @@ mod tests {
         let stored = agent("agent-1", "Codex", "codex", Some("codex"), "ready");
         let choices = choices(&[stored], &[cli("Codex", "codex", "/usr/bin/codex")]);
 
-        assert_eq!(choices[0].command, "/usr/bin/codex exec");
+        assert_eq!(
+            choices[0].command,
+            "/usr/bin/codex exec --output-last-message {answer}"
+        );
     }
 
     #[test]

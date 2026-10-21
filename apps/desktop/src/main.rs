@@ -300,6 +300,21 @@ fn safety_label(mode: &str) -> &'static str {
     }
 }
 
+/// A name unique to this run, for the file the agent answers into.
+fn run_token() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+
+    format!("{}-{nanos}", std::process::id())
+}
+
+/// Where an agent writes its final message for a run.
+fn answer_path(run: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("kloucy-answer-{run}.txt"))
+}
+
 /// The last segment of a path, for chips that cannot show all of it.
 fn folder_name(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
@@ -677,6 +692,38 @@ fn apply_theme(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
     theme.sidebar_border = sidebar_border;
 }
 
+/// What the thread shows as the agent's reply: the message it reported, or the
+/// lines it printed when the CLI only prints.
+fn thread_answer(logs: &[SessionLog]) -> Option<String> {
+    let answers = logs
+        .iter()
+        .filter(|log| log.stream == "answer")
+        .map(|log| log.message.trim())
+        .filter(|message| !message.is_empty())
+        .collect::<Vec<_>>();
+
+    if !answers.is_empty() {
+        return Some(answers.join("\n\n"));
+    }
+
+    let printed = logs
+        .iter()
+        .filter(|log| log.stream == "stdout" && !log.message.trim().is_empty())
+        .map(|log| log.message.as_str())
+        .collect::<Vec<_>>();
+
+    (!printed.is_empty()).then(|| printed.join("\n"))
+}
+
+/// The agent's own trace: startup banner, hooks, warnings and token counts.
+fn thread_trace(logs: &[SessionLog]) -> Vec<&SessionLog> {
+    logs.iter()
+        .filter(|log| {
+            shows_in_thread(log) && log.stream != "answer" && !log.message.trim().is_empty()
+        })
+        .collect()
+}
+
 /// How a run's status reads in the thread header.
 fn thread_status_label(status: &str) -> &'static str {
     match status {
@@ -741,6 +788,7 @@ struct DesktopShell {
     home_thread: Option<HomeThread>,
     sending_composer: bool,
     home_provider: Option<String>,
+    home_show_output: bool,
     home_project: HomeProject,
     home_checkout: git::Checkout,
     home_menu: Option<HomeMenu>,
@@ -923,6 +971,7 @@ impl DesktopShell {
             home_thread: None,
             sending_composer: false,
             home_provider: None,
+            home_show_output: false,
             home_project: HomeProject::Auto,
             home_checkout: git::Checkout::None,
             home_menu: None,
@@ -1426,6 +1475,7 @@ impl DesktopShell {
                                 let runner_registry = registry.clone();
                                 let runner_workspace_id = workspace_id.clone();
                                 let session_id = id.clone();
+                                let answer = answer_path(&run_token());
                                 std::thread::spawn(move || {
                                     runner::run_agent(
                                         runner_registry,
@@ -1434,6 +1484,7 @@ impl DesktopShell {
                                         session_id,
                                         command,
                                         cwd,
+                                        Some(answer),
                                     );
                                 });
                             }
@@ -1620,7 +1671,8 @@ impl DesktopShell {
 
         let command = choice.command.clone();
 
-        let invocation = runner::invocation(&command, &text);
+        let answer = answer_path(&run_token());
+        let invocation = runner::invocation(&command, &text, &answer);
         let (safety_mode, safe_commands) = match &plan {
             RunPlan::Workspace(workspace) => (
                 workspace.safety_mode.clone(),
@@ -1733,6 +1785,7 @@ impl DesktopShell {
                             runner_session,
                             invocation,
                             cwd,
+                            Some(answer),
                         );
                     });
 
@@ -1743,6 +1796,7 @@ impl DesktopShell {
                         this.refresh_home_checkout();
                         this.composer
                             .update(cx, |state, cx| state.set_value("", window, cx));
+                        this.home_show_output = false;
                         this.home_thread = Some(HomeThread {
                             session_id: session_id.clone(),
                             title,
@@ -1892,6 +1946,7 @@ impl DesktopShell {
     /// Leave the thread and go back to the empty composer.
     fn clear_home_thread(&mut self, cx: &mut Context<Self>) {
         self.home_thread = None;
+        self.home_show_output = false;
         self.composer_status = None;
         cx.notify();
     }
@@ -4390,6 +4445,8 @@ impl DesktopShell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let working = matches!(thread.status.as_str(), "running" | "ready" | "needs_setup");
+        let answer = thread_answer(&thread.logs);
+        let trace = thread_trace(&thread.logs);
 
         let header = h_flex()
             .w_full()
@@ -4397,6 +4454,7 @@ impl DesktopShell {
             .justify_between()
             .px(px(24.0))
             .pt(px(20.0))
+            .pb(px(12.0))
             .child(
                 h_flex()
                     .items_center()
@@ -4441,7 +4499,7 @@ impl DesktopShell {
                     .child(self.home_chips(cx)),
             );
 
-        let mut messages = v_flex().w_full().gap_4().px(px(24.0)).py(px(24.0));
+        let mut messages = v_flex().w_full().gap_3().px(px(16.0)).py(px(16.0));
 
         messages = messages.child(
             h_flex().w_full().justify_end().child(
@@ -4456,43 +4514,32 @@ impl DesktopShell {
             ),
         );
 
-        let mut answer = v_flex().w_full().gap_1();
-
-        if thread.logs.iter().all(|log| !shows_in_thread(log)) {
-            answer = answer.child(
+        // The reply, not the agent's trace: the banner, hooks and token counts
+        // belong behind "Show output".
+        messages = messages.child(
+            h_flex().w_full().justify_start().child(
                 div()
+                    .max_w(px(620.0))
+                    .rounded(px(12.0))
+                    .bg(cx.theme().muted)
+                    .px(px(12.0))
+                    .py(px(8.0))
                     .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if working {
-                        "Working…"
-                    } else {
-                        "The agent printed nothing."
+                    .child(match &answer {
+                        Some(answer) => answer.clone(),
+                        None if working => "Working…".to_string(),
+                        None => "The agent printed nothing.".to_string(),
                     }),
-            );
-        }
+            ),
+        );
 
-        for log in thread.logs.iter().filter(|log| shows_in_thread(log)) {
-            let color = match log.stream.as_str() {
-                "stdout" => cx.theme().foreground,
-                _ => cx.theme().muted_foreground,
-            };
-
-            answer = answer.child(
-                div()
-                    .font_family(self.mono_font.clone())
-                    .text_sm()
-                    .text_color(color)
-                    .child(log.message.clone()),
-            );
-        }
-
-        messages = messages.child(answer);
-
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(header)
+        let mut boxed = v_flex()
+            .flex_1()
+            .min_h_0()
+            .mx(px(24.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(cx.theme().border)
             .child(
                 div()
                     .id("home-thread")
@@ -4500,12 +4547,66 @@ impl DesktopShell {
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(messages),
-            )
+            );
+
+        if !trace.is_empty() {
+            if self.home_show_output {
+                let mut output = v_flex()
+                    .w_full()
+                    .gap_1()
+                    .px(px(16.0))
+                    .pb(px(12.0))
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .pt(px(12.0));
+
+                for log in trace {
+                    output = output.child(
+                        div()
+                            .font_family(self.mono_font.clone())
+                            .text_xs()
+                            .text_color(if log.stream == "stderr" {
+                                cx.theme().danger_foreground
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .child(log.message.clone()),
+                    );
+                }
+
+                boxed = boxed.child(output);
+            }
+
+            boxed = boxed.child(
+                h_flex().w_full().px(px(12.0)).py(px(6.0)).child(
+                    Button::new("thread-output")
+                        .ghost()
+                        .small()
+                        .label(if self.home_show_output {
+                            "Hide output"
+                        } else {
+                            "Show output"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.home_show_output = !this.home_show_output;
+                            cx.notify();
+                        })),
+                ),
+            );
+        }
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(boxed)
             .child(
                 v_flex()
                     .w_full()
                     .items_center()
                     .px(px(24.0))
+                    .pt(px(12.0))
                     .pb(px(16.0))
                     .child(
                         v_flex()
@@ -5660,6 +5761,53 @@ mod home_tests {
             message: "Session stopped; the agent process was terminated.".to_string(),
             stream: "system".to_string(),
         }));
+    }
+
+    fn log(stream: &str, message: &str) -> SessionLog {
+        SessionLog {
+            message: message.to_string(),
+            stream: stream.to_string(),
+        }
+    }
+
+    #[test]
+    fn answers_with_the_last_message_the_agent_reported() {
+        let logs = vec![
+            log("stdout", "OpenAI Codex v0.163.0"),
+            log("stdout", "tokens used"),
+            log("stdout", "7,446"),
+            log("answer", "¡Hola! ¿En qué te ayudo?"),
+        ];
+
+        assert_eq!(
+            thread_answer(&logs),
+            Some("¡Hola! ¿En qué te ayudo?".to_string())
+        );
+    }
+
+    #[test]
+    fn falls_back_to_what_the_agent_printed() {
+        let logs = vec![log("stdout", "hola"), log("stdout", "mundo")];
+
+        assert_eq!(thread_answer(&logs), Some("hola\nmundo".to_string()));
+        assert_eq!(thread_answer(&[]), None);
+        assert_eq!(thread_answer(&[log("stdout", "   ")]), None);
+    }
+
+    #[test]
+    fn the_trace_leaves_out_the_answer_and_the_echoed_command() {
+        let logs = vec![
+            log("system", "$ codex exec 'hola'"),
+            log("stdout", "banner"),
+            log("answer", "hola"),
+            log("stderr", "warning"),
+        ];
+        let trace: Vec<&str> = thread_trace(&logs)
+            .iter()
+            .map(|log| log.message.as_str())
+            .collect();
+
+        assert_eq!(trace, vec!["banner", "warning"]);
     }
 }
 

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -78,10 +79,15 @@ fn terminate(_pid: u32) {}
 ///
 /// A template may place the prompt with `{prompt}`; otherwise the prompt is
 /// appended as the last argument, which is what one-shot agent commands expect
-/// (`codex exec … "the prompt"`). The prompt is always single-quoted, so it
-/// reaches the agent as one argument and never as shell syntax.
-pub fn invocation(command: &str, prompt: &str) -> String {
+/// (`codex exec … "the prompt"`). `{answer}`, when present, is replaced by the
+/// file the agent writes its final message to, so the thread can show the reply
+/// without the agent's startup banner and hook noise.
+///
+/// The prompt is always single-quoted, so it reaches the agent as one argument
+/// and never as shell syntax.
+pub fn invocation(command: &str, prompt: &str, answer: &Path) -> String {
     let quoted = shell_quote(prompt);
+    let command = command.replace("{answer}", &shell_quote(&answer.display().to_string()));
 
     if command.contains("{prompt}") {
         return command.replace("{prompt}", &quoted);
@@ -105,6 +111,7 @@ pub fn run_agent(
     session_id: String,
     command: String,
     cwd: String,
+    answer: Option<PathBuf>,
 ) {
     let _ = client.append_log(&session_id, "system", &format!("$ {command}"));
 
@@ -165,6 +172,18 @@ pub fn run_agent(
 
     let success = child.wait().map(|status| status.success()).unwrap_or(false);
     registry.complete(&session_id);
+
+    if let Some(answer) = answer {
+        if let Ok(text) = std::fs::read_to_string(&answer) {
+            let text = text.trim();
+
+            if !text.is_empty() {
+                let _ = client.append_log(&session_id, "answer", text);
+            }
+        }
+
+        let _ = std::fs::remove_file(&answer);
+    }
 
     if registry.take_stopped(&session_id) {
         let _ = client.append_log(
@@ -262,10 +281,14 @@ mod tests {
         let _ = next.wait();
     }
 
+    fn answer_path() -> PathBuf {
+        PathBuf::from("/tmp/kloucy-answer.txt")
+    }
+
     #[test]
     fn appends_the_prompt_to_a_plain_command() {
         assert_eq!(
-            invocation("codex exec --full-auto", "fix the login"),
+            invocation("codex exec --full-auto", "fix the login", &answer_path()),
             "codex exec --full-auto 'fix the login'"
         );
     }
@@ -273,16 +296,28 @@ mod tests {
     #[test]
     fn fills_a_prompt_placeholder() {
         assert_eq!(
-            invocation("opencode run {prompt}", "hola"),
+            invocation("opencode run {prompt}", "hola", &answer_path()),
             "opencode run 'hola'"
+        );
+    }
+
+    #[test]
+    fn fills_the_answer_file() {
+        assert_eq!(
+            invocation(
+                "codex exec --output-last-message {answer}",
+                "hola",
+                &answer_path()
+            ),
+            "codex exec --output-last-message '/tmp/kloucy-answer.txt' 'hola'"
         );
     }
 
     #[test]
     fn keeps_prompt_text_out_of_the_shell() {
         assert_eq!(
-            invocation("agent", "it's $HOME; rm -rf /"),
-            r"agent 'it'\''s $HOME; rm -rf /'"
+            invocation("agent", "it's $HOME; rm -rf /", &answer_path()),
+            "agent 'it'\\''s $HOME; rm -rf /'"
         );
     }
 }
