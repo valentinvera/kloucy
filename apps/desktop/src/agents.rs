@@ -4,6 +4,11 @@
 //! what is installed on the machine, and the first message that gets an answer
 //! stores the agent record behind it.
 
+use std::io::Read;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
 use crate::api::Agent;
 use crate::detect::DetectedAgent;
 
@@ -86,11 +91,7 @@ pub fn model_catalog(provider: &str, executable: &str) -> ModelCatalog {
         "codex" => run_capture(executable, &["debug", "models"])
             .map(|json| parse_codex_models(&json))
             .unwrap_or_default(),
-        // `--standalone` answers from a private server instead of depending on
-        // the background service the CLI normally talks to.
-        "opencode" => run_capture(executable, &["models", "--standalone"])
-            .map(|text| parse_opencode_models(&text))
-            .unwrap_or_default(),
+        "opencode" => opencode_catalog(executable),
         "claude-code" => ModelCatalog {
             efforts: ["low", "medium", "high", "max"]
                 .into_iter()
@@ -110,17 +111,130 @@ pub fn model_catalog(provider: &str, executable: &str) -> ModelCatalog {
     }
 }
 
+/// Run a CLI and collect its stdout, giving up after a few seconds: a probe must
+/// never leave the picker waiting on a command that will not come back.
 fn run_capture(executable: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(executable)
+    let mut child = Command::new(executable)
         .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
 
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).to_string())
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buffer = String::new();
+        let _ = stdout.read_to_string(&mut buffer);
+        buffer
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+
+    let output = reader.join().ok()?;
+
+    status.success().then_some(output)
+}
+
+/// The models OpenCode can run: its own listing first, then the model cache it
+/// keeps on disk, which is what is left when the listing cannot answer.
+fn opencode_catalog(executable: &str) -> ModelCatalog {
+    for args in [vec!["models", "--standalone"], vec!["models"]] {
+        if let Some(text) = run_capture(executable, &args) {
+            let catalog = parse_opencode_models(&text);
+
+            if !catalog.models.is_empty() {
+                return catalog;
+            }
+        }
+    }
+
+    let Some(cache) = read_cache_file("models.json") else {
+        return ModelCatalog::default();
+    };
+
+    let auth = read_cache_file("../local/share/opencode/auth.json").unwrap_or_default();
+
+    parse_opencode_cache(&cache, &auth)
+}
+
+/// A file under the XDG cache or data directory.
+fn read_cache_file(relative: &str) -> Option<String> {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".cache"))
+        })?;
+
+    let path = if relative.starts_with("../local") {
+        let home = std::env::var("HOME")
+            .ok()
+            .filter(|value| !value.is_empty())?;
+        PathBuf::from(home).join(relative.trim_start_matches("../"))
+    } else {
+        base.join("opencode").join(relative)
+    };
+
+    std::fs::read_to_string(path).ok()
+}
+
+/// Read OpenCode's local model cache: the providers it is signed into plus its
+/// own free ones, which is the same set its `models` command prints.
+pub fn parse_opencode_cache(cache: &str, auth: &str) -> ModelCatalog {
+    let Ok(registry) = serde_json::from_str::<serde_json::Value>(cache) else {
+        return ModelCatalog::default();
+    };
+    let signed_into: Vec<String> = serde_json::from_str::<serde_json::Value>(auth)
+        .ok()
+        .and_then(|value| {
+            value
+                .as_object()
+                .map(|map| map.keys().cloned().collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+
+    let mut models = Vec::new();
+
+    for (provider, entry) in registry.as_object().into_iter().flatten() {
+        if provider != "opencode" && !signed_into.iter().any(|signed| signed == provider) {
+            continue;
+        }
+
+        for (_, model) in entry["models"].as_object().into_iter().flatten() {
+            let Some(id) = model["id"].as_str() else {
+                continue;
+            };
+
+            models.push(ModelChoice {
+                default_effort: None,
+                id: id.to_string(),
+                label: model["name"].as_str().unwrap_or(id).to_string(),
+            });
+        }
+    }
+
+    ModelCatalog {
+        models,
+        ..ModelCatalog::default()
+    }
 }
 
 /// Codex reports its catalog as JSON (`codex debug models`).
@@ -420,6 +534,25 @@ mod tests {
                 ("opencode-go/gpt-6-luna", "gpt-6-luna"),
                 ("opencode-go/glm-5.3", "glm-5.3")
             ]
+        );
+    }
+
+    #[test]
+    fn reads_the_opencode_cache_for_signed_in_providers() {
+        let cache = r#"{
+            "opencode": {"models": {"opencode/big": {"id":"opencode/big","name":"Big Pickle"}}},
+            "openrouter": {"models": {"openrouter/sonnet": {"id":"openrouter/sonnet","name":"Sonnet"}}},
+            "someone-else": {"models": {"someone-else/x": {"id":"someone-else/x","name":"X"}}}
+        }"#;
+        let catalog = parse_opencode_cache(cache, r#"{"openrouter": {"type": "api"}}"#);
+
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .map(|model| model.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Big Pickle", "Sonnet"]
         );
     }
 
