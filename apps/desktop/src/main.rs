@@ -11,9 +11,9 @@ mod typography;
 
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Entity, FocusHandle,
-    FontStyle, FontWeight, IntoElement, KeyBinding, Render, SharedString, StrikethroughStyle,
-    StyledText, Subscription, TextRun, UnderlineStyle, Window, WindowBounds, WindowOptions,
-    actions, div, font, hsla, prelude::*, px, rgb, size,
+    FontStyle, FontWeight, IntoElement, KeyBinding, Render, ScrollHandle, SharedString,
+    StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle, Window, WindowBounds,
+    WindowOptions, actions, div, font, hsla, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -784,6 +784,7 @@ struct DesktopShell {
     home_thread: Option<HomeThread>,
     sending_composer: bool,
     home_provider: Option<String>,
+    home_scroll: ScrollHandle,
     home_project: HomeProject,
     home_checkout: git::Checkout,
     home_menu: Option<HomeMenu>,
@@ -966,6 +967,7 @@ impl DesktopShell {
             home_thread: None,
             sending_composer: false,
             home_provider: None,
+            home_scroll: ScrollHandle::new(),
             home_project: HomeProject::Auto,
             home_checkout: git::Checkout::None,
             home_menu: None,
@@ -1802,6 +1804,8 @@ impl DesktopShell {
                             status: "running".to_string(),
                         };
 
+                        this.home_scroll.scroll_to_bottom();
+
                         match &mut this.home_thread {
                             Some(thread) => thread.turns.push(turn),
                             None => {
@@ -1886,9 +1890,21 @@ impl DesktopShell {
                                     thread.agent_session = Some(agent_session);
                                 }
 
+                                // Reading the reply while it streams is the
+                                // point, so the view is left alone until the
+                                // run is over; then it lands on the answer.
+                                let finished = !matches!(
+                                    turn.status.as_str(),
+                                    "running" | "ready" | "needs_setup"
+                                );
+
+                                if finished {
+                                    this.home_scroll.scroll_to_bottom();
+                                }
+
                                 cx.notify();
 
-                                !matches!(turn.status.as_str(), "running" | "ready" | "needs_setup")
+                                finished
                             }
                             Err(_) => false,
                         }
@@ -4726,6 +4742,7 @@ impl DesktopShell {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.home_scroll)
                     .px(px(24.0))
                     .child(div().w_full().max_w(px(720.0)).mx_auto().child(messages)),
             )
