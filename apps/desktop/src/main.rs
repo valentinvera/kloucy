@@ -10,11 +10,11 @@ mod settings;
 mod typography;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Div, Entity, FocusHandle,
-    FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render, ScrollHandle,
-    SharedString, StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle,
-    WeakEntity, Window, WindowBounds, WindowOptions, actions, div, font, hsla, prelude::*, px, rgb,
-    size,
+    AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, DefiniteLength, Div,
+    Entity, FocusHandle, FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render,
+    ScrollHandle, SharedString, StrikethroughStyle, StyledText, Subscription, TextRun,
+    UnderlineStyle, Window, WindowBounds, WindowOptions, actions, div, font, hsla, prelude::*, px,
+    rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -24,6 +24,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     popover::Popover,
     sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem},
+    switch::Switch,
     v_flex,
 };
 
@@ -235,7 +236,6 @@ enum LoadState<T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HomeMenu {
     Workspace,
-    Agent,
     Account,
     Checkout,
     Branch,
@@ -262,7 +262,6 @@ struct HomeThread {
 #[derive(Clone, Debug)]
 enum AgentMenuAction {
     Effort(String),
-    Fast,
     Model(String),
     Provider(String),
 }
@@ -370,29 +369,19 @@ fn menu_list(width: Pixels) -> gpui::Stateful<Div> {
         .overflow_y_scroll()
 }
 
-/// A menu row's click, applied to the shell that owns the menu.
-fn menu_action(
-    entity: &WeakEntity<DesktopShell>,
-    action: AgentMenuAction,
-) -> Box<dyn Fn(&mut Window, &mut App)> {
-    let entity = entity.clone();
+/// How a reasoning level reads in the picker.
+fn effort_label(level: &str) -> String {
+    match level {
+        "xhigh" => "Extra High".to_string(),
+        other => {
+            let mut letters = other.chars();
 
-    Box::new(move |_, cx| {
-        let _ = entity.update(cx, |this, cx| this.apply_agent_menu(action.clone(), cx));
-    })
-}
-
-/// A tick, or the space a tick would take, so rows line up.
-fn check_slot(checked: bool) -> AnyElement {
-    div()
-        .size(px(14.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(checked, |element| {
-            element.child(Icon::new(IconName::Check).size(px(14.0)))
-        })
-        .into_any_element()
+            match letters.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + letters.as_str(),
+                None => String::new(),
+            }
+        }
+    }
 }
 
 /// One row of a home menu: an icon, some content, and what happens on click.
@@ -870,6 +859,8 @@ struct DesktopShell {
     home_menu: Option<HomeMenu>,
     palette_open: bool,
     palette_query: Entity<InputState>,
+    agent_picker_open: bool,
+    agent_search: Entity<InputState>,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
     agents: LoadState<Vec<Agent>>,
@@ -949,6 +940,7 @@ impl DesktopShell {
             .map(SharedString::from)
             .unwrap_or_else(|| cx.theme().font_family.clone());
         let palette_query = cx.new(|cx| InputState::new(window, cx).placeholder("Search commands"));
+        let agent_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
         let email = cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
         let password = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1068,6 +1060,8 @@ impl DesktopShell {
             home_menu: None,
             palette_open: false,
             palette_query,
+            agent_picker_open: false,
+            agent_search,
             completing_intake: false,
             create_error: None,
             creating_step: false,
@@ -2123,9 +2117,6 @@ impl DesktopShell {
             AgentMenuAction::Effort(effort) => {
                 self.home_effort = Some(effort);
                 self.home_menu = None;
-            }
-            AgentMenuAction::Fast => {
-                self.home_fast = !self.home_fast;
             }
         }
 
@@ -5057,6 +5048,7 @@ impl DesktopShell {
             .when_some(safety, |element, mode| {
                 element.child(div().opacity(0.7).child(safety_label(&mode)))
             })
+            .on_click(cx.listener(|this, _, window, cx| this.open_agent_picker(window, cx)))
             .into_any_element();
 
         let can_send = !working && !self.composer.read(cx).value().trim().is_empty();
@@ -5105,13 +5097,7 @@ impl DesktopShell {
                         h_flex()
                             .items_center()
                             .gap(px(8.0))
-                            .child(self.home_popover(
-                                "composer-agent",
-                                agent_trigger,
-                                HomeMenu::Agent,
-                                Corner::BottomRight,
-                                cx,
-                            ))
+                            .child(agent_trigger)
                             .child(send),
                     ),
             )
@@ -5404,139 +5390,6 @@ impl DesktopShell {
                     list.into_any_element()
                 })
             }
-            HomeMenu::Agent => {
-                let choices = self.agent_choices();
-                let selected = self.composer_choice().map(|choice| choice.provider);
-                let catalogs = self.model_catalogs.clone();
-                let catalog = selected
-                    .as_deref()
-                    .and_then(|provider| catalogs.get(provider))
-                    .cloned()
-                    .unwrap_or_default();
-                let model = self.home_model.clone();
-                let effort = self.home_effort.clone();
-                let fast = self.home_fast;
-
-                Rc::new(move |cx| {
-                    if choices.is_empty() {
-                        return v_flex()
-                            .w(px(300.0))
-                            .gap(px(2.0))
-                            .child(menu_note(
-                                "No agent CLI found on this machine. Install codex, claude or opencode, then start Kloucy again.",
-                                cx,
-                            ))
-                            .into_any_element();
-                    }
-
-                    let mut list = menu_list(px(300.0));
-
-                    for (index, choice) in choices.iter().enumerate() {
-                        let is_selected = selected.as_deref() == Some(choice.provider.as_str());
-                        let mut children = vec![
-                            agent_mark(&choice.provider, 14.0),
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(choice.name.clone())
-                                .into_any_element(),
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(choice.provider.clone())
-                                .into_any_element(),
-                        ];
-
-                        if is_selected {
-                            children
-                                .push(Icon::new(IconName::Check).size(px(14.0)).into_any_element());
-                        }
-
-                        list = list.child(menu_row(
-                            ("home-agent-item", index),
-                            cx,
-                            is_selected,
-                            children,
-                            Some(menu_action(
-                                &entity,
-                                AgentMenuAction::Provider(choice.provider.clone()),
-                            )),
-                        ));
-                    }
-
-                    if !catalog.models.is_empty() {
-                        list = list.child(menu_note("Model", cx));
-
-                        for (index, choice) in catalog.models.iter().enumerate() {
-                            let is_selected = model.as_deref() == Some(choice.id.as_str());
-
-                            list = list.child(menu_row(
-                                ("home-model-item", index),
-                                cx,
-                                is_selected,
-                                vec![
-                                    check_slot(is_selected),
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(choice.label.clone())
-                                        .into_any_element(),
-                                ],
-                                Some(menu_action(
-                                    &entity,
-                                    AgentMenuAction::Model(choice.id.clone()),
-                                )),
-                            ));
-                        }
-                    }
-
-                    if !catalog.efforts.is_empty() {
-                        list = list.child(menu_note("Effort", cx));
-
-                        for (index, level) in catalog.efforts.iter().enumerate() {
-                            let is_selected = effort.as_deref() == Some(level.as_str());
-
-                            list = list.child(menu_row(
-                                ("home-effort-item", index),
-                                cx,
-                                is_selected,
-                                vec![
-                                    check_slot(is_selected),
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(level.clone())
-                                        .into_any_element(),
-                                ],
-                                Some(menu_action(&entity, AgentMenuAction::Effort(level.clone()))),
-                            ));
-                        }
-                    }
-
-                    if catalog.fast {
-                        list = list.child(menu_row(
-                            ("home-fast", 0),
-                            cx,
-                            fast,
-                            vec![
-                                check_slot(fast),
-                                div().flex_1().child("Fast mode").into_any_element(),
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if fast { "On" } else { "Off" })
-                                    .into_any_element(),
-                            ],
-                            Some(menu_action(&entity, AgentMenuAction::Fast)),
-                        ));
-                    }
-
-                    list.into_any_element()
-                })
-            }
             HomeMenu::Account => {
                 let name = match &self.session {
                     SessionStatus::SignedIn(user) => user.name.clone(),
@@ -5809,6 +5662,10 @@ impl DesktopShell {
             shell = shell.child(self.render_command_palette(cx));
         }
 
+        if self.agent_picker_open {
+            shell = shell.child(self.render_agent_picker(cx));
+        }
+
         shell.into_any_element()
     }
 
@@ -5835,6 +5692,10 @@ impl DesktopShell {
     ) {
         if self.palette_open {
             self.close_palette(window, cx);
+        }
+
+        if self.agent_picker_open {
+            self.close_agent_picker(window, cx);
         }
     }
 
@@ -5882,6 +5743,243 @@ impl DesktopShell {
             }
         }
 
+        cx.notify();
+    }
+
+    /// The model picker: an agent rail, a search field, the models that agent
+    /// offers, and the knobs that go with them. It replaces a list in a popover
+    /// because there are too many models to read in one narrow column.
+    fn render_agent_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let choices = self.agent_choices();
+        let selected = self.composer_choice();
+        let provider = selected
+            .as_ref()
+            .map(|choice| choice.provider.clone())
+            .unwrap_or_default();
+        let catalog = self
+            .model_catalogs
+            .get(&provider)
+            .cloned()
+            .unwrap_or_default();
+        let query = self.agent_search.read(cx).value().to_lowercase();
+        let models = catalog
+            .models
+            .iter()
+            .filter(|model| {
+                query.is_empty()
+                    || model.label.to_lowercase().contains(&query)
+                    || model.id.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let chosen_model = self.home_model.clone();
+        let chosen_effort = self.home_effort.clone();
+
+        let mut rail = v_flex()
+            .h_full()
+            .w(px(56.0))
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .py(px(12.0))
+            .border_r_1()
+            .border_color(cx.theme().border);
+
+        for (index, choice) in choices.iter().enumerate() {
+            let next = choice.provider.clone();
+            let is_selected = choice.provider == provider;
+
+            rail = rail.child(
+                div()
+                    .id(("picker-agent", index))
+                    .size(px(36.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.0))
+                    .when(is_selected, |element| element.bg(cx.theme().list_hover))
+                    .hover(|element| element.bg(cx.theme().list_hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.apply_agent_menu(AgentMenuAction::Provider(next.clone()), cx);
+                    }))
+                    .child(agent_mark(&choice.provider, 18.0)),
+            );
+        }
+
+        let mut model_list = v_flex().w_full().gap(px(2.0));
+
+        if models.is_empty() {
+            model_list = model_list.child(menu_note("No model matches.", cx));
+        }
+
+        for (index, model) in models.iter().enumerate() {
+            let is_selected = chosen_model.as_deref() == Some(model.id.as_str());
+            let next = model.id.clone();
+
+            model_list = model_list.child(
+                h_flex()
+                    .id(("picker-model", index))
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .when(is_selected, |element| element.bg(cx.theme().list_hover))
+                    .hover(|element| element.bg(cx.theme().list_hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.apply_agent_menu(AgentMenuAction::Model(next.clone()), cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .child(model.label.clone()),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(agent_mark(&provider, 12.0))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(provider.clone()),
+                            ),
+                    )
+                    .when(is_selected, |element| {
+                        element.child(Icon::new(IconName::Check).size(px(14.0)))
+                    }),
+            );
+        }
+
+        let mut body = v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .gap_3()
+            .p_3()
+            .child(Input::new(&self.agent_search).appearance(false))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Model"),
+            )
+            .child(
+                div()
+                    .id("picker-models")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(model_list),
+            );
+
+        if !catalog.efforts.is_empty() {
+            let mut levels = h_flex().w_full().flex_wrap().gap_1();
+
+            for (index, level) in catalog.efforts.iter().enumerate() {
+                let is_selected = chosen_effort.as_deref() == Some(level.as_str());
+                let next = level.clone();
+
+                levels = levels.child(
+                    div()
+                        .id(("picker-effort", index))
+                        .px_2()
+                        .py(px(3.0))
+                        .rounded(px(6.0))
+                        .text_xs()
+                        .when(is_selected, |element| {
+                            element
+                                .bg(cx.theme().foreground)
+                                .text_color(cx.theme().background)
+                        })
+                        .when(!is_selected, |element| {
+                            element
+                                .bg(cx.theme().muted)
+                                .hover(|element| element.bg(cx.theme().list_hover))
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.apply_agent_menu(AgentMenuAction::Effort(next.clone()), cx);
+                        }))
+                        .child(effort_label(level)),
+                );
+            }
+
+            body = body
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Reasoning"),
+                )
+                .child(levels);
+        }
+
+        if catalog.fast {
+            body = body.child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(div().text_sm().child("Fast mode"))
+                    .child(Switch::new("picker-fast").checked(self.home_fast).on_click(
+                        cx.listener(|this, checked: &bool, _, cx| {
+                            this.home_fast = *checked;
+                            cx.notify();
+                        }),
+                    )),
+            );
+        }
+
+        let panel = h_flex()
+            .id("agent-picker-panel")
+            .w(px(640.0))
+            .max_w(DefiniteLength::Fraction(0.92))
+            .h(px(440.0))
+            .max_h(DefiniteLength::Fraction(0.9))
+            .overflow_hidden()
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .child(rail)
+            .child(body)
+            .on_click(|_, _, cx| cx.stop_propagation());
+
+        div()
+            .id("agent-picker-backdrop")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(cx.theme().overlay)
+            .on_click(cx.listener(|this, _, window, cx| this.close_agent_picker(window, cx)))
+            .child(panel)
+            .into_any_element()
+    }
+
+    fn open_agent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.agent_picker_open = true;
+        self.agent_search
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.agent_search
+            .update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    fn close_agent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.agent_picker_open = false;
+        self.agent_search
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.focus_handle.focus(window);
         cx.notify();
     }
 
