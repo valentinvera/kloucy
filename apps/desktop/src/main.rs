@@ -715,15 +715,6 @@ fn thread_answer(logs: &[SessionLog]) -> Option<String> {
     (!printed.is_empty()).then(|| printed.join("\n"))
 }
 
-/// The agent's own trace: startup banner, hooks, warnings and token counts.
-fn thread_trace(logs: &[SessionLog]) -> Vec<&SessionLog> {
-    logs.iter()
-        .filter(|log| {
-            shows_in_thread(log) && log.stream != "answer" && !log.message.trim().is_empty()
-        })
-        .collect()
-}
-
 /// How a run's status reads in the thread header.
 fn thread_status_label(status: &str) -> &'static str {
     match status {
@@ -733,12 +724,6 @@ fn thread_status_label(status: &str) -> &'static str {
         "stopped" => "Stopped",
         _ => "Waiting",
     }
-}
-
-/// Whether a session log belongs in the thread. The runner echoes the command it
-/// ran, which repeats the prompt and is better read in Sessions.
-fn shows_in_thread(log: &SessionLog) -> bool {
-    !(log.stream == "system" && log.message.starts_with("$ "))
 }
 
 /// A one-line answer to "what are my agents doing?", when there is anything.
@@ -788,7 +773,6 @@ struct DesktopShell {
     home_thread: Option<HomeThread>,
     sending_composer: bool,
     home_provider: Option<String>,
-    home_show_output: bool,
     home_project: HomeProject,
     home_checkout: git::Checkout,
     home_menu: Option<HomeMenu>,
@@ -971,7 +955,6 @@ impl DesktopShell {
             home_thread: None,
             sending_composer: false,
             home_provider: None,
-            home_show_output: false,
             home_project: HomeProject::Auto,
             home_checkout: git::Checkout::None,
             home_menu: None,
@@ -1796,7 +1779,6 @@ impl DesktopShell {
                         this.refresh_home_checkout();
                         this.composer
                             .update(cx, |state, cx| state.set_value("", window, cx));
-                        this.home_show_output = false;
                         this.home_thread = Some(HomeThread {
                             session_id: session_id.clone(),
                             title,
@@ -1946,7 +1928,6 @@ impl DesktopShell {
     /// Leave the thread and go back to the empty composer.
     fn clear_home_thread(&mut self, cx: &mut Context<Self>) {
         self.home_thread = None;
-        self.home_show_output = false;
         self.composer_status = None;
         cx.notify();
     }
@@ -4446,7 +4427,6 @@ impl DesktopShell {
     ) -> AnyElement {
         let working = matches!(thread.status.as_str(), "running" | "ready" | "needs_setup");
         let answer = thread_answer(&thread.logs);
-        let trace = thread_trace(&thread.logs);
 
         let header = h_flex()
             .w_full()
@@ -4499,7 +4479,9 @@ impl DesktopShell {
                     .child(self.home_chips(cx)),
             );
 
-        let mut messages = v_flex().w_full().gap_3().px(px(16.0)).py(px(16.0));
+        // The conversation shares the composer's column, so both read as one
+        // surface instead of a wide panel with a narrow field under it.
+        let mut messages = v_flex().w_full().gap_3().py(px(16.0));
 
         messages = messages.child(
             h_flex().w_full().justify_end().child(
@@ -4514,8 +4496,6 @@ impl DesktopShell {
             ),
         );
 
-        // The reply, not the agent's trace: the banner, hooks and token counts
-        // belong behind "Show output".
         messages = messages.child(
             h_flex().w_full().justify_start().child(
                 div()
@@ -4533,78 +4513,32 @@ impl DesktopShell {
             ),
         );
 
-        let mut boxed = v_flex()
-            .flex_1()
-            .min_h_0()
-            .mx(px(24.0))
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(cx.theme().border)
-            .child(
-                div()
-                    .id("home-thread")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(messages),
-            );
-
-        if !trace.is_empty() {
-            if self.home_show_output {
-                let mut output = v_flex()
-                    .w_full()
-                    .gap_1()
-                    .px(px(16.0))
-                    .pb(px(12.0))
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .pt(px(12.0));
-
-                for log in trace {
-                    output = output.child(
-                        div()
-                            .font_family(self.mono_font.clone())
-                            .text_xs()
-                            .text_color(if log.stream == "stderr" {
-                                cx.theme().danger_foreground
-                            } else {
-                                cx.theme().muted_foreground
-                            })
-                            .child(log.message.clone()),
-                    );
-                }
-
-                boxed = boxed.child(output);
-            }
-
-            boxed = boxed.child(
-                h_flex().w_full().px(px(12.0)).py(px(6.0)).child(
-                    Button::new("thread-output")
-                        .ghost()
-                        .small()
-                        .label(if self.home_show_output {
-                            "Hide output"
-                        } else {
-                            "Show output"
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.home_show_output = !this.home_show_output;
-                            cx.notify();
-                        })),
-                ),
-            );
-        }
-
         div()
             .size_full()
             .flex()
             .flex_col()
             .child(header)
-            .child(boxed)
             .child(
-                v_flex()
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .justify_center()
+                    .px(px(24.0))
+                    .child(
+                        v_flex()
+                            .id("home-thread")
+                            .w_full()
+                            .max_w(px(720.0))
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(messages),
+                    ),
+            )
+            .child(
+                h_flex()
                     .w_full()
-                    .items_center()
+                    .justify_center()
                     .px(px(24.0))
                     .pt(px(12.0))
                     .pb(px(16.0))
@@ -5747,22 +5681,6 @@ mod home_tests {
         assert_eq!(thread_status_label("anything-else"), "Waiting");
     }
 
-    #[test]
-    fn keeps_the_echoed_command_out_of_the_thread() {
-        assert!(!shows_in_thread(&SessionLog {
-            message: "$ codex exec 'hola'".to_string(),
-            stream: "system".to_string(),
-        }));
-        assert!(shows_in_thread(&SessionLog {
-            message: "hola".to_string(),
-            stream: "stdout".to_string(),
-        }));
-        assert!(shows_in_thread(&SessionLog {
-            message: "Session stopped; the agent process was terminated.".to_string(),
-            stream: "system".to_string(),
-        }));
-    }
-
     fn log(stream: &str, message: &str) -> SessionLog {
         SessionLog {
             message: message.to_string(),
@@ -5792,22 +5710,6 @@ mod home_tests {
         assert_eq!(thread_answer(&logs), Some("hola\nmundo".to_string()));
         assert_eq!(thread_answer(&[]), None);
         assert_eq!(thread_answer(&[log("stdout", "   ")]), None);
-    }
-
-    #[test]
-    fn the_trace_leaves_out_the_answer_and_the_echoed_command() {
-        let logs = vec![
-            log("system", "$ codex exec 'hola'"),
-            log("stdout", "banner"),
-            log("answer", "hola"),
-            log("stderr", "warning"),
-        ];
-        let trace: Vec<&str> = thread_trace(&logs)
-            .iter()
-            .map(|log| log.message.as_str())
-            .collect();
-
-        assert_eq!(trace, vec!["banner", "warning"]);
     }
 }
 
