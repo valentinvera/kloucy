@@ -19,7 +19,7 @@ pub const FONT_FAMILY: &str = "Geist";
 
 /// Lucide icons the component library does not ship, served at the same
 /// `icons/*.svg` paths so `gpui::svg()` can find them next to the rest.
-const EXTRA_ICONS: [(&str, &[u8]); 2] = [
+const EXTRA_ICONS: [(&str, &[u8]); 6] = [
     (
         "icons/paperclip.svg",
         include_bytes!("../assets/icons/paperclip.svg"),
@@ -27,6 +27,22 @@ const EXTRA_ICONS: [(&str, &[u8]); 2] = [
     (
         "icons/git-branch.svg",
         include_bytes!("../assets/icons/git-branch.svg"),
+    ),
+    ("icons/zap.svg", include_bytes!("../assets/icons/zap.svg")),
+    // Agent marks. The marks belong to their owners: OpenAI's blossom comes
+    // from Wikimedia Commons, OpenCode's from Simple Icons; both are
+    // wordmarks in a single ink, so the UI tints them like the icon set.
+    (
+        "icons/agents/openai.svg",
+        include_bytes!("../assets/icons/agents/openai.svg"),
+    ),
+    (
+        "icons/agents/opencode.svg",
+        include_bytes!("../assets/icons/agents/opencode.svg"),
+    ),
+    (
+        "icons/agents/claude.svg",
+        include_bytes!("../assets/icons/agents/claude.svg"),
     ),
 ];
 
@@ -71,6 +87,18 @@ mod tests {
 
         assert!(icon.is_some());
         assert!(Assets.load("icons/not-a-real-icon.svg").is_err());
+    }
+
+    #[test]
+    fn embeds_the_agent_marks() {
+        for provider in ["openai", "claude", "opencode"] {
+            let mark = Assets
+                .load(&format!("icons/agents/{provider}.svg"))
+                .expect("the mark should load")
+                .expect("the mark should be embedded");
+
+            assert!(mark.starts_with(b"<svg") || mark.windows(4).any(|w| w == b"<svg"));
+        }
     }
 
     #[test]
