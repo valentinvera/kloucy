@@ -10,8 +10,8 @@ mod settings;
 mod typography;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Entity, FocusHandle,
-    FontStyle, FontWeight, IntoElement, KeyBinding, Render, ScrollHandle, SharedString,
+    AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Div, Entity, FocusHandle,
+    FontStyle, FontWeight, IntoElement, KeyBinding, Pixels, Render, ScrollHandle, SharedString,
     StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle, WeakEntity, Window,
     WindowBounds, WindowOptions, actions, div, font, hsla, img, prelude::*, px, rgb, size,
 };
@@ -351,6 +351,17 @@ fn folder_name(path: &str) -> String {
         Some(name) if !name.is_empty() => name.to_string(),
         _ => path.to_string(),
     }
+}
+
+/// The list a home menu lives in: as wide as its content needs, and scrolling
+/// instead of running past the window when the menu is longer than the space.
+fn menu_list(width: Pixels) -> gpui::Stateful<Div> {
+    v_flex()
+        .id("home-menu-list")
+        .w(width)
+        .max_h(px(320.0))
+        .gap(px(2.0))
+        .overflow_y_scroll()
 }
 
 /// A menu row's click, applied to the shell that owns the menu.
@@ -4960,6 +4971,7 @@ impl DesktopShell {
                         cx,
                     ),
                     HomeMenu::Workspace,
+                    Corner::TopRight,
                     cx,
                 ),
             )
@@ -4974,6 +4986,7 @@ impl DesktopShell {
                         cx,
                     ),
                     HomeMenu::Account,
+                    Corner::TopRight,
                     cx,
                 ),
             )
@@ -5075,7 +5088,13 @@ impl DesktopShell {
                 h_flex()
                     .items_center()
                     .justify_between()
-                    .child(self.home_popover("composer-attach", attach, HomeMenu::Attach, cx))
+                    .child(self.home_popover(
+                        "composer-attach",
+                        attach,
+                        HomeMenu::Attach,
+                        Corner::BottomRight,
+                        cx,
+                    ))
                     .child(
                         h_flex()
                             .items_center()
@@ -5084,6 +5103,7 @@ impl DesktopShell {
                                 "composer-agent",
                                 agent_trigger,
                                 HomeMenu::Agent,
+                                Corner::BottomRight,
                                 cx,
                             ))
                             .child(send),
@@ -5113,6 +5133,7 @@ impl DesktopShell {
                     cx,
                 ),
                 HomeMenu::Checkout,
+                Corner::BottomRight,
                 cx,
             ),
         );
@@ -5130,6 +5151,7 @@ impl DesktopShell {
                         cx,
                     ),
                     HomeMenu::Branch,
+                    Corner::BottomRight,
                     cx,
                 ),
             );
@@ -5213,6 +5235,7 @@ impl DesktopShell {
         id: &'static str,
         trigger: AnyElement,
         menu: HomeMenu,
+        anchor: Corner,
         cx: &mut Context<Self>,
     ) -> Popover {
         let open = self.home_menu == Some(menu);
@@ -5220,7 +5243,7 @@ impl DesktopShell {
         let panel = self.home_menu_panel(menu, cx);
 
         Popover::new(id)
-            .anchor(Corner::TopRight)
+            .anchor(anchor)
             .open(open)
             .on_open_change(move |is_open, _window, cx| {
                 let _ = entity.update(cx, |this, cx| {
@@ -5263,7 +5286,7 @@ impl DesktopShell {
                         return menu_note("No workspaces yet.", cx);
                     }
 
-                    let mut list = v_flex().w(px(260.0)).gap(px(2.0));
+                    let mut list = menu_list(px(260.0));
 
                     for (index, workspace) in workspaces.iter().enumerate() {
                         let id = workspace.id.clone();
@@ -5308,7 +5331,7 @@ impl DesktopShell {
                 let chosen = self.home_workspace().map(|workspace| workspace.id);
 
                 Rc::new(move |cx| {
-                    let mut list = v_flex().w(px(280.0)).gap(px(2.0));
+                    let mut list = menu_list(px(280.0));
 
                     let no_project = chosen.is_none();
                     let mut children = vec![
@@ -5400,7 +5423,7 @@ impl DesktopShell {
                             .into_any_element();
                     }
 
-                    let mut list = v_flex().w(px(300.0)).gap(px(2.0));
+                    let mut list = menu_list(px(300.0));
 
                     for (index, choice) in choices.iter().enumerate() {
                         let is_selected = selected.as_deref() == Some(choice.provider.as_str());
@@ -5631,7 +5654,7 @@ impl DesktopShell {
                 let branch = self.home_checkout.branch().map(str::to_string);
 
                 Rc::new(move |cx| {
-                    let mut list = v_flex().w(px(260.0)).gap(px(2.0));
+                    let mut list = menu_list(px(260.0));
 
                     let checkout_row = checkout.clone().map(|checkout| {
                         let value = checkout.clone();
