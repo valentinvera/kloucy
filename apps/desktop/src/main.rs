@@ -11,9 +11,9 @@ mod typography;
 
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Entity, FocusHandle,
-    FontStyle, FontWeight, IntoElement, KeyBinding, Render, SharedString, StrikethroughStyle,
-    StyledText, Subscription, TextRun, UnderlineStyle, Window, WindowBounds, WindowOptions,
-    actions, div, font, hsla, prelude::*, px, rgb, size,
+    FontStyle, FontWeight, IntoElement, KeyBinding, Render, ScrollHandle, SharedString,
+    StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle, Window, WindowBounds,
+    WindowOptions, actions, div, font, hsla, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -784,6 +784,7 @@ struct DesktopShell {
     home_thread: Option<HomeThread>,
     sending_composer: bool,
     home_provider: Option<String>,
+    home_scroll: ScrollHandle,
     home_project: HomeProject,
     home_checkout: git::Checkout,
     home_menu: Option<HomeMenu>,
@@ -966,6 +967,7 @@ impl DesktopShell {
             home_thread: None,
             sending_composer: false,
             home_provider: None,
+            home_scroll: ScrollHandle::new(),
             home_project: HomeProject::Auto,
             home_checkout: git::Checkout::None,
             home_menu: None,
@@ -1802,6 +1804,8 @@ impl DesktopShell {
                             status: "running".to_string(),
                         };
 
+                        this.home_scroll.scroll_to_bottom();
+
                         match &mut this.home_thread {
                             Some(thread) => thread.turns.push(turn),
                             None => {
@@ -1864,6 +1868,8 @@ impl DesktopShell {
 
                 let finished = this
                     .update(cx, |this, cx| {
+                        let stick = this.home_at_bottom();
+
                         let Some(thread) = this.home_thread.as_mut() else {
                             return true;
                         };
@@ -1881,6 +1887,10 @@ impl DesktopShell {
                                 known += stream.logs.len();
                                 turn.logs.extend(stream.logs);
                                 turn.status = stream.session.status;
+
+                                if stick {
+                                    this.home_scroll.scroll_to_bottom();
+                                }
 
                                 if let Some(agent_session) = agent_session_id(&turn.logs) {
                                     thread.agent_session = Some(agent_session);
@@ -1926,6 +1936,15 @@ impl DesktopShell {
             }
         })
         .detach();
+    }
+
+    /// Whether the thread is already at its end, so new content should bring the
+    /// view down with it instead of moving what is being read.
+    fn home_at_bottom(&self) -> bool {
+        let offset = self.home_scroll.offset().y;
+        let max = self.home_scroll.max_offset().height;
+
+        (-offset) + px(80.0) >= max
     }
 
     /// The run still going in the thread, if there is one.
@@ -4726,6 +4745,7 @@ impl DesktopShell {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.home_scroll)
                     .px(px(24.0))
                     .child(div().w_full().max_w(px(720.0)).mx_auto().child(messages)),
             )
