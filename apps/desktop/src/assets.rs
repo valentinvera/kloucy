@@ -19,7 +19,7 @@ pub const FONT_FAMILY: &str = "Geist";
 
 /// Lucide icons the component library does not ship, served at the same
 /// `icons/*.svg` paths so `gpui::svg()` can find them next to the rest.
-const EXTRA_ICONS: [(&str, &[u8]); 5] = [
+const EXTRA_ICONS: [(&str, &[u8]); 6] = [
     (
         "icons/paperclip.svg",
         include_bytes!("../assets/icons/paperclip.svg"),
@@ -28,6 +28,7 @@ const EXTRA_ICONS: [(&str, &[u8]); 5] = [
         "icons/git-branch.svg",
         include_bytes!("../assets/icons/git-branch.svg"),
     ),
+    ("icons/zap.svg", include_bytes!("../assets/icons/zap.svg")),
     // Agent marks. The marks belong to their owners: OpenAI's blossom comes
     // from Wikimedia Commons, OpenCode's from Simple Icons; both are
     // wordmarks in a single ink, so the UI tints them like the icon set.
