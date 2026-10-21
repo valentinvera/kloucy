@@ -1626,7 +1626,15 @@ impl DesktopShell {
     /// command is started with the prompt as its argument, and the thread on
     /// Home streams what the agent prints until the session finishes.
     fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sending_composer || self.running_session().is_some() {
+        if self.sending_composer {
+            return;
+        }
+
+        if self.running_session().is_some() {
+            self.composer_status = Some(ComposerStatus::Notice(
+                "The agent is still answering; send this when it finishes.".to_string(),
+            ));
+            cx.notify();
             return;
         }
 
@@ -4886,8 +4894,7 @@ impl DesktopShell {
                 Input::new(&self.composer)
                     .appearance(false)
                     .bordered(false)
-                    .focus_bordered(false)
-                    .disabled(working),
+                    .focus_bordered(false),
             )
             .child(
                 h_flex()
