@@ -222,7 +222,11 @@ pub fn run_agent(
                 continue;
             }
 
-            let _ = client.append_log(&session_id, stream, &message);
+            // An API that does not know the newer streams would drop the line,
+            // and the thread would look empty; stdout is always accepted.
+            if client.append_log(&session_id, stream, &message).is_err() {
+                let _ = client.append_log(&session_id, "stdout", &message);
+            }
         }
     }
 

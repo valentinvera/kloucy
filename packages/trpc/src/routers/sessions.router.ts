@@ -59,7 +59,13 @@ const agentSessionCreateInputSchema = z.object({
   workspaceId: z.string().min(1),
 })
 
-const sessionLogStreamSchema = z.enum(["stdout", "stderr", "system"])
+const sessionLogStreamSchema = z.enum([
+  "stdout",
+  "stderr",
+  "system",
+  "answer",
+  "trace",
+])
 
 const sessionLogSchema = z.object({
   createdAt: z.date(),
