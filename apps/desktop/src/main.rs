@@ -1868,8 +1868,6 @@ impl DesktopShell {
 
                 let finished = this
                     .update(cx, |this, cx| {
-                        let stick = this.home_at_bottom();
-
                         let Some(thread) = this.home_thread.as_mut() else {
                             return true;
                         };
@@ -1888,9 +1886,9 @@ impl DesktopShell {
                                 turn.logs.extend(stream.logs);
                                 turn.status = stream.session.status;
 
-                                if stick {
-                                    this.home_scroll.scroll_to_bottom();
-                                }
+                                // The reply grows while it arrives; keep its
+                                // end in view the same way the prompt is.
+                                this.home_scroll.scroll_to_bottom();
 
                                 if let Some(agent_session) = agent_session_id(&turn.logs) {
                                     thread.agent_session = Some(agent_session);
@@ -1936,15 +1934,6 @@ impl DesktopShell {
             }
         })
         .detach();
-    }
-
-    /// Whether the thread is already at its end, so new content should bring the
-    /// view down with it instead of moving what is being read.
-    fn home_at_bottom(&self) -> bool {
-        let offset = self.home_scroll.offset().y;
-        let max = self.home_scroll.max_offset().height;
-
-        (-offset) + px(80.0) >= max
     }
 
     /// The run still going in the thread, if there is one.
