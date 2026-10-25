@@ -5858,24 +5858,27 @@ impl DesktopShell {
     ) -> AnyElement {
         let query = search.read(cx).value().to_lowercase();
 
-        let mut tabs = h_flex().w_full().items_center();
+        let mut tabs = h_flex().w_full().items_center().gap_2();
 
         for (index, choice) in choices.iter().enumerate() {
             let is_selected = choice.provider == provider;
 
+            // One square per agent, grouped on the left, with a plain border on
+            // the one in use instead of an underline.
             tabs = tabs.child(
                 h_flex()
                     .id(("picker-agent", index))
-                    .flex_1()
+                    .size(px(28.0))
+                    .items_center()
                     .justify_center()
-                    .py(px(6.0))
-                    .border_color(cx.theme().border)
-                    .when(is_selected, |element| {
-                        element
-                            .bg(cx.theme().list_hover)
-                            .border_b_2()
-                            .border_color(cx.theme().foreground)
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(if is_selected {
+                        cx.theme().foreground
+                    } else {
+                        cx.theme().border.opacity(0.0)
                     })
+                    .when(is_selected, |element| element.bg(cx.theme().list_hover))
                     .hover(|element| element.bg(cx.theme().list_hover))
                     .on_click(menu_action(
                         entity,
@@ -5885,7 +5888,12 @@ impl DesktopShell {
             );
 
             if index + 1 < choices.len() {
-                tabs = tabs.child(div().h(px(16.0)).w(px(1.0)).bg(cx.theme().border));
+                tabs = tabs.child(
+                    div()
+                        .h(px(18.0))
+                        .w(px(1.0))
+                        .bg(cx.theme().foreground.opacity(0.3)),
+                );
             }
         }
 
