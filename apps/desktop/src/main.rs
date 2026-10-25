@@ -5863,8 +5863,12 @@ impl DesktopShell {
         for (index, choice) in choices.iter().enumerate() {
             let is_selected = choice.provider == provider;
 
-            // One square per agent, grouped on the left, with a plain border on
-            // the one in use instead of an underline.
+            // One square per agent, grouped on the left: the agent in use is the
+            // one with a surface behind it, no ring.
+            let entity = entity.clone();
+            let search = search.clone();
+            let next = choice.provider.clone();
+
             tabs = tabs.child(
                 h_flex()
                     .id(("picker-agent", index))
@@ -5872,18 +5876,18 @@ impl DesktopShell {
                     .items_center()
                     .justify_center()
                     .rounded(px(6.0))
-                    .border_1()
-                    .border_color(if is_selected {
-                        cx.theme().foreground
-                    } else {
-                        cx.theme().border.opacity(0.0)
-                    })
                     .when(is_selected, |element| element.bg(cx.theme().list_hover))
                     .hover(|element| element.bg(cx.theme().list_hover))
-                    .on_click(menu_action(
-                        entity,
-                        AgentMenuAction::Provider(choice.provider.clone()),
-                    ))
+                    .on_click(move |_, window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.apply_agent_menu(AgentMenuAction::Provider(next.clone()), cx);
+                            // A query typed for one agent means nothing for the
+                            // next one.
+                            search.update(cx, |state, cx| {
+                                state.set_value("", window, cx);
+                            });
+                        });
+                    })
                     .child(agent_mark(&choice.provider, 16.0)),
             );
 
