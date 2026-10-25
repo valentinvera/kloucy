@@ -72,6 +72,8 @@ fn has_arguments(command: &str) -> bool {
 pub struct ModelChoice {
     /// The effort this model runs at when nothing is picked.
     pub default_effort: Option<String>,
+    /// The efforts this model accepts, when it has a ladder of its own.
+    pub efforts: Vec<String>,
     pub id: String,
     pub label: String,
 }
@@ -102,6 +104,7 @@ pub fn model_catalog(provider: &str, executable: &str) -> ModelCatalog {
                 .into_iter()
                 .map(|id| ModelChoice {
                     default_effort: None,
+                    efforts: Vec::new(),
                     id: id.to_string(),
                     label: id.to_string(),
                 })
@@ -152,6 +155,17 @@ fn run_capture(executable: &str, args: &[&str]) -> Option<String> {
 /// The models OpenCode can run: its own listing first, then the model cache it
 /// keeps on disk, which is what is left when the listing cannot answer.
 fn opencode_catalog(executable: &str) -> ModelCatalog {
+    // The cache names each model's effort options, which the listing does not,
+    // so it is asked first and the CLI is the fallback.
+    let cached = read_cache_file("models.json")
+        .zip(read_data_file("auth.json"))
+        .map(|(cache, auth)| parse_opencode_cache(&cache, &auth))
+        .unwrap_or_default();
+
+    if !cached.models.is_empty() {
+        return cached;
+    }
+
     for args in [vec!["models", "--standalone"], vec!["models"]] {
         if let Some(text) = run_capture(executable, &args) {
             let catalog = parse_opencode_models(&text);
@@ -162,18 +176,31 @@ fn opencode_catalog(executable: &str) -> ModelCatalog {
         }
     }
 
-    let Some(cache) = read_cache_file("models.json") else {
-        return ModelCatalog::default();
-    };
-
-    let auth = read_cache_file("../local/share/opencode/auth.json").unwrap_or_default();
-
-    parse_opencode_cache(&cache, &auth)
+    ModelCatalog::default()
 }
 
 /// A file under the XDG cache or data directory.
-fn read_cache_file(relative: &str) -> Option<String> {
-    let base = std::env::var("XDG_CACHE_HOME")
+fn read_cache_file(name: &str) -> Option<String> {
+    std::fs::read_to_string(
+        xdg_base("XDG_CACHE_HOME", ".cache")?
+            .join("opencode")
+            .join(name),
+    )
+    .ok()
+}
+
+/// A file OpenCode keeps in the XDG data directory.
+fn read_data_file(name: &str) -> Option<String> {
+    std::fs::read_to_string(
+        xdg_base("XDG_DATA_HOME", ".local/share")?
+            .join("opencode")
+            .join(name),
+    )
+    .ok()
+}
+
+fn xdg_base(variable: &str, fallback: &str) -> Option<PathBuf> {
+    std::env::var(variable)
         .ok()
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -181,19 +208,8 @@ fn read_cache_file(relative: &str) -> Option<String> {
             std::env::var("HOME")
                 .ok()
                 .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".cache"))
-        })?;
-
-    let path = if relative.starts_with("../local") {
-        let home = std::env::var("HOME")
-            .ok()
-            .filter(|value| !value.is_empty())?;
-        PathBuf::from(home).join(relative.trim_start_matches("../"))
-    } else {
-        base.join("opencode").join(relative)
-    };
-
-    std::fs::read_to_string(path).ok()
+                .map(|home| PathBuf::from(home).join(fallback))
+        })
 }
 
 /// Read OpenCode's local model cache: the providers it is signed into plus its
@@ -218,15 +234,36 @@ pub fn parse_opencode_cache(cache: &str, auth: &str) -> ModelCatalog {
             continue;
         }
 
-        for (_, model) in entry["models"].as_object().into_iter().flatten() {
-            let Some(id) = model["id"].as_str() else {
+        for (key, model) in entry["models"].as_object().into_iter().flatten() {
+            let Some(model_id) = model["id"].as_str().or(Some(key.as_str())) else {
                 continue;
             };
 
+            let id = if model_id.contains('/') {
+                model_id.to_string()
+            } else {
+                format!("{provider}/{model_id}")
+            };
+
+            let efforts = model["reasoning_options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|option| option["type"].as_str() == Some("effort"))
+                .flat_map(|option| {
+                    option["values"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                })
+                .collect();
+
             models.push(ModelChoice {
                 default_effort: None,
-                id: id.to_string(),
-                label: model["name"].as_str().unwrap_or(id).to_string(),
+                efforts,
+                id,
+                label: model["name"].as_str().unwrap_or(model_id).to_string(),
             });
         }
     }
@@ -250,10 +287,18 @@ pub fn parse_codex_models(json: &str) -> ModelCatalog {
             continue;
         };
 
+        let levels = model["supported_reasoning_levels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|level| level["effort"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+
         catalog.models.push(ModelChoice {
             default_effort: model["default_reasoning_level"]
                 .as_str()
                 .map(str::to_string),
+            efforts: levels,
             id: id.to_string(),
             label: model["display_name"].as_str().unwrap_or(id).to_string(),
         });
@@ -292,6 +337,7 @@ pub fn parse_opencode_models(text: &str) -> ModelCatalog {
         .filter(|line| line.contains('/'))
         .map(|line| ModelChoice {
             default_effort: None,
+            efforts: Vec::new(),
             id: line.to_string(),
             label: line.rsplit('/').next().unwrap_or(line).to_string(),
         })
@@ -314,7 +360,12 @@ pub fn model_args(
 
     if let Some(model) = model {
         let flag = if provider == "codex" { "-m" } else { "--model" };
-        args.extend([flag.to_string(), quote(model)]);
+        let model = match (provider, effort) {
+            // OpenCode asks for a model variant in the model id itself.
+            ("opencode", Some(effort)) => format!("{model}#{effort}"),
+            _ => model.to_string(),
+        };
+        args.extend([flag.to_string(), quote(&model)]);
 
         if provider == "claude-code" {
             if let Some(effort) = effort {
@@ -540,7 +591,11 @@ mod tests {
     #[test]
     fn reads_the_opencode_cache_for_signed_in_providers() {
         let cache = r#"{
-            "opencode": {"models": {"opencode/big": {"id":"opencode/big","name":"Big Pickle"}}},
+            "opencode": {"models": {
+                "opencode/big": {"id":"opencode/big","name":"Big Pickle",
+                                 "reasoning_options":[{"type":"effort","values":["low","high"]}]},
+                "bare": {"id":"bare","name":"Bare"}
+            }},
             "openrouter": {"models": {"openrouter/sonnet": {"id":"openrouter/sonnet","name":"Sonnet"}}},
             "someone-else": {"models": {"someone-else/x": {"id":"someone-else/x","name":"X"}}}
         }"#;
@@ -550,10 +605,16 @@ mod tests {
             catalog
                 .models
                 .iter()
-                .map(|model| model.label.as_str())
+                .map(|model| (model.id.as_str(), model.label.as_str()))
                 .collect::<Vec<_>>(),
-            vec!["Big Pickle", "Sonnet"]
+            vec![
+                ("opencode/big", "Big Pickle"),
+                ("opencode/bare", "Bare"),
+                ("openrouter/sonnet", "Sonnet")
+            ]
         );
+        assert_eq!(catalog.models[0].efforts, vec!["low", "high"]);
+        assert!(catalog.models[1].efforts.is_empty());
     }
 
     #[test]
@@ -581,7 +642,11 @@ mod tests {
                 Some("high"),
                 true
             ),
-            vec!["--model", "'opencode-go/gpt-6-luna'"]
+            vec!["--model", "'opencode-go/gpt-6-luna#high'"]
+        );
+        assert_eq!(
+            model_args("opencode", Some("opencode-go/glm-5.3"), None, false),
+            vec!["--model", "'opencode-go/glm-5.3'"]
         );
         assert_eq!(
             model_args("claude-code", Some("sonnet"), Some("high"), false),

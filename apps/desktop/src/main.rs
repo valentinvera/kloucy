@@ -5970,10 +5970,18 @@ impl DesktopShell {
                     .child(list),
             );
 
-        if !catalog.efforts.is_empty() {
+        let efforts = catalog
+            .models
+            .iter()
+            .find(|choice| Some(choice.id.as_str()) == model)
+            .map(|choice| choice.efforts.clone())
+            .filter(|efforts| !efforts.is_empty())
+            .unwrap_or_else(|| catalog.efforts.clone());
+
+        if !efforts.is_empty() {
             let mut levels = h_flex().w_full().flex_wrap().gap_1();
 
-            for (index, level) in catalog.efforts.iter().enumerate() {
+            for (index, level) in efforts.iter().enumerate() {
                 let is_selected = effort == Some(level.as_str());
 
                 levels = levels.child(
