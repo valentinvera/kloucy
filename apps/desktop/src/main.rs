@@ -430,6 +430,34 @@ fn slot_label(index: usize) -> String {
     }
 }
 
+/// How a finished turn with no answer reads.
+fn empty_turn_label(status: &str) -> &'static str {
+    match status {
+        "failed" => "The run failed.",
+        "stopped" => "Stopped before answering.",
+        _ => "The agent printed nothing.",
+    }
+}
+
+/// The most useful line of a failed run: its last word on stderr, which is where
+/// the CLIs put the reason they could not finish.
+fn failure_note(logs: &[SessionLog]) -> Option<String> {
+    let line = logs
+        .iter()
+        .filter(|log| log.stream == "stderr")
+        .map(|log| log.message.trim())
+        .filter(|message| !message.is_empty())
+        .next_back()?;
+
+    let mut note = line.chars().take(240).collect::<String>();
+
+    if line.chars().count() > 240 {
+        note.push('…');
+    }
+
+    Some(note)
+}
+
 /// The ink a piece of code is drawn in. Kloucy stays monochrome except for the
 /// handful of accents that make code readable: strings, numbers, keywords and
 /// the names a reader looks for.
@@ -5642,14 +5670,28 @@ impl DesktopShell {
                                     None if turn_working => {
                                         div().child("Working…").into_any_element()
                                     }
-                                    None => {
-                                        div().child("The agent printed nothing.").into_any_element()
-                                    }
+                                    None => div()
+                                        .child(empty_turn_label(&turn.status))
+                                        .into_any_element(),
                                 }),
                         )
                         .child(actions),
                 ),
             );
+
+            if turn.status == "failed" {
+                if let Some(note) = failure_note(&turn.logs) {
+                    messages = messages.child(
+                        h_flex().w_full().justify_start().px(px(12.0)).child(
+                            div()
+                                .max_w(px(620.0))
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(note),
+                        ),
+                    );
+                }
+            }
         }
 
         div()
@@ -7128,6 +7170,24 @@ mod home_tests {
             ])),
             Some("2 waiting · 1 running".to_string())
         );
+    }
+
+    #[test]
+    fn a_failed_run_reports_its_last_word() {
+        let logs = vec![
+            log("stderr", "banner"),
+            log("stderr", "error: model overloaded"),
+            log("stderr", ""),
+        ];
+
+        assert_eq!(
+            failure_note(&logs),
+            Some("error: model overloaded".to_string())
+        );
+        assert_eq!(failure_note(&[log("stdout", "hola")]), None);
+        assert_eq!(empty_turn_label("failed"), "The run failed.");
+        assert_eq!(empty_turn_label("stopped"), "Stopped before answering.");
+        assert_eq!(empty_turn_label("done"), "The agent printed nothing.");
     }
 
     #[test]
