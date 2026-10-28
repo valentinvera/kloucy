@@ -96,6 +96,42 @@ pub fn save_favorites(models: &[String]) {
     });
 }
 
+/// A text setting, if it was stored.
+pub fn load_text(key: &str) -> Option<String> {
+    let text = fs::read_to_string(config_path()?).ok()?;
+
+    stored_text(&text, key)
+}
+
+/// Persist a text setting, leaving the others alone.
+pub fn save_text(key: &'static str, value: &str) {
+    update_document(|document| {
+        document[key] = json!(value);
+    });
+}
+
+/// A boolean setting, if it was stored.
+pub fn load_bool(key: &str) -> Option<bool> {
+    let text = fs::read_to_string(config_path()?).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+
+    value.get(key).and_then(Value::as_bool)
+}
+
+/// Persist a boolean setting.
+pub fn save_bool(key: &'static str, value: bool) {
+    update_document(|document| {
+        document[key] = json!(value);
+    });
+}
+
+/// A text field of a stored document.
+pub fn stored_text(text: &str, key: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(text).ok()?;
+
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
 /// Read the document, let `update` change it, and write it back. Best effort:
 /// an environment without a config directory simply keeps nothing.
 fn update_document(update: impl FnOnce(&mut Value)) {
@@ -186,6 +222,29 @@ mod tests {
         assert_eq!(
             favorites_from_json(&document.to_string()),
             vec!["codex/gpt-6.1-sol".to_string()]
+        );
+    }
+
+    #[test]
+    fn reads_and_keeps_text_settings() {
+        let mut document: Value =
+            serde_json::from_str(r#"{"agentProvider":"opencode","themeMode":"light"}"#).unwrap();
+
+        assert_eq!(
+            stored_text(&document.to_string(), "agentProvider"),
+            Some("opencode".to_string())
+        );
+        assert_eq!(stored_text(&document.to_string(), "agentModel"), None);
+
+        document["agentModel"] = json!("opencode/claude-sonnet-4-6");
+
+        assert_eq!(
+            stored_text(&document.to_string(), "agentModel"),
+            Some("opencode/claude-sonnet-4-6".to_string())
+        );
+        assert_eq!(
+            theme_mode_from_json(&document.to_string()),
+            Some("light".to_string())
         );
     }
 
