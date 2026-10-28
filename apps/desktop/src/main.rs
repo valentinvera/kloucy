@@ -2129,10 +2129,15 @@ impl DesktopShell {
                 self.pick_default_model();
             }
             AgentMenuAction::Model(model) => {
-                self.apply_model(model);
+                // A model with an effort ladder keeps the card open for the
+                // level; without one, the pick is the whole choice.
+                if !self.apply_model(model) {
+                    self.home_menu = None;
+                }
             }
             AgentMenuAction::Effort(effort) => {
                 self.home_effort = Some(effort);
+                self.home_menu = None;
             }
             AgentMenuAction::Fast => {
                 self.home_fast = !self.home_fast;
@@ -2164,16 +2169,23 @@ impl DesktopShell {
         self.home_effort = model.default_effort;
     }
 
-    /// Choose a model, and move the effort to that model's own default.
-    fn apply_model(&mut self, id: String) {
-        let default_effort = self
+    /// Choose a model, and move the effort to that model's own default. Returns
+    /// whether the model has an effort ladder to pick from.
+    fn apply_model(&mut self, id: String) -> bool {
+        let choice = self
             .composer_choice()
             .and_then(|choice| self.model_catalogs.get(&choice.provider).cloned())
-            .and_then(|catalog| catalog.models.into_iter().find(|model| model.id == id))
-            .and_then(|model| model.default_effort);
+            .and_then(|catalog| catalog.models.into_iter().find(|model| model.id == id));
+
+        let default_effort = choice
+            .as_ref()
+            .and_then(|model| model.default_effort.clone());
+        let has_efforts = choice.is_some_and(|model| !model.efforts.is_empty());
 
         self.home_model = Some(id);
         self.home_effort = default_effort;
+
+        has_efforts
     }
 
     /// How the chosen model is named in the composer pill.
