@@ -38,7 +38,7 @@ use crate::api::{
 
 use crate::detect::DetectedAgent;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -914,6 +914,20 @@ fn agent_session_id(logs: &[SessionLog]) -> Option<String> {
     })
 }
 
+/// What a run reasoned about, when the agent reported it. It rides the trace
+/// stream, since it is context for the reply rather than the reply.
+fn reasoning_text(logs: &[SessionLog]) -> Option<String> {
+    let parts = logs
+        .iter()
+        .filter(|log| log.stream == "trace")
+        .filter_map(|log| log.message.strip_prefix("reasoning: "))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>();
+
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
 /// How a run's status reads in the thread header.
 fn thread_status_label(status: &str) -> &'static str {
     match status {
@@ -985,6 +999,7 @@ struct DesktopShell {
     agent_search: Entity<InputState>,
     threads: Vec<threads::StoredThread>,
     favorites: Vec<String>,
+    open_reasoning: HashSet<String>,
     _agent_search_subscription: Subscription,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
@@ -1195,6 +1210,7 @@ impl DesktopShell {
             agent_search,
             threads: threads::load(),
             favorites: settings::load_favorites(),
+            open_reasoning: HashSet::new(),
             _agent_search_subscription: agent_search_subscription,
             completing_intake: false,
             create_error: None,
@@ -5380,11 +5396,59 @@ impl DesktopShell {
                 );
             }
 
+            let reasoning = reasoning_text(&turn.logs);
+            let mut column = v_flex().max_w(px(620.0)).gap_1();
+
+            if let Some(reasoning) = &reasoning {
+                let id = turn.session_id.clone();
+                let open = self.open_reasoning.contains(&id);
+                let key = id.clone();
+
+                column = column.child(
+                    h_flex()
+                        .id(("turn-reasoning", index))
+                        .items_center()
+                        .gap_1()
+                        .cursor(CursorStyle::PointingHand)
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|element| element.text_color(cx.theme().foreground))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.open_reasoning.remove(&key) {
+                                this.open_reasoning.insert(key.clone());
+                            }
+
+                            cx.notify();
+                        }))
+                        .child(
+                            Icon::new(if open {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            })
+                            .size(px(12.0)),
+                        )
+                        .child("Thought process"),
+                );
+
+                if open {
+                    column = column.child(
+                        div()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .px(px(10.0))
+                            .py(px(8.0))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(reasoning.clone()),
+                    );
+                }
+            }
+
             messages = messages.child(
                 h_flex().w_full().justify_start().child(
-                    v_flex()
-                        .max_w(px(620.0))
-                        .gap_1()
+                    column
                         .child(
                             div()
                                 .rounded(px(12.0))
@@ -6883,6 +6947,23 @@ mod home_tests {
             ])),
             Some("2 waiting · 1 running".to_string())
         );
+    }
+
+    #[test]
+    fn reads_the_thought_process_out_of_the_trace() {
+        let logs = vec![
+            log("trace", "reasoning: mira los archivos"),
+            log("trace", "$ ls"),
+            log("trace", "reasoning: y después edita"),
+            log("answer", "listo"),
+        ];
+
+        assert_eq!(
+            reasoning_text(&logs),
+            Some("mira los archivos\n\ny después edita".to_string())
+        );
+        assert_eq!(reasoning_text(&[log("answer", "listo")]), None);
+        assert_eq!(reasoning_text(&[log("trace", "reasoning:   ")]), None);
     }
 
     #[test]
