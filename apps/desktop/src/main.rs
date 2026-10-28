@@ -1849,6 +1849,21 @@ impl DesktopShell {
     /// command is started with the prompt as its argument, and the thread on
     /// Home streams what the agent prints until the session finishes.
     fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().trim().to_string();
+
+        self.submit_text(text, true, window, cx);
+    }
+
+    /// Start a run for `text`: the composer's content, or a turn being retried.
+    /// Only the composer is cleared afterwards, never what the reader typed while
+    /// a retry was in flight.
+    fn submit_text(
+        &mut self,
+        text: String,
+        from_composer: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.sending_composer {
             return;
         }
@@ -1860,8 +1875,6 @@ impl DesktopShell {
             cx.notify();
             return;
         }
-
-        let text = self.composer.read(cx).value().trim().to_string();
 
         if text.is_empty() {
             self.composer_status = Some(ComposerStatus::Failed(
@@ -2037,8 +2050,10 @@ impl DesktopShell {
                         this.agents = agents;
                         this.workspaces = workspaces;
                         this.refresh_home_checkout();
-                        this.composer
-                            .update(cx, |state, cx| state.set_value("", window, cx));
+                        if from_composer {
+                            this.composer
+                                .update(cx, |state, cx| state.set_value("", window, cx));
+                        }
                         let turn = HomeTurn {
                             logs: Vec::new(),
                             prompt,
@@ -5331,20 +5346,63 @@ impl DesktopShell {
                 ),
             );
 
+            let answer = thread_answer(&turn.logs);
+            let mut actions = h_flex().gap_1().items_center();
+
+            if let Some(answer) = &answer {
+                let copy = answer.clone();
+
+                actions = actions.child(
+                    Button::new(("turn-copy", index))
+                        .ghost()
+                        .small()
+                        .label("Copy")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                            this.composer_status =
+                                Some(ComposerStatus::Notice("Answer copied.".to_string()));
+                            cx.notify();
+                        })),
+                );
+            }
+
+            if last && !turn_working && !turn.prompt.is_empty() {
+                let prompt = turn.prompt.clone();
+
+                actions = actions.child(
+                    Button::new(("turn-retry", index))
+                        .ghost()
+                        .small()
+                        .label("Retry")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.submit_text(prompt.clone(), false, window, cx);
+                        })),
+                );
+            }
+
             messages = messages.child(
                 h_flex().w_full().justify_start().child(
-                    div()
+                    v_flex()
                         .max_w(px(620.0))
-                        .rounded(px(12.0))
-                        .bg(cx.theme().muted)
-                        .px(px(12.0))
-                        .py(px(8.0))
-                        .text_sm()
-                        .child(match thread_answer(&turn.logs) {
-                            Some(answer) => self.render_markdown(&answer, cx),
-                            None if turn_working => div().child("Working…").into_any_element(),
-                            None => div().child("The agent printed nothing.").into_any_element(),
-                        }),
+                        .gap_1()
+                        .child(
+                            div()
+                                .rounded(px(12.0))
+                                .bg(cx.theme().muted)
+                                .px(px(12.0))
+                                .py(px(8.0))
+                                .text_sm()
+                                .child(match &answer {
+                                    Some(answer) => self.render_markdown(answer, cx),
+                                    None if turn_working => {
+                                        div().child("Working…").into_any_element()
+                                    }
+                                    None => {
+                                        div().child("The agent printed nothing.").into_any_element()
+                                    }
+                                }),
+                        )
+                        .child(actions),
                 ),
             );
         }
