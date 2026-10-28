@@ -1165,6 +1165,7 @@ impl DesktopShell {
                 this.agents = agents;
                 this.installed_agents = installed;
                 this.model_catalogs = catalogs;
+                this.restore_agent_choice();
                 this.pick_default_model();
                 cx.notify();
 
@@ -2283,7 +2284,9 @@ impl DesktopShell {
             AgentMenuAction::Provider(provider) => {
                 self.home_provider = Some(provider);
                 self.home_fast = false;
+                self.home_model = None;
                 self.pick_default_model();
+                self.remember_agent_choice();
             }
             AgentMenuAction::ToggleFavorite(key) => {
                 match self.favorites.iter().position(|favorite| favorite == &key) {
@@ -2298,16 +2301,21 @@ impl DesktopShell {
             AgentMenuAction::Model(model) => {
                 // A model with an effort ladder keeps the card open for the
                 // level; without one, the pick is the whole choice.
-                if !self.apply_model(model) {
+                if self.apply_model(model) {
+                    self.remember_agent_choice();
+                } else {
                     self.home_menu = None;
+                    self.remember_agent_choice();
                 }
             }
             AgentMenuAction::Effort(effort) => {
                 self.home_effort = Some(effort);
                 self.home_menu = None;
+                self.remember_agent_choice();
             }
             AgentMenuAction::Fast => {
                 self.home_fast = !self.home_fast;
+                self.remember_agent_choice();
             }
         }
 
@@ -2319,6 +2327,10 @@ impl DesktopShell {
     /// default. Home always runs a named model, so the picker never has to say
     /// "Default" and leave the model unknown.
     fn pick_default_model(&mut self) {
+        if self.home_model.is_some() {
+            return;
+        }
+
         let Some(provider) = self.composer_choice().map(|choice| choice.provider) else {
             return;
         };
@@ -2441,6 +2453,63 @@ impl DesktopShell {
 
         threads::upsert(&mut self.threads, stored);
         threads::save(&self.threads);
+    }
+
+    /// Keep the agent, model, effort and fast mode for the next start.
+    fn remember_agent_choice(&self) {
+        if let Some(provider) = &self.home_provider {
+            settings::save_text("agentProvider", provider);
+        }
+
+        if let Some(model) = &self.home_model {
+            settings::save_text("agentModel", model);
+        }
+
+        // An empty effort is a choice too: the model's own default.
+        settings::save_text("agentEffort", self.home_effort.as_deref().unwrap_or(""));
+
+        settings::save_bool("fastMode", self.home_fast);
+    }
+
+    /// Bring back what was chosen last time, when this machine still offers it.
+    /// The picker always runs a named model, so an unknown one falls back to the
+    /// agent's newest.
+    fn restore_agent_choice(&mut self) {
+        if let Some(provider) = settings::load_text("agentProvider") {
+            if self
+                .agent_choices()
+                .iter()
+                .any(|choice| choice.provider == provider)
+            {
+                self.home_provider = Some(provider);
+            }
+        }
+
+        let Some(catalog) = self
+            .composer_choice()
+            .and_then(|choice| self.model_catalogs.get(&choice.provider).cloned())
+        else {
+            return;
+        };
+
+        let stored_model = settings::load_text("agentModel")
+            .filter(|model| catalog.models.iter().any(|choice| &choice.id == model));
+
+        let Some(model) = stored_model else {
+            return;
+        };
+
+        let efforts = catalog
+            .models
+            .iter()
+            .find(|choice| choice.id == model)
+            .map(|choice| choice.efforts.clone())
+            .unwrap_or_default();
+
+        self.home_model = Some(model);
+        self.home_effort = settings::load_text("agentEffort")
+            .filter(|effort| !effort.is_empty() && efforts.contains(effort));
+        self.home_fast = catalog.fast && settings::load_bool("fastMode").unwrap_or(false);
     }
 
     /// The models the picker is showing, in the order it shows them: matches for
