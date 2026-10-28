@@ -3,6 +3,7 @@ mod api;
 mod assets;
 mod detect;
 mod git;
+mod highlight;
 mod markdown;
 mod runner;
 mod safety;
@@ -373,6 +374,21 @@ fn menu_list(width: Pixels) -> gpui::Stateful<Div> {
         .max_h(px(320.0))
         .gap(px(2.0))
         .overflow_y_scroll()
+}
+
+/// The ink a piece of code is drawn in. Kloucy stays monochrome except for the
+/// handful of accents that make code readable: strings, numbers, keywords and
+/// the names a reader looks for.
+fn code_ink(kind: highlight::Kind, cx: &App) -> Hsla {
+    match kind {
+        highlight::Kind::Comment => cx.theme().muted_foreground,
+        highlight::Kind::Function => cx.theme().info_foreground,
+        highlight::Kind::Keyword => cx.theme().foreground,
+        highlight::Kind::Number => cx.theme().warning_foreground,
+        highlight::Kind::Str => cx.theme().success_foreground,
+        highlight::Kind::Type => cx.theme().cyan,
+        highlight::Kind::Plain => cx.theme().foreground,
+    }
 }
 
 /// How a reasoning level reads in the picker.
@@ -4884,14 +4900,8 @@ impl DesktopShell {
                         );
                     }
 
-                    code.child(
-                        div()
-                            .w_full()
-                            .font_family(self.mono_font.clone())
-                            .text_xs()
-                            .child(block.text()),
-                    )
-                    .into_any_element()
+                    code.child(self.render_code(&block.text(), language.as_deref(), cx))
+                        .into_any_element()
                 }
                 markdown::BlockKind::Heading { level } => div()
                     .text_size(px(match level {
@@ -4943,6 +4953,47 @@ impl DesktopShell {
         }
 
         body.into_any_element()
+    }
+
+    /// A fenced code block: monospace, one row per line, coloured by syntax.
+    fn render_code(&self, code: &str, language: Option<&str>, cx: &App) -> AnyElement {
+        let mut lines = v_flex().w_full();
+
+        for (line, runs) in code.split('\n').zip(highlight::block(code, language)) {
+            if runs.is_empty() {
+                lines = lines.child(div().h(px(14.0)));
+                continue;
+            }
+
+            let mut text = String::new();
+            let mut styled = Vec::with_capacity(runs.len());
+
+            for (range, kind) in &runs {
+                let Some(slice) = line.get(range.clone()) else {
+                    continue;
+                };
+
+                text.push_str(slice);
+                styled.push(TextRun {
+                    len: slice.len(),
+                    font: font(self.mono_font.clone()),
+                    color: code_ink(*kind, cx),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+
+            lines = lines.child(
+                div()
+                    .w_full()
+                    .font_family(self.mono_font.clone())
+                    .text_xs()
+                    .child(StyledText::new(text).with_runs(styled)),
+            );
+        }
+
+        lines.into_any_element()
     }
 
     /// Inline runs of one block: one text, styled per span, so it wraps as prose.

@@ -16,6 +16,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 urlencoding = "2"
 
 [target.'cfg(unix)'.dependencies]
