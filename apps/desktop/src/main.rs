@@ -10,11 +10,11 @@ mod settings;
 mod typography;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, Div, Entity, FocusHandle,
-    FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render, ScrollHandle,
-    SharedString, StrikethroughStyle, StyledText, Subscription, TextRun, UnderlineStyle,
-    WeakEntity, Window, WindowBounds, WindowOptions, actions, div, font, hsla, prelude::*, px, rgb,
-    size,
+    AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, CursorStyle, Div, Entity,
+    FocusHandle, FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render,
+    ScrollHandle, SharedString, StrikethroughStyle, StyledText, Subscription, TextRun,
+    UnderlineStyle, WeakEntity, Window, WindowBounds, WindowOptions, actions, div, font, hsla,
+    prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -5111,6 +5111,7 @@ impl DesktopShell {
             .py(px(3.0))
             .text_xs()
             .text_color(cx.theme().muted_foreground)
+            .cursor(CursorStyle::PointingHand)
             .hover(|element| {
                 element
                     .bg(cx.theme().list_hover)
@@ -5888,6 +5889,7 @@ impl DesktopShell {
                     .items_center()
                     .justify_center()
                     .rounded(px(6.0))
+                    .cursor(CursorStyle::PointingHand)
                     .when(is_selected, |element| element.bg(cx.theme().list_hover))
                     .hover(|element| element.bg(cx.theme().list_hover))
                     .on_click(move |_, window, cx| {
@@ -5948,6 +5950,7 @@ impl DesktopShell {
                     .px_2()
                     .py(px(5.0))
                     .rounded(px(6.0))
+                    .cursor(CursorStyle::PointingHand)
                     .when(is_selected, |element| element.bg(cx.theme().list_hover))
                     .hover(|element| element.bg(cx.theme().list_hover))
                     .on_click(menu_action(
@@ -6003,6 +6006,7 @@ impl DesktopShell {
                         .py(px(3.0))
                         .rounded(px(6.0))
                         .text_xs()
+                        .cursor(CursorStyle::PointingHand)
                         .when(is_selected, |element| {
                             element
                                 .bg(cx.theme().foreground)
@@ -6051,15 +6055,20 @@ impl DesktopShell {
                             .child(Icon::empty().path("icons/zap.svg").size(px(14.0)))
                             .child(div().text_sm().child("Fast mode")),
                     )
-                    .child(Switch::new("picker-fast").checked(fast).on_click({
-                        let entity = entity.clone();
+                    .child(
+                        Switch::new("picker-fast")
+                            .cursor(CursorStyle::PointingHand)
+                            .checked(fast)
+                            .on_click({
+                                let entity = entity.clone();
 
-                        move |_, _, cx| {
-                            let _ = entity.update(cx, |this, cx| {
-                                this.apply_agent_menu(AgentMenuAction::Fast, cx);
-                            });
-                        }
-                    })),
+                                move |_, _, cx| {
+                                    let _ = entity.update(cx, |this, cx| {
+                                        this.apply_agent_menu(AgentMenuAction::Fast, cx);
+                                    });
+                                }
+                            }),
+                    ),
             );
         }
 
