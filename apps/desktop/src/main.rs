@@ -430,6 +430,17 @@ fn slot_label(index: usize) -> String {
     }
 }
 
+/// The ink a run's status is drawn in.
+fn status_ink(status: &str, cx: &App) -> Hsla {
+    match status {
+        "running" | "ready" => cx.theme().info_foreground,
+        "waiting" => cx.theme().warning_foreground,
+        "failed" => cx.theme().danger_foreground,
+        "done" => cx.theme().success_foreground,
+        _ => cx.theme().muted_foreground,
+    }
+}
+
 /// How a finished turn with no answer reads.
 fn empty_turn_label(status: &str) -> &'static str {
     match status {
@@ -653,8 +664,21 @@ fn load_thread(client: &KloucyClient, stored: &threads::StoredThread) -> Option<
         });
     }
 
-    (!turns.is_empty()).then(|| HomeThread {
-        agent_session: stored.agent_session.clone(),
+    if turns.is_empty() {
+        return None;
+    }
+
+    // A stored conversation knows its agent-side id; one opened from a single
+    // session has to read it back out of that session's trace.
+    let agent_session = stored.agent_session.clone().or_else(|| {
+        turns
+            .iter()
+            .rev()
+            .find_map(|turn| agent_session_id(&turn.logs))
+    });
+
+    Some(HomeThread {
+        agent_session,
         title: stored.title.clone(),
         turns,
         workspace_id: stored.workspace_id.clone(),
@@ -4457,12 +4481,42 @@ impl DesktopShell {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
+                                    .text_color(status_ink(&session.status, cx))
                                     .child(session.status.clone()),
                             )
                             .child(
                                 h_flex()
                                     .gap_1()
+                                    .child(
+                                        Button::new(("session-open", index))
+                                            .ghost()
+                                            .small()
+                                            .label("Open in Home")
+                                            .on_click(cx.listener({
+                                                let session = session.clone();
+
+                                                move |this, _, _, cx| {
+                                                    let stored = threads::StoredThread {
+                                                        agent_session: None,
+                                                        session_ids: vec![session.id.clone()],
+                                                        title: session
+                                                            .prompt
+                                                            .clone()
+                                                            .unwrap_or_else(|| {
+                                                                "Session".to_string()
+                                                            }),
+                                                        updated_at: 0,
+                                                        workspace_id: this
+                                                            .selected_workspace
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                    };
+
+                                                    this.section = Section::Home;
+                                                    this.open_stored_thread(stored, cx);
+                                                }
+                                            })),
+                                    )
                                     .child(
                                         Button::new(("session-start", index))
                                             .small()
