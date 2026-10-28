@@ -42,7 +42,21 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-actions!(kloucy, [OpenCommandPalette]);
+actions!(
+    kloucy,
+    [
+        OpenCommandPalette,
+        PickModel1,
+        PickModel2,
+        PickModel3,
+        PickModel4,
+        PickModel5,
+        PickModel6,
+        PickModel7,
+        PickModel8,
+        PickModel9,
+    ]
+);
 
 /// Key context of the signed-in shell, so the palette shortcut works anywhere in it.
 const SHELL_CONTEXT: &str = "KloucyShell";
@@ -392,6 +406,28 @@ fn menu_list(width: Pixels) -> gpui::Stateful<Div> {
         .max_h(px(320.0))
         .gap(px(2.0))
         .overflow_y_scroll()
+}
+
+/// Starred models lead the list; the rest keep the catalog order.
+fn favorites_first(
+    models: Vec<agents::ModelChoice>,
+    provider: &str,
+    favorites: &[String],
+) -> Vec<agents::ModelChoice> {
+    let mut models = models;
+
+    models.sort_by_key(|model| !favorites.contains(&format!("{provider}/{}", model.id)));
+
+    models
+}
+
+/// How the picker names a shortcut slot, per platform.
+fn slot_label(index: usize) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⌘{}", index + 1)
+    } else {
+        format!("Ctrl {}", index + 1)
+    }
 }
 
 /// The ink a piece of code is drawn in. Kloucy stays monochrome except for the
@@ -2368,6 +2404,50 @@ impl DesktopShell {
 
         threads::upsert(&mut self.threads, stored);
         threads::save(&self.threads);
+    }
+
+    /// The models the picker is showing, in the order it shows them: matches for
+    /// the search first, starred ones ahead of the rest.
+    fn visible_models(&self, cx: &App) -> Vec<agents::ModelChoice> {
+        let Some(choice) = self.composer_choice() else {
+            return Vec::new();
+        };
+
+        let Some(catalog) = self.model_catalogs.get(&choice.provider) else {
+            return Vec::new();
+        };
+
+        let query = self.agent_search.read(cx).value().to_lowercase();
+        let models = catalog
+            .models
+            .iter()
+            .filter(|model| {
+                query.is_empty()
+                    || model.label.to_lowercase().contains(&query)
+                    || model.id.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        favorites_first(models, &choice.provider, &self.favorites)
+    }
+
+    /// Take one of the picker's numbered slots, as its badges promise.
+    fn on_action_pick_model(&mut self, slot: usize, cx: &mut Context<Self>) {
+        if !matches!(self.home_menu, Some(HomeMenu::Agent)) {
+            return;
+        }
+
+        let Some(model) = self.visible_models(cx).get(slot).cloned() else {
+            return;
+        };
+
+        if !self.apply_model(model.id) {
+            self.home_menu = None;
+        }
+
+        self.composer_status = None;
+        cx.notify();
     }
 
     /// Reopen a conversation from the history, rebuilding its turns from the API.
@@ -5775,6 +5855,7 @@ impl DesktopShell {
                 let fast = self.home_fast;
                 let search = self.agent_search.clone();
                 let favorites = self.favorites.clone();
+                let models = self.visible_models(cx);
 
                 Rc::new(move |cx| {
                     Self::agent_picker_panel(
@@ -5783,6 +5864,7 @@ impl DesktopShell {
                         &choices,
                         &provider,
                         &catalog,
+                        &models,
                         model.as_deref(),
                         effort.as_deref(),
                         fast,
@@ -6103,6 +6185,15 @@ impl DesktopShell {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_action_open_palette))
             .on_action(cx.listener(Self::on_action_close_palette))
+            .on_action(cx.listener(|this, _: &PickModel1, _, cx| this.on_action_pick_model(0, cx)))
+            .on_action(cx.listener(|this, _: &PickModel2, _, cx| this.on_action_pick_model(1, cx)))
+            .on_action(cx.listener(|this, _: &PickModel3, _, cx| this.on_action_pick_model(2, cx)))
+            .on_action(cx.listener(|this, _: &PickModel4, _, cx| this.on_action_pick_model(3, cx)))
+            .on_action(cx.listener(|this, _: &PickModel5, _, cx| this.on_action_pick_model(4, cx)))
+            .on_action(cx.listener(|this, _: &PickModel6, _, cx| this.on_action_pick_model(5, cx)))
+            .on_action(cx.listener(|this, _: &PickModel7, _, cx| this.on_action_pick_model(6, cx)))
+            .on_action(cx.listener(|this, _: &PickModel8, _, cx| this.on_action_pick_model(7, cx)))
+            .on_action(cx.listener(|this, _: &PickModel9, _, cx| this.on_action_pick_model(8, cx)))
             .size_full()
             .child(self.render_nav(cx))
             .child(self.render_content(cx));
@@ -6197,14 +6288,13 @@ impl DesktopShell {
         choices: &[AgentChoice],
         provider: &str,
         catalog: &agents::ModelCatalog,
+        models: &[agents::ModelChoice],
         model: Option<&str>,
         effort: Option<&str>,
         fast: bool,
         favorites: &[String],
         cx: &App,
     ) -> AnyElement {
-        let query = search.read(cx).value().to_lowercase();
-
         let mut tabs = h_flex().w_full().items_center().gap_2();
 
         for (index, choice) in choices.iter().enumerate() {
@@ -6249,16 +6339,6 @@ impl DesktopShell {
             }
         }
 
-        let models = catalog
-            .models
-            .iter()
-            .filter(|choice| {
-                query.is_empty()
-                    || choice.label.to_lowercase().contains(&query)
-                    || choice.id.to_lowercase().contains(&query)
-            })
-            .collect::<Vec<_>>();
-
         let mut list = v_flex().w_full().gap(px(1.0));
 
         if models.is_empty() {
@@ -6301,6 +6381,17 @@ impl DesktopShell {
                     )
                     .when(is_selected, |element| {
                         element.child(Icon::new(IconName::Check).size(px(14.0)))
+                    })
+                    .when(index < 9, |element| {
+                        element.child(
+                            div()
+                                .px_1()
+                                .rounded(px(4.0))
+                                .bg(cx.theme().muted)
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(slot_label(index)),
+                        )
                     })
                     .child({
                         let key = format!("{provider}/{}", choice.id);
@@ -6591,6 +6682,24 @@ fn main() {
             cx.bind_keys([
                 KeyBinding::new("cmd-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
                 KeyBinding::new("ctrl-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-1", PickModel1, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-2", PickModel2, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-3", PickModel3, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-4", PickModel4, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-5", PickModel5, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-6", PickModel6, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-7", PickModel7, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-8", PickModel8, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-9", PickModel9, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-1", PickModel1, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-2", PickModel2, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-3", PickModel3, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-4", PickModel4, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-5", PickModel5, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-6", PickModel6, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-7", PickModel7, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-8", PickModel8, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-9", PickModel9, Some(SHELL_CONTEXT)),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1120.0), px(720.0)), cx);
@@ -6716,6 +6825,37 @@ mod home_tests {
             ])),
             Some("2 waiting · 1 running".to_string())
         );
+    }
+
+    #[test]
+    fn starred_models_lead_the_list() {
+        let models = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| agents::ModelChoice {
+                default_effort: None,
+                efforts: Vec::new(),
+                id: id.to_string(),
+                label: id.to_uppercase(),
+            })
+            .collect::<Vec<_>>();
+
+        let ordered = favorites_first(models, "codex", &["codex/c".to_string()]);
+
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c", "a", "b"]
+        );
+    }
+
+    #[test]
+    fn names_the_shortcut_slot() {
+        let label = slot_label(0);
+
+        assert!(label.ends_with('1'), "{label}");
+        assert_eq!(slot_label(8).contains('9'), true);
     }
 
     #[test]
