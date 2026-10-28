@@ -1126,7 +1126,13 @@ impl DesktopShell {
         });
         let instruction =
             cx.new(|cx| InputState::new(window, cx).placeholder("Send a follow-up instruction"));
-        let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Do anything…"));
+        // A prompt is often longer than one line: the field wraps and grows, and
+        // enter still sends (shift+enter keeps a line break).
+        let composer = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Do anything…")
+                .auto_grow(1, 6)
+        });
         let composer_subscription = cx.subscribe_in(
             &composer,
             window,
