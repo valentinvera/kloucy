@@ -271,6 +271,7 @@ enum AgentMenuAction {
     Fast,
     Model(String),
     Provider(String),
+    ToggleFavorite(String),
 }
 
 /// Where Home runs its messages: a project checkout, or Kloucy's own chat space
@@ -930,6 +931,7 @@ struct DesktopShell {
     palette_query: Entity<InputState>,
     agent_search: Entity<InputState>,
     threads: Vec<threads::StoredThread>,
+    favorites: Vec<String>,
     _agent_search_subscription: Subscription,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
@@ -1139,6 +1141,7 @@ impl DesktopShell {
             palette_query,
             agent_search,
             threads: threads::load(),
+            favorites: settings::load_favorites(),
             _agent_search_subscription: agent_search_subscription,
             completing_intake: false,
             create_error: None,
@@ -2191,6 +2194,16 @@ impl DesktopShell {
                 self.home_provider = Some(provider);
                 self.home_fast = false;
                 self.pick_default_model();
+            }
+            AgentMenuAction::ToggleFavorite(key) => {
+                match self.favorites.iter().position(|favorite| favorite == &key) {
+                    Some(position) => {
+                        self.favorites.remove(position);
+                    }
+                    None => self.favorites.push(key),
+                }
+
+                settings::save_favorites(&self.favorites);
             }
             AgentMenuAction::Model(model) => {
                 // A model with an effort ladder keeps the card open for the
@@ -5668,6 +5681,7 @@ impl DesktopShell {
                 let effort = self.home_effort.clone();
                 let fast = self.home_fast;
                 let search = self.agent_search.clone();
+                let favorites = self.favorites.clone();
 
                 Rc::new(move |cx| {
                     Self::agent_picker_panel(
@@ -5679,6 +5693,7 @@ impl DesktopShell {
                         model.as_deref(),
                         effort.as_deref(),
                         fast,
+                        &favorites,
                         cx,
                     )
                 })
@@ -6091,6 +6106,7 @@ impl DesktopShell {
         model: Option<&str>,
         effort: Option<&str>,
         fast: bool,
+        favorites: &[String],
         cx: &App,
     ) -> AnyElement {
         let query = search.read(cx).value().to_lowercase();
@@ -6191,6 +6207,38 @@ impl DesktopShell {
                     )
                     .when(is_selected, |element| {
                         element.child(Icon::new(IconName::Check).size(px(14.0)))
+                    })
+                    .child({
+                        let key = format!("{provider}/{}", choice.id);
+                        let starred = favorites.iter().any(|favorite| favorite == &key);
+                        let entity = entity.clone();
+
+                        div()
+                            .id(("picker-star", index))
+                            .cursor(CursorStyle::PointingHand)
+                            .px(px(2.0))
+                            .on_click(move |_, _window, cx| {
+                                cx.stop_propagation();
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.apply_agent_menu(
+                                        AgentMenuAction::ToggleFavorite(key.clone()),
+                                        cx,
+                                    );
+                                });
+                            })
+                            .child(
+                                Icon::new(if starred {
+                                    IconName::Star
+                                } else {
+                                    IconName::StarOff
+                                })
+                                .size(px(13.0))
+                                .text_color(if starred {
+                                    cx.theme().warning_foreground
+                                } else {
+                                    cx.theme().muted_foreground
+                                }),
+                            )
                     }),
             );
         }
