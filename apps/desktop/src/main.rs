@@ -62,7 +62,7 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 12] = [
+const PALETTE_ENTRIES: [PaletteEntry; 13] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
@@ -74,6 +74,12 @@ const PALETTE_ENTRIES: [PaletteEntry; 12] = [
         group: "Go to",
         keywords: "projects",
         label: "Open workspaces",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Chats),
+        group: "Go to",
+        keywords: "conversations history threads",
+        label: "Open chats",
     },
     PaletteEntry {
         command: PaletteCommand::Section(Section::Inbox),
@@ -154,6 +160,7 @@ fn palette_matches(query: &str) -> Vec<&'static PaletteEntry> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Section {
     Home,
+    Chats,
     Workspaces,
     Inbox,
     Sessions,
@@ -168,7 +175,7 @@ enum Section {
 /// Sidebar groups in reading order: the daily drivers first, then the work they
 /// produce, then what was decided, then the registry itself.
 const NAV_GROUPS: [(&str, &[Section]); 4] = [
-    ("🧭 Now", &[Section::Home, Section::Inbox]),
+    ("🧭 Now", &[Section::Home, Section::Chats, Section::Inbox]),
     (
         "⚡ Run",
         &[Section::Sessions, Section::Reviews, Section::Readiness],
@@ -184,6 +191,7 @@ impl Section {
     fn label(self) -> &'static str {
         match self {
             Section::Home => "Home",
+            Section::Chats => "Chats",
             Section::Workspaces => "Workspaces",
             Section::Inbox => "Inbox",
             Section::Sessions => "Sessions",
@@ -197,8 +205,16 @@ impl Section {
     }
 
     /// The icon shown in the sidebar for this section.
-    fn icon(self) -> IconName {
+    fn icon(self) -> Icon {
         match self {
+            Section::Chats => Icon::empty().path("icons/message-square.svg"),
+            other => Icon::new(other.icon_name()),
+        }
+    }
+
+    fn icon_name(self) -> IconName {
+        match self {
+            Section::Chats => IconName::Inbox,
             Section::Decisions => IconName::BookOpen,
             Section::Home => IconName::LayoutDashboard,
             Section::Inbox => IconName::Inbox,
@@ -215,6 +231,7 @@ impl Section {
     fn description(self) -> &'static str {
         match self {
             Section::Home => "What your agents are doing right now.",
+            Section::Chats => "Conversations you had with your agents.",
             Section::Workspaces => "Local projects Kloucy can supervise.",
             Section::Inbox => "Tasks captured before they run.",
             Section::Sessions => "Running, waiting, and finished agent work.",
@@ -3292,7 +3309,7 @@ impl DesktopShell {
     /// A sidebar row for a section: icon, active state, and any badge.
     fn nav_item(&self, section: Section, cx: &mut Context<Self>) -> SidebarMenuItem {
         let item = SidebarMenuItem::new(section.label())
-            .icon(Icon::new(section.icon()))
+            .icon(section.icon())
             .active(self.section == section);
 
         let item = match self.nav_badge(section, cx) {
@@ -4881,6 +4898,82 @@ impl DesktopShell {
             .into_any_element()
     }
 
+    /// The conversations this machine remembers, with the ones still in the API
+    /// as their turns.
+    fn render_chats(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.threads.is_empty() {
+            return v_flex()
+                .gap_1()
+                .child(div().text_sm().child("No conversations yet."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Start one from Home; it will be listed here."),
+                )
+                .into_any_element();
+        }
+
+        let mut list = v_flex().gap_2();
+
+        for (index, thread) in self.threads.iter().enumerate() {
+            let value = thread.clone();
+            let key = thread.key().map(str::to_string);
+            let runs = thread.session_ids.len();
+            let workspace = self
+                .workspace_by_id(&thread.workspace_id)
+                .map(|workspace| workspace.name)
+                .unwrap_or_else(|| "no project".to_string());
+
+            list = list.child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_sm().truncate().child(thread.title.clone()))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "{} · {runs} {}",
+                                        workspace,
+                                        if runs == 1 { "turn" } else { "turns" }
+                                    )),
+                            ),
+                    )
+                    .child(
+                        Button::new(("chat-open", index))
+                            .small()
+                            .label("Open")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.section = Section::Home;
+                                this.open_stored_thread(value.clone(), cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("chat-forget", index))
+                            .ghost()
+                            .small()
+                            .label("Forget")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.threads.retain(|stored| match (&key, stored.key()) {
+                                    (Some(left), Some(right)) => left != right,
+                                    _ => true,
+                                });
+                                threads::save(&this.threads);
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+
+        list.into_any_element()
+    }
+
     /// A run in progress: what was asked, what the agent printed, and the
     /// composer docked at the bottom for the next run.
     /// An agent answer, rendered from Markdown: prose as prose, code as code.
@@ -5962,6 +6055,7 @@ impl DesktopShell {
         let body: AnyElement = match self.section {
             Section::Decisions => self.render_decisions(cx),
             Section::Home => self.render_home(cx),
+            Section::Chats => self.render_chats(cx),
             Section::Inbox => self.render_inbox(cx),
             Section::Pairing => self.render_pairing(cx),
             Section::Readiness => self.render_readiness(cx),
