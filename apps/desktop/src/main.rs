@@ -1000,6 +1000,8 @@ struct DesktopShell {
     threads: Vec<threads::StoredThread>,
     favorites: Vec<String>,
     open_reasoning: HashSet<String>,
+    rename_thread: Option<String>,
+    rename_title: Entity<InputState>,
     _agent_search_subscription: Subscription,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
@@ -1081,6 +1083,8 @@ impl DesktopShell {
             .unwrap_or_else(|| cx.theme().font_family.clone());
         let palette_query = cx.new(|cx| InputState::new(window, cx).placeholder("Search commands"));
         let agent_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
+        let rename_title =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Conversation name"));
         let agent_search_subscription = cx.subscribe(&agent_search, |_, _, _: &InputEvent, cx| {
             cx.notify();
         });
@@ -1211,6 +1215,8 @@ impl DesktopShell {
             threads: threads::load(),
             favorites: settings::load_favorites(),
             open_reasoning: HashSet::new(),
+            rename_thread: None,
+            rename_title: rename_title.clone(),
             _agent_search_subscription: agent_search_subscription,
             completing_intake: false,
             create_error: None,
@@ -2478,6 +2484,51 @@ impl DesktopShell {
         }
 
         self.composer_status = None;
+        cx.notify();
+    }
+
+    /// Start renaming a stored conversation, with its current name in the field.
+    fn start_renaming(
+        &mut self,
+        key: String,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.rename_thread = Some(key);
+        self.rename_title
+            .update(cx, |state, cx| state.set_value(title, window, cx));
+        self.rename_title
+            .update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Keep the name the reader typed, in the history and in the open thread.
+    fn save_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.rename_thread.clone() else {
+            return;
+        };
+
+        let title = self.rename_title.read(cx).value().trim().to_string();
+
+        if title.is_empty() {
+            self.rename_thread = None;
+            cx.notify();
+            return;
+        }
+
+        threads::rename(&mut self.threads, &key, &title);
+        threads::save(&self.threads);
+
+        if let Some(thread) = &mut self.home_thread {
+            let open = thread.turns.first().map(|turn| turn.session_id.clone());
+
+            if open.as_deref() == Some(key.as_str()) {
+                thread.title = title;
+            }
+        }
+
+        self.rename_thread = None;
         cx.notify();
     }
 
@@ -5036,6 +5087,47 @@ impl DesktopShell {
                 .map(|workspace| workspace.name)
                 .unwrap_or_else(|| "no project".to_string());
 
+            let renaming = self
+                .rename_thread
+                .as_deref()
+                .zip(thread.key())
+                .is_some_and(|(left, right)| left == right);
+
+            if renaming {
+                list = list.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Input::new(&self.rename_title)),
+                        )
+                        .child(
+                            Button::new(("chat-save", index))
+                                .small()
+                                .label("Save")
+                                .on_click(cx.listener(|this, _, _, cx| this.save_rename(cx))),
+                        )
+                        .child(
+                            Button::new(("chat-cancel", index))
+                                .ghost()
+                                .small()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.rename_thread = None;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+
+                continue;
+            }
+
+            let rename_key = thread.key().map(str::to_string).unwrap_or_default();
+            let rename_title = thread.title.clone();
+
             list = list.child(
                 h_flex()
                     .gap_3()
@@ -5063,6 +5155,20 @@ impl DesktopShell {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.section = Section::Home;
                                 this.open_stored_thread(value.clone(), cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("chat-rename", index))
+                            .ghost()
+                            .small()
+                            .label("Rename")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_renaming(
+                                    rename_key.clone(),
+                                    rename_title.clone(),
+                                    window,
+                                    cx,
+                                );
                             })),
                     )
                     .child(
