@@ -152,7 +152,7 @@ fn classify_item(event: &serde_json::Value) -> (&'static str, String) {
 }
 
 /// Quote a value for `sh -c`, where single quotes take everything literally.
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
