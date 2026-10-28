@@ -80,6 +80,19 @@ pub fn upsert(conversations: &mut Vec<StoredThread>, thread: StoredThread) {
     conversations.truncate(KEPT);
 }
 
+/// Rename a stored conversation. Returns whether the conversation was there.
+pub fn rename(conversations: &mut [StoredThread], key: &str, title: &str) -> bool {
+    let Some(thread) = conversations
+        .iter_mut()
+        .find(|stored| stored.key() == Some(key))
+    else {
+        return false;
+    };
+
+    thread.title = title.to_string();
+    true
+}
+
 fn path() -> Option<PathBuf> {
     let base = std::env::var("XDG_DATA_HOME")
         .ok()
@@ -155,6 +168,15 @@ mod tests {
 
         assert_eq!(threads.len(), KEPT);
         assert_eq!(threads[0].title, format!("Charla {}", KEPT + 4));
+    }
+
+    #[test]
+    fn renames_a_stored_conversation() {
+        let mut threads = vec![thread("Uno", "a", 1), thread("Dos", "b", 1)];
+
+        assert!(rename(&mut threads, "a-0", "Fibonacci en Rust"));
+        assert_eq!(threads[0].title, "Fibonacci en Rust");
+        assert!(!rename(&mut threads, "missing", "Nada"));
     }
 
     #[test]
