@@ -7,6 +7,7 @@ mod markdown;
 mod runner;
 mod safety;
 mod settings;
+mod threads;
 mod typography;
 
 use gpui::{
@@ -238,6 +239,7 @@ enum HomeMenu {
     Workspace,
     Agent,
     Account,
+    History,
     Checkout,
     Branch,
     Attach,
@@ -257,6 +259,8 @@ struct HomeThread {
     agent_session: Option<String>,
     title: String,
     turns: Vec<HomeTurn>,
+    /// Where the conversation started; its runs are listed under this workspace.
+    workspace_id: String,
 }
 
 /// What picking a row in the agent menu changes.
@@ -524,6 +528,41 @@ fn load_workspaces_list(client: &KloucyClient) -> LoadState<Vec<Workspace>> {
 
 /// The workspace chat-only runs belong to: reused when it exists, created on the
 /// first message that has no project to run in.
+/// Rebuild a conversation from the sessions it stored.
+fn load_thread(client: &KloucyClient, stored: &threads::StoredThread) -> Option<HomeThread> {
+    let input = serde_json::json!({ "workspaceId": stored.workspace_id });
+    let sessions = client
+        .query::<Vec<AgentSession>>("sessions.list", Some(input))
+        .ok()?;
+
+    let mut turns = Vec::new();
+
+    for id in &stored.session_ids {
+        let Some(session) = sessions.iter().find(|session| &session.id == id) else {
+            continue;
+        };
+
+        let logs = client
+            .stream_session(id, 0)
+            .map(|stream| stream.logs)
+            .unwrap_or_default();
+
+        turns.push(HomeTurn {
+            logs,
+            prompt: session.prompt.clone().unwrap_or_default(),
+            session_id: id.clone(),
+            status: session.status.clone(),
+        });
+    }
+
+    (!turns.is_empty()).then(|| HomeThread {
+        agent_session: stored.agent_session.clone(),
+        title: stored.title.clone(),
+        turns,
+        workspace_id: stored.workspace_id.clone(),
+    })
+}
+
 fn ensure_chat_workspace(client: &KloucyClient, path: &str) -> Result<String, ApiError> {
     let find = |workspaces: Vec<Workspace>| {
         workspaces
@@ -874,6 +913,7 @@ struct DesktopShell {
     palette_open: bool,
     palette_query: Entity<InputState>,
     agent_search: Entity<InputState>,
+    threads: Vec<threads::StoredThread>,
     _agent_search_subscription: Subscription,
     session: SessionStatus,
     workspaces: LoadState<Vec<Workspace>>,
@@ -1048,6 +1088,10 @@ impl DesktopShell {
                         this.select_workspace(id, cx);
                     }
                 }
+
+                if let Some(stored) = this.threads.first().cloned() {
+                    this.open_stored_thread(stored, cx);
+                }
             })
             .ok();
         })
@@ -1078,6 +1122,7 @@ impl DesktopShell {
             palette_open: false,
             palette_query,
             agent_search,
+            threads: threads::load(),
             _agent_search_subscription: agent_search_subscription,
             completing_intake: false,
             create_error: None,
@@ -1901,7 +1946,7 @@ impl DesktopShell {
                     let session_id = session.id.clone();
                     let runner_client = client.clone();
                     let runner_registry = registry.clone();
-                    let runner_workspace = workspace_id;
+                    let runner_workspace = workspace_id.clone();
                     let runner_session = session_id.clone();
 
                     std::thread::spawn(move || {
@@ -1938,9 +1983,11 @@ impl DesktopShell {
                                     agent_session: None,
                                     title,
                                     turns: vec![turn],
+                                    workspace_id: workspace_id.clone(),
                                 });
                             }
                         }
+                        this.remember_thread();
                         this.watch_home_thread(session_id, cx);
                         cx.notify();
                     })
@@ -2025,6 +2072,7 @@ impl DesktopShell {
 
                                 if finished {
                                     this.home_scroll.scroll_to_bottom();
+                                    this.remember_thread();
                                 }
 
                                 cx.notify();
@@ -2243,6 +2291,69 @@ impl DesktopShell {
 
                 this.model_catalogs.insert(provider, catalog);
                 this.pick_default_model();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Keep this conversation in the history, so it can be reopened after a
+    /// restart or from the list.
+    fn remember_thread(&mut self) {
+        let Some(thread) = &self.home_thread else {
+            return;
+        };
+
+        let stored = threads::StoredThread {
+            agent_session: thread.agent_session.clone(),
+            session_ids: thread
+                .turns
+                .iter()
+                .map(|turn| turn.session_id.clone())
+                .collect(),
+            title: thread.title.clone(),
+            updated_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or_default(),
+            workspace_id: thread.workspace_id.clone(),
+        };
+
+        threads::upsert(&mut self.threads, stored);
+        threads::save(&self.threads);
+    }
+
+    /// Reopen a conversation from the history, rebuilding its turns from the API.
+    fn open_stored_thread(&mut self, stored: threads::StoredThread, cx: &mut Context<Self>) {
+        self.home_menu = None;
+        let client = self.client.clone();
+
+        cx.spawn(async move |this, cx| {
+            let thread = cx
+                .background_executor()
+                .spawn({
+                    let client = client.clone();
+                    let stored = stored.clone();
+
+                    async move { load_thread(&client, &stored) }
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                match thread {
+                    Some(thread) => {
+                        this.home_thread = Some(thread);
+                        this.composer_status = None;
+                        this.home_scroll.scroll_to_bottom();
+                    }
+                    None => {
+                        this.composer_status = Some(ComposerStatus::Failed(
+                            "That conversation could not be reopened.".to_string(),
+                        ));
+                    }
+                }
+
                 cx.notify();
             })
             .ok();
@@ -4930,6 +5041,21 @@ impl DesktopShell {
                     .items_center()
                     .gap_1()
                     .flex_shrink_0()
+                    .when(!self.threads.is_empty(), |element| {
+                        element.child(
+                            self.home_popover(
+                                "thread-history",
+                                Button::new("thread-history")
+                                    .ghost()
+                                    .small()
+                                    .label("History")
+                                    .into_any_element(),
+                                HomeMenu::History,
+                                Corner::BottomRight,
+                                cx,
+                            ),
+                        )
+                    })
                     .child(if working {
                         Button::new("thread-stop")
                             .ghost()
@@ -5504,6 +5630,53 @@ impl DesktopShell {
                         fast,
                         cx,
                     )
+                })
+            }
+            HomeMenu::History => {
+                let stored = self.threads.clone();
+
+                Rc::new(move |cx| {
+                    if stored.is_empty() {
+                        return menu_note("No conversations yet.", cx);
+                    }
+
+                    let mut list = menu_list(px(300.0));
+
+                    for (index, thread) in stored.iter().enumerate() {
+                        let value = thread.clone();
+                        let runs = thread.session_ids.len();
+                        let entity = entity.clone();
+
+                        list = list.child(menu_row(
+                            ("home-history-item", index),
+                            cx,
+                            false,
+                            vec![
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(thread.title.clone())
+                                    .into_any_element(),
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(if runs == 1 {
+                                        "1 turn".to_string()
+                                    } else {
+                                        format!("{runs} turns")
+                                    })
+                                    .into_any_element(),
+                            ],
+                            Some(Box::new(move |_window, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.open_stored_thread(value.clone(), cx);
+                                });
+                            })),
+                        ));
+                    }
+
+                    list.into_any_element()
                 })
             }
             HomeMenu::Account => {
