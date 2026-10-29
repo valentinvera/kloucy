@@ -430,6 +430,14 @@ fn slot_label(index: usize) -> String {
     }
 }
 
+/// A run read back from the API is not live on this machine, whatever it says.
+fn restored_status(status: &str) -> &str {
+    match status {
+        "running" => "stopped",
+        other => other,
+    }
+}
+
 /// The ink a run's status is drawn in.
 fn status_ink(status: &str, cx: &App) -> Hsla {
     match status {
@@ -662,7 +670,7 @@ fn load_thread(client: &KloucyClient, stored: &threads::StoredThread) -> Option<
             logs,
             prompt: session.prompt.clone().unwrap_or_default(),
             session_id: id.clone(),
-            status: session.status.clone(),
+            status: restored_status(&session.status).to_string(),
         });
     }
 
@@ -1054,6 +1062,7 @@ struct DesktopShell {
     threads: Vec<threads::StoredThread>,
     favorites: Vec<String>,
     open_reasoning: HashSet<String>,
+    watching: Option<String>,
     rename_thread: Option<String>,
     rename_title: Entity<InputState>,
     _agent_search_subscription: Subscription,
@@ -1276,6 +1285,7 @@ impl DesktopShell {
             threads: threads::load(),
             favorites: settings::load_favorites(),
             open_reasoning: HashSet::new(),
+            watching: None,
             rename_thread: None,
             rename_title: rename_title.clone(),
             _agent_search_subscription: agent_search_subscription,
@@ -2182,6 +2192,7 @@ impl DesktopShell {
                             }
                         }
                         this.remember_thread();
+                        this.watching = Some(session_id.clone());
                         this.watch_home_thread(session_id, cx);
                         cx.notify();
                     })
@@ -2267,6 +2278,7 @@ impl DesktopShell {
                                 if finished {
                                     this.home_scroll.scroll_to_bottom();
                                     this.remember_thread();
+                                    this.watching = None;
                                 }
 
                                 cx.notify();
@@ -2313,14 +2325,9 @@ impl DesktopShell {
 
     /// The run still going in the thread, if there is one.
     fn running_session(&self) -> Option<String> {
-        self.home_thread.as_ref().and_then(|thread| {
-            thread
-                .turns
-                .iter()
-                .rev()
-                .find(|turn| matches!(turn.status.as_str(), "running" | "ready" | "needs_setup"))
-                .map(|turn| turn.session_id.clone())
-        })
+        // A turn restored from the API may still say "running" although nothing
+        // on this machine is running it; only what this app started counts.
+        self.watching.clone()
     }
 
     /// Stop the agent behind the current thread.
@@ -7247,6 +7254,13 @@ mod home_tests {
             ])),
             Some("2 waiting · 1 running".to_string())
         );
+    }
+
+    #[test]
+    fn a_restored_run_is_not_live() {
+        assert_eq!(restored_status("running"), "stopped");
+        assert_eq!(restored_status("ready"), "ready");
+        assert_eq!(restored_status("done"), "done");
     }
 
     #[test]
