@@ -1694,6 +1694,19 @@ impl DesktopShell {
             .or_else(|| agent.executable_path.clone())
     }
 
+    /// The prompt a session was opened for, which is what its agent has to run.
+    fn session_prompt(&self, session_id: &str) -> Option<String> {
+        let LoadState::Loaded(sessions) = &self.sessions else {
+            return None;
+        };
+
+        sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(|session| session.prompt.clone())
+            .filter(|prompt| !prompt.trim().is_empty())
+    }
+
     fn session_agent_id(&self, session_id: &str) -> Option<String> {
         let from_session = match &self.sessions {
             LoadState::Loaded(sessions) => sessions
@@ -1723,7 +1736,18 @@ impl DesktopShell {
                     .selected_workspace_data()
                     .map(|workspace| workspace.local_path.clone());
 
-                (command, cwd)
+                // The session carries the prompt it was opened for: running the
+                // agent without it would start a CLI with nothing to do.
+                let invocation = command.map(|command| {
+                    let prompt = self.session_prompt(id);
+
+                    match prompt {
+                        Some(prompt) => runner::invocation(&command, &prompt),
+                        None => command,
+                    }
+                });
+
+                (invocation, cwd)
             }
             _ => (None, None),
         };
