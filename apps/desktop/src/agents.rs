@@ -308,10 +308,10 @@ pub fn parse_codex_models(json: &str) -> ModelCatalog {
             .into_iter()
             .flatten()
         {
-            if let Some(effort) = level["effort"].as_str() {
-                if !catalog.efforts.iter().any(|known| known == effort) {
-                    catalog.efforts.push(effort.to_string());
-                }
+            if let Some(effort) = level["effort"].as_str()
+                && !catalog.efforts.iter().any(|known| known == effort)
+            {
+                catalog.efforts.push(effort.to_string());
             }
         }
 
