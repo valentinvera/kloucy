@@ -322,6 +322,7 @@ impl KloucyClient {
     }
 
     /// Record the intake context for a workspace.
+    #[allow(clippy::too_many_arguments)]
     pub fn complete_workspace_intake(
         &self,
         workspace_id: &str,
@@ -562,6 +563,7 @@ impl KloucyClient {
     }
 
     /// Save a weekly review for a workspace.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_weekly_review(
         &self,
         workspace_id: &str,

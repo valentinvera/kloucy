@@ -457,8 +457,7 @@ fn failure_note(logs: &[SessionLog]) -> Option<String> {
         .iter()
         .filter(|log| log.stream == "stderr")
         .map(|log| log.message.trim())
-        .filter(|message| !message.is_empty())
-        .next_back()?;
+        .rfind(|message| !message.is_empty())?;
 
     let mut note = line.chars().take(240).collect::<String>();
 
@@ -499,11 +498,14 @@ fn effort_label(level: &str) -> String {
     }
 }
 
+/// A click on a menu control.
+type MenuClick = Box<dyn Fn(&mut Window, &mut App)>;
+
+/// A click on a picker control, which also carries the event.
+type PickerClick = Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App)>;
+
 /// A control's click, applied to the shell that owns the menu it lives in.
-fn menu_action(
-    entity: &WeakEntity<DesktopShell>,
-    action: AgentMenuAction,
-) -> Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App)> {
+fn menu_action(entity: &WeakEntity<DesktopShell>, action: AgentMenuAction) -> PickerClick {
     let entity = entity.clone();
 
     Box::new(move |_, _window, cx| {
@@ -517,7 +519,7 @@ fn menu_row(
     cx: &App,
     selected: bool,
     children: Vec<AnyElement>,
-    on_click: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+    on_click: Option<MenuClick>,
 ) -> AnyElement {
     let mut row = h_flex()
         .id(id)
@@ -1232,10 +1234,10 @@ impl DesktopShell {
                     _ => None,
                 };
 
-                if this.selected_workspace.is_none() {
-                    if let Some(id) = first {
-                        this.select_workspace(id, cx);
-                    }
+                if this.selected_workspace.is_none()
+                    && let Some(id) = first
+                {
+                    this.select_workspace(id, cx);
                 }
 
                 if let Some(stored) = this.threads.first().cloned() {
@@ -1769,14 +1771,14 @@ impl DesktopShell {
                 .and_then(|workspace| workspace.safe_commands.clone())
                 .unwrap_or_default();
 
-            if let Some(command) = command.as_deref() {
-                if !safety::command_allowed(&mode, command, &safe_commands) {
-                    self.blocked_command = Some(command.to_string());
-                    self.session_error = None;
-                    self.session_notice = None;
-                    cx.notify();
-                    return;
-                }
+            if let Some(command) = command.as_deref()
+                && !safety::command_allowed(&mode, command, &safe_commands)
+            {
+                self.blocked_command = Some(command.to_string());
+                self.session_error = None;
+                self.session_notice = None;
+                cx.notify();
+                return;
             }
         }
 
@@ -1994,13 +1996,13 @@ impl DesktopShell {
             None => RunPlan::Chat,
         };
 
-        if let RunPlan::Chat = &plan {
-            if let Some(workspace) = self.chosen_workspace() {
-                self.composer_status = Some(ComposerStatus::Notice(format!(
-                    "{} is not on this machine, so this runs in Kloucy's chat space.",
-                    workspace.name
-                )));
-            }
+        if let RunPlan::Chat = &plan
+            && let Some(workspace) = self.chosen_workspace()
+        {
+            self.composer_status = Some(ComposerStatus::Notice(format!(
+                "{} is not on this machine, so this runs in Kloucy's chat space.",
+                workspace.name
+            )));
         }
 
         let Some(choice) = self.composer_choice() else {
@@ -2341,14 +2343,13 @@ impl DesktopShell {
                 .await;
 
             this.update(cx, |this, cx| {
-                if let Some(thread) = &mut this.home_thread {
-                    if let Some(turn) = thread
+                if let Some(thread) = &mut this.home_thread
+                    && let Some(turn) = thread
                         .turns
                         .iter_mut()
                         .find(|turn| turn.session_id == session_id)
-                    {
-                        turn.status = "stopped".to_string();
-                    }
+                {
+                    turn.status = "stopped".to_string();
                 }
                 cx.notify();
             })
@@ -2557,14 +2558,13 @@ impl DesktopShell {
     /// The picker always runs a named model, so an unknown one falls back to the
     /// agent's newest.
     fn restore_agent_choice(&mut self) {
-        if let Some(provider) = settings::load_text("agentProvider") {
-            if self
+        if let Some(provider) = settings::load_text("agentProvider")
+            && self
                 .agent_choices()
                 .iter()
                 .any(|choice| choice.provider == provider)
-            {
-                self.home_provider = Some(provider);
-            }
+        {
+            self.home_provider = Some(provider);
         }
 
         let Some(catalog) = self
@@ -3027,13 +3027,12 @@ impl DesktopShell {
                                     this.session_logs = LoadState::Loaded(stream.logs);
                                 }
 
-                                if let LoadState::Loaded(sessions) = &mut this.sessions {
-                                    if let Some(session) = sessions
+                                if let LoadState::Loaded(sessions) = &mut this.sessions
+                                    && let Some(session) = sessions
                                         .iter_mut()
                                         .find(|session| session.id == stream.session.id)
-                                    {
-                                        session.status = stream.session.status;
-                                    }
+                                {
+                                    session.status = stream.session.status;
                                 }
 
                                 cx.notify();
@@ -5757,18 +5756,18 @@ impl DesktopShell {
                 ),
             );
 
-            if turn.status == "failed" {
-                if let Some(note) = failure_note(&turn.logs) {
-                    messages = messages.child(
-                        h_flex().w_full().justify_start().px(px(12.0)).child(
-                            div()
-                                .max_w(px(620.0))
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(note),
-                        ),
-                    );
-                }
+            if turn.status == "failed"
+                && let Some(note) = failure_note(&turn.logs)
+            {
+                messages = messages.child(
+                    h_flex().w_full().justify_start().px(px(12.0)).child(
+                        div()
+                            .max_w(px(620.0))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(note),
+                    ),
+                );
             }
         }
 
@@ -7313,7 +7312,7 @@ mod home_tests {
         let label = slot_label(0);
 
         assert!(label.ends_with('1'), "{label}");
-        assert_eq!(slot_label(8).contains('9'), true);
+        assert!(slot_label(8).contains('9'));
     }
 
     #[test]
