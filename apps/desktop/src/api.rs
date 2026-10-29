@@ -68,6 +68,7 @@ pub struct Review {
     pub artifact_id: Option<String>,
     pub id: String,
     pub reason: Option<String>,
+    pub session_id: String,
 }
 
 /// A decision as returned by the `decisions.list` tRPC procedure.
