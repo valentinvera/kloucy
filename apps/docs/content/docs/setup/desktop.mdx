@@ -27,7 +27,7 @@ KLOUCY_API_URL=http://localhost:4040 ./target/release/kloucy-desktop
 
 ## Agents
 
-There is no registry to fill in. Kloucy looks for agent CLIs on your `PATH` (`claude`, `codex`, `opencode`, and others) and offers them in the composer. The first message that runs one stores the agent record, so Agents, sessions and reviews fill themselves as you work. A CLI needs a one-shot command to answer (`codex exec`, `claude -p`, `opencode run`); Kloucy picks that form by default.
+There is no registry to fill in. Kloucy looks for agent CLIs on your `PATH` (`claude`, `codex`, `opencode`, and others) and offers them in the composer, with the models each one reports. The first message that runs one stores the agent record, so sessions and reviews fill themselves as you work. A CLI needs a one-shot command to answer (`codex exec`, `claude -p`, `opencode run`); Kloucy picks that form by default.
 
 ## Sign in
 
@@ -35,11 +35,14 @@ Use the same account as the web app. Create it once through the API or the web s
 
 ## What you get
 
-- **Home** is the composer: write what you want done (it wraps and grows; enter sends, shift+enter starts a new line), pick the agent that should run it, and it starts. The answer appears as a reply in the thread, its fenced code is syntax-coloured, the composer stays at the bottom for the next message, and the run is kept as a session. The checkout chip chooses the project to work in, or **No project**, which runs in Kloucy's own git space under `~/.local/share/kloucy/chats` so a message never needs a repository. Conversations are kept: Home reopens the last one when the app starts, and **History** lists the recent ones. The row shows that checkout's git branch, and the chips switch workspace and account.
-- **Chats** lists the conversations this machine remembers, with how many turns each has and where it ran; **Open** brings one back, **Rename** names it, and **Forget** drops it from the list without touching its sessions.
+- **Home** is the composer: write what you want done (it wraps and grows; enter sends, shift+enter starts a new line), pick the agent that should run it, and it starts. The answer appears as a reply in the thread, its fenced code is syntax-coloured, and the composer stays at the bottom for the next message. Each message is a turn, and every turn after the first resumes the agent's own session, so the conversation keeps its context.
+- **The picker** (the pill at the composer's bottom right) opens a card with a square per installed agent, a model search, the agent's models with a star for the ones you keep, the reasoning levels that model accepts, and fast mode where the CLI has one. The first nine rows answer to `ctrl-1` … `ctrl-9` (`cmd` on macOS). Your choice is remembered for the next start.
+- **A reply carries its context**: a collapsed **Thought process** when the agent reasoned, **Copy** and **Retry** under an answer, a **Changes detected · review** link when the run changed files, and the reason the run failed when it did.
+- **The checkout chip** chooses the project to work in, or **No project**, which runs in Kloucy's own git space under `~/.local/share/kloucy/chats` so a message never needs a repository. The row also shows that checkout's git branch, and the chips switch workspace and account.
+- **Chats** lists the conversations this machine remembers, with how many turns each has and where it ran; **Open** brings one back, **Rename** names it, and **Forget** drops it from the list without touching its sessions. Home reopens the last one when the app starts.
 - **Workspaces** create a workspace and record its intake: project type, package manager, runtime, safe commands, ignored paths, safety mode and whether mobile may supervise it. **Detect project** reads the workspace directory names and fills the profile in, suggesting safe commands and ignored paths for that ecosystem.
-- **Inbox** captures tasks; **Sessions** run them and stream logs. Starting a session is an explicit action, and a guarded workspace refuses a command that is not in its safe commands.
-- **Reviews** approve changes, reject them with a reason, and record follow-up conditions.
+- **Inbox** captures tasks; **Sessions** run them, stream logs, and offer **Open in Home** so any run can be read as a conversation. Starting a session is an explicit action, and a guarded workspace refuses a command that is not in its safe commands.
+- **Reviews** list the files a run changed (one path per line), approve or reject them with a reason, record follow-up conditions, and open the run behind them.
 - **Readiness** and **Weekly review** summarize progress over time. The weekly review is derived from stored activity: what shipped, what is blocked, what was rejected, risky patterns and next actions.
 - **Pairing** shows a QR code for the mobile app.
 - **Settings** correct workspace data, set the default agent, and archive a workspace.
@@ -48,10 +51,8 @@ Use the same account as the web app. Create it once through the API or the web s
 
 Press `cmd-k`, or `ctrl-k` away from macOS, to open the palette from anywhere in the app. Type to filter, then pick a command:
 
-- jump to any section
+- jump to any section, chats included
 - start a new workspace
-- register an agent
-- detect the agents installed on your `PATH`
 - create a new pairing code
 
 Press the shortcut again, press escape, or click outside the palette to close it.
