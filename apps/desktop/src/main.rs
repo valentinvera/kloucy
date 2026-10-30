@@ -430,6 +430,36 @@ fn slot_label(index: usize) -> String {
     }
 }
 
+/// The paths in `git status --porcelain` output, one per changed file.
+fn changed_paths(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_end();
+
+            if line.len() <= 3 {
+                return None;
+            }
+
+            // "XY path", and "XY old -> new" for a rename: the new name is what
+            // the reader is looking for.
+            let path = line.get(3..).unwrap_or_default();
+            let path = path.rsplit(" -> ").next().unwrap_or(path).trim();
+
+            (!path.is_empty()).then(|| path.to_string())
+        })
+        .collect()
+}
+
+/// The ink a review's state is drawn in.
+fn review_ink(action: &str, cx: &App) -> Hsla {
+    match action {
+        "approved" => cx.theme().success_foreground,
+        "rejected" => cx.theme().danger_foreground,
+        _ => cx.theme().warning_foreground,
+    }
+}
+
 /// The review a run left waiting for a decision, if it left one.
 fn pending_review<'a>(reviews: &'a LoadState<Vec<Review>>, session_id: &str) -> Option<&'a Review> {
     let LoadState::Loaded(reviews) = reviews else {
@@ -4768,7 +4798,7 @@ impl DesktopShell {
                 )
                 .into_any_element(),
             LoadState::Loaded(reviews) => {
-                let mut list = v_flex().gap_3();
+                let mut list = v_flex().gap_4();
 
                 for (index, review) in reviews.iter().enumerate() {
                     let approve_id = review.id.clone();
@@ -4776,8 +4806,19 @@ impl DesktopShell {
                     let follow_up_id = review.id.clone();
                     let follow_up_reason = review.reason.clone();
                     let reject_reason = review.reason.clone();
+                    let open_session = review.session_id.clone();
+                    let open_title = review
+                        .artifact_id
+                        .clone()
+                        .unwrap_or_else(|| "Changed files".to_string());
 
-                    list = list.child(
+                    let changed = review
+                        .reason
+                        .as_deref()
+                        .map(changed_paths)
+                        .unwrap_or_default();
+
+                    let mut row = v_flex().gap_1().child(
                         h_flex()
                             .gap_2()
                             .items_center()
@@ -4792,56 +4833,117 @@ impl DesktopShell {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
+                                    .text_color(review_ink(&review.action, cx))
                                     .child(review.action.clone()),
                             )
+                            .when(!changed.is_empty(), |element| {
+                                element.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("{} files", changed.len())),
+                                )
+                            }),
+                    );
+
+                    // The runner stores `git status --porcelain` here: one path per
+                    // line reads far better than the blob it arrives as.
+                    for path in changed.iter().take(8) {
+                        row = row.child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .truncate()
+                                .font_family(self.mono_font.clone())
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(path.clone()),
+                        );
+                    }
+
+                    if changed.len() > 8 {
+                        row = row.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("and {} more", changed.len() - 8)),
+                        );
+                    }
+
+                    if changed.is_empty()
+                        && let Some(reason) = &review.reason
+                    {
+                        row = row.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(reason.clone()),
+                        );
+                    }
+
+                    row = row.child(
+                        h_flex()
+                            .gap_1()
                             .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(review.reason.clone().unwrap_or_default()),
+                                Button::new(("review-open", index))
+                                    .ghost()
+                                    .small()
+                                    .label("Open run")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let stored = threads::StoredThread {
+                                            agent_session: None,
+                                            session_ids: vec![open_session.clone()],
+                                            title: open_title.clone(),
+                                            updated_at: 0,
+                                            workspace_id: this
+                                                .selected_workspace
+                                                .clone()
+                                                .unwrap_or_default(),
+                                        };
+
+                                        this.section = Section::Home;
+                                        this.open_stored_thread(stored, cx);
+                                    })),
                             )
                             .child(
-                                h_flex()
-                                    .gap_1()
-                                    .child(
-                                        Button::new(("review-approve", index))
-                                            .small()
-                                            .label("Approve")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.approve_review(approve_id.clone(), cx);
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new(("review-reject", index))
-                                            .small()
-                                            .label("Reject")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_review_reason(
-                                                    reject_id.clone(),
-                                                    ReviewReason::Reject,
-                                                    reject_reason.clone(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new(("review-follow-up", index))
-                                            .small()
-                                            .label("Follow up")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_review_reason(
-                                                    follow_up_id.clone(),
-                                                    ReviewReason::FollowUp,
-                                                    follow_up_reason.clone(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                    ),
+                                Button::new(("review-approve", index))
+                                    .small()
+                                    .label("Approve")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.approve_review(approve_id.clone(), cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new(("review-reject", index))
+                                    .small()
+                                    .label("Reject")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_review_reason(
+                                            reject_id.clone(),
+                                            ReviewReason::Reject,
+                                            reject_reason.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                Button::new(("review-follow-up", index))
+                                    .small()
+                                    .label("Follow up")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_review_reason(
+                                            follow_up_id.clone(),
+                                            ReviewReason::FollowUp,
+                                            follow_up_reason.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
                             ),
                     );
+
+                    list = list.child(row);
                 }
 
                 list.into_any_element()
@@ -7290,6 +7392,18 @@ mod home_tests {
             reason: None,
             session_id: session_id.to_string(),
         }
+    }
+
+    #[test]
+    fn reads_the_paths_out_of_a_status_report() {
+        let output = " M src/main.rs\n?? notes.txt\nR  old.rs -> new.rs\n";
+
+        assert_eq!(
+            changed_paths(output),
+            vec!["src/main.rs", "notes.txt", "new.rs"]
+        );
+        assert!(changed_paths("").is_empty());
+        assert!(changed_paths("  \n").is_empty());
     }
 
     #[test]
