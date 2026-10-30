@@ -430,6 +430,17 @@ fn slot_label(index: usize) -> String {
     }
 }
 
+/// The review a run left waiting for a decision, if it left one.
+fn pending_review<'a>(reviews: &'a LoadState<Vec<Review>>, session_id: &str) -> Option<&'a Review> {
+    let LoadState::Loaded(reviews) = reviews else {
+        return None;
+    };
+
+    reviews
+        .iter()
+        .find(|review| review.session_id == session_id && review.action == "pending")
+}
+
 /// A run read back from the API is not live on this machine, whatever it says.
 fn restored_status(status: &str) -> &str {
     match status {
@@ -5763,6 +5774,21 @@ impl DesktopShell {
                 ),
             );
 
+            if pending_review(&self.reviews, &turn.session_id).is_some() {
+                messages = messages.child(
+                    h_flex().w_full().justify_start().px(px(12.0)).child(
+                        Button::new(("turn-review", index))
+                            .ghost()
+                            .small()
+                            .label("Changes detected · review")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.section = Section::Reviews;
+                                cx.notify();
+                            })),
+                    ),
+                );
+            }
+
             if turn.status == "failed"
                 && let Some(note) = failure_note(&turn.logs)
             {
@@ -7254,6 +7280,25 @@ mod home_tests {
             ])),
             Some("2 waiting · 1 running".to_string())
         );
+    }
+
+    fn review(session_id: &str, action: &str) -> Review {
+        Review {
+            action: action.to_string(),
+            artifact_id: None,
+            id: "review-1".to_string(),
+            reason: None,
+            session_id: session_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn spots_a_review_waiting_for_a_decision() {
+        let loaded = LoadState::Loaded(vec![review("s1", "approved"), review("s2", "pending")]);
+
+        assert!(pending_review(&loaded, "s2").is_some());
+        assert!(pending_review(&loaded, "s1").is_none());
+        assert!(pending_review(&LoadState::Loading, "s2").is_none());
     }
 
     #[test]
