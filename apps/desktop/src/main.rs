@@ -1775,7 +1775,12 @@ impl DesktopShell {
         })
     }
 
-    fn session_action(&mut self, action: SessionAction, cx: &mut Context<Self>) {
+    fn session_action(
+        &mut self,
+        action: SessionAction,
+        open_in_home: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(workspace_id) = self.selected_workspace.clone() else {
             return;
         };
@@ -1837,6 +1842,26 @@ impl DesktopShell {
         self.blocked_command = None;
         self.session_notice = None;
 
+        if open_in_home && let SessionAction::Start(id) = &action {
+            let prompt = self.session_prompt(id).unwrap_or_default();
+
+            self.home_thread = Some(HomeThread {
+                agent_session: None,
+                title: composer_title(&prompt),
+                turns: vec![HomeTurn {
+                    logs: Vec::new(),
+                    prompt,
+                    session_id: id.clone(),
+                    status: "running".to_string(),
+                }],
+                workspace_id: workspace_id.clone(),
+            });
+
+            self.watching = Some(id.clone());
+            self.section = Section::Home;
+            self.watch_home_thread(id.clone(), cx);
+        }
+
         let client = self.client.clone();
         let registry = self.registry.clone();
         cx.spawn(async move |this, cx| {
@@ -1893,20 +1918,29 @@ impl DesktopShell {
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let (sessions, tasks) = cx
+            let (session, sessions, tasks) = cx
                 .background_executor()
                 .spawn(async move {
-                    let _ = client.start_session_from_task(&task_id);
+                    let session = client.start_session_from_task(&task_id);
                     let sessions = load_sessions(&client, &workspace_id);
                     let tasks = load_tasks(&client, &workspace_id);
-                    (sessions, tasks)
+                    (session, sessions, tasks)
                 })
                 .await;
 
             this.update(cx, |this, cx| {
-                this.section = Section::Sessions;
                 this.sessions = sessions;
                 this.tasks = tasks;
+
+                match session {
+                    // Capturing a task and starting it should end where the work
+                    // is: the run, as a conversation.
+                    Ok(session) => this.session_action(SessionAction::Start(session.id), true, cx),
+                    Err(error) => {
+                        this.session_error = Some(error_message(&error));
+                    }
+                }
+
                 cx.notify();
             })
             .ok();
@@ -4595,6 +4629,7 @@ impl DesktopShell {
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.session_action(
                                                     SessionAction::Start(start_id.clone()),
+                                                    false,
                                                     cx,
                                                 );
                                             })),
@@ -4606,6 +4641,7 @@ impl DesktopShell {
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.session_action(
                                                     SessionAction::Stop(stop_id.clone()),
+                                                    false,
                                                     cx,
                                                 );
                                             })),
@@ -4617,6 +4653,7 @@ impl DesktopShell {
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.session_action(
                                                     SessionAction::Retry(retry_id.clone()),
+                                                    false,
                                                     cx,
                                                 );
                                             })),

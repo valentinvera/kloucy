@@ -624,12 +624,11 @@ impl KloucyClient {
     }
 
     /// Start a session from a task.
-    pub fn start_session_from_task(&self, task_id: &str) -> Result<(), ApiError> {
-        self.mutation::<Value>(
+    pub fn start_session_from_task(&self, task_id: &str) -> Result<AgentSession, ApiError> {
+        self.mutation::<AgentSession>(
             "agentTasks.startSession",
             serde_json::json!({ "id": task_id }),
         )
-        .map(|_| ())
     }
 
     /// Start a session.
