@@ -282,6 +282,7 @@ enum HomeMenu {
     Checkout,
     Branch,
     Attach,
+    Open,
 }
 
 /// One exchange in a conversation: what was asked and what the agent answered.
@@ -468,6 +469,32 @@ fn browser_url(value: &str) -> String {
     } else {
         format!("http://{value}")
     }
+}
+
+/// The editors Kloucy can open a checkout in, in preference order. The file
+/// manager is always last, so a machine without a known editor still works.
+const EDITORS: [(&str, &str); 5] = [
+    ("Zed", "zed"),
+    ("Cursor", "cursor"),
+    ("Visual Studio Code", "code"),
+    ("VSCodium", "codium"),
+    ("File manager", "xdg-open"),
+];
+
+/// Whether `command` is on PATH.
+fn command_exists(command: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(command)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// The editors installed on this machine, ending with the file manager.
+fn available_editors() -> Vec<(&'static str, &'static str)> {
+    EDITORS
+        .into_iter()
+        .filter(|(label, command)| *label == "File manager" || command_exists(command))
+        .collect()
 }
 
 /// Open a URL in the platform's browser.
@@ -2590,6 +2617,31 @@ impl DesktopShell {
             .ok();
         })
         .detach();
+    }
+
+    /// Open the thread's checkout in `command`, an editor name or `xdg-open`.
+    fn open_checkout(&mut self, command: &str, cx: &mut Context<Self>) {
+        let Some(root) = self.active_checkout() else {
+            self.composer_status = Some(ComposerStatus::Failed(
+                "Select a project first.".to_string(),
+            ));
+            cx.notify();
+            return;
+        };
+
+        match std::process::Command::new(command).arg(&root).spawn() {
+            Ok(_) => {
+                self.composer_status = Some(ComposerStatus::Notice(format!("Opened {root}.")));
+            }
+            Err(_) => {
+                self.composer_status = Some(ComposerStatus::Failed(
+                    "Kloucy could not open that editor.".to_string(),
+                ));
+            }
+        }
+
+        self.home_menu = None;
+        cx.notify();
     }
 
     fn view_pull_request(&self) {
@@ -7994,6 +8046,21 @@ impl DesktopShell {
                             cx,
                         ),
                     )
+                    .when(self.thread_checkout().is_some(), |element| {
+                        element.child(
+                            self.home_popover(
+                                "thread-open",
+                                Button::new("thread-open")
+                                    .ghost()
+                                    .small()
+                                    .label("Open")
+                                    .into_any_element(),
+                                HomeMenu::Open,
+                                Corner::BottomRight,
+                                cx,
+                            ),
+                        )
+                    })
                     .when(!self.threads.is_empty(), |element| {
                         element.child(
                             self.home_popover(
@@ -8771,6 +8838,35 @@ impl DesktopShell {
 
                                     this.home_menu = None;
                                     cx.notify();
+                                });
+                            })),
+                        ));
+                    }
+
+                    list.into_any_element()
+                })
+            }
+            HomeMenu::Open => {
+                let editors = available_editors();
+
+                Rc::new(move |cx| {
+                    let mut list = menu_list(px(240.0));
+
+                    for (index, (label, command)) in editors.iter().enumerate() {
+                        let entity = entity.clone();
+                        let command = (*command).to_string();
+                        let name = (*label).to_string();
+
+                        list = list.child(menu_row(
+                            ("home-open-editor", index),
+                            cx,
+                            false,
+                            vec![div().child(name).into_any_element()],
+                            Some(Box::new(move |_, cx| {
+                                let command = command.clone();
+
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.open_checkout(&command, cx);
                                 });
                             })),
                         ));
@@ -10118,6 +10214,12 @@ mod nav_tests {
         assert_eq!(terminal_rows(1080.0), 68);
         assert_eq!(terminal_rows(800.0), 49);
         assert_eq!(terminal_rows(60.0), 1);
+    }
+
+    #[test]
+    fn finds_an_installed_command() {
+        assert!(command_exists("git"));
+        assert!(!command_exists("kloucy-not-a-real-editor"));
     }
 
     #[test]
