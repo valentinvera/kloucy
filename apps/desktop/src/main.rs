@@ -458,6 +458,26 @@ fn worktree_base_key(workspace_id: &str) -> String {
     format!("worktreeBase:{workspace_id}")
 }
 
+/// The projects the sidebar keeps collapsed, as a comma-separated setting.
+const COLLAPSED_PROJECTS_KEY: &str = "collapsedProjects";
+
+/// Read the collapsed project ids out of the stored setting.
+fn collapsed_from(value: Option<&str>) -> HashSet<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Write the collapsed project ids as a stable stored setting.
+fn collapsed_to(ids: &HashSet<String>) -> String {
+    let mut ids = ids.iter().cloned().collect::<Vec<_>>();
+    ids.sort();
+    ids.join(",")
+}
+
 /// The terminal rows that fit a panel `height` pixels tall, below the tab
 /// header and the screen's padding. Each row is 15 pixels.
 fn terminal_rows(height: f32) -> u16 {
@@ -1363,6 +1383,7 @@ struct DesktopShell {
     browser_url: Entity<InputState>,
     browser_error: Option<String>,
     browser_notice: Option<String>,
+    collapsed_projects: HashSet<String>,
     devices: Option<device::Devices>,
     devices_error: Option<String>,
     devices_loading: bool,
@@ -1605,6 +1626,9 @@ impl DesktopShell {
             browser_url,
             browser_error: None,
             browser_notice: None,
+            collapsed_projects: collapsed_from(
+                settings::load_text(COLLAPSED_PROJECTS_KEY).as_deref(),
+            ),
             devices: None,
             devices_error: None,
             devices_loading: false,
@@ -1816,6 +1840,17 @@ impl DesktopShell {
             .ok();
         })
         .detach();
+    }
+
+    /// Fold a project's threads away, or bring them back.
+    fn toggle_project(&mut self, workspace_id: String, cx: &mut Context<Self>) {
+        if !self.collapsed_projects.remove(&workspace_id) {
+            self.collapsed_projects.insert(workspace_id);
+        }
+
+        let stored = collapsed_to(&self.collapsed_projects);
+        settings::save_text(COLLAPSED_PROJECTS_KEY, &stored);
+        cx.notify();
     }
 
     fn select_workspace(&mut self, workspace_id: String, cx: &mut Context<Self>) {
@@ -3707,6 +3742,8 @@ impl DesktopShell {
                             this.select_workspace(thread.workspace_id.clone(), cx);
                         }
 
+                        this.collapsed_projects.remove(&thread.workspace_id);
+
                         this.home_thread = Some(thread);
                         this.composer_status = None;
                         this.refresh_home_checkout(cx);
@@ -4994,10 +5031,13 @@ impl DesktopShell {
                     continue;
                 }
 
-                items = items.child(self.nav_project(workspace, index, cx));
+                let collapsed = self.collapsed_projects.contains(&workspace.id);
+                items = items.child(self.nav_project(workspace, index, collapsed, cx));
 
-                for (thread_index, thread) in threads.into_iter().enumerate() {
-                    items = items.child(self.nav_thread(thread, (index, thread_index), cx));
+                if !collapsed {
+                    for (thread_index, thread) in threads.into_iter().enumerate() {
+                        items = items.child(self.nav_thread(thread, (index, thread_index), cx));
+                    }
                 }
             }
         }
@@ -5119,9 +5159,11 @@ impl DesktopShell {
         &self,
         workspace: &Workspace,
         index: usize,
+        collapsed: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = workspace.id.clone();
+        let toggle_id = workspace.id.clone();
         let selected = self.selected_workspace.as_deref() == Some(workspace.id.as_str());
 
         div()
@@ -5143,16 +5185,40 @@ impl DesktopShell {
                 element.text_color(cx.theme().muted_foreground)
             })
             .hover(|element| element.bg(cx.theme().list_hover))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.select_workspace(id.clone(), cx);
-                this.clear_home_thread(cx);
-                this.section = Section::Home;
-                this.composer
-                    .update(cx, |state, cx| state.focus(window, cx));
-                cx.notify();
-            }))
-            .child(Icon::new(IconName::Folder).size_4())
-            .child(div().min_w_0().truncate().child(workspace.name.clone()))
+            .child(
+                // Only the name opens a thread; the chevron folds the project.
+                h_flex()
+                    .id(("nav-project-open", index))
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .gap_2()
+                    .cursor(CursorStyle::PointingHand)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.collapsed_projects.remove(&id);
+                        this.select_workspace(id.clone(), cx);
+                        this.clear_home_thread(cx);
+                        this.section = Section::Home;
+                        this.composer
+                            .update(cx, |state, cx| state.focus(window, cx));
+                        cx.notify();
+                    }))
+                    .child(Icon::new(IconName::Folder).size_4())
+                    .child(div().min_w_0().truncate().child(workspace.name.clone())),
+            )
+            .child(
+                Button::new(("nav-project-toggle", index))
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(if collapsed {
+                        IconName::ChevronRight
+                    } else {
+                        IconName::ChevronDown
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_project(toggle_id.clone(), cx);
+                    })),
+            )
             .into_any_element()
     }
 
@@ -10644,6 +10710,16 @@ mod nav_tests {
         assert!(!worktree_mode_value(Some("checkout"), true));
         assert!(worktree_mode_value(None, true));
         assert!(!worktree_mode_value(None, false));
+    }
+
+    #[test]
+    fn reads_and_writes_collapsed_projects() {
+        let ids = collapsed_from(Some("b,a,"));
+
+        assert!(ids.contains("a"));
+        assert!(ids.contains("b"));
+        assert_eq!(collapsed_to(&ids), "a,b");
+        assert!(collapsed_from(None).is_empty());
     }
 
     #[test]
