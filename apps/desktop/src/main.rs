@@ -10,6 +10,7 @@ mod markdown;
 mod runner;
 mod safety;
 mod settings;
+mod terminal;
 mod threads;
 mod typography;
 mod worktree;
@@ -290,6 +291,7 @@ struct OpenFile {
 enum Panel {
     Diff,
     Files,
+    Terminal,
 }
 
 /// What picking a row in the agent menu changes.
@@ -1209,6 +1211,9 @@ struct DesktopShell {
     files_error: Option<String>,
     diff: LoadState<Vec<diff::FileDiff>>,
     diff_error: Option<String>,
+    terminal: Option<terminal::Terminal>,
+    terminal_error: Option<String>,
+    terminal_focus: FocusHandle,
     sending_composer: bool,
     home_provider: Option<String>,
     home_model: Option<String>,
@@ -1325,6 +1330,7 @@ impl DesktopShell {
             .map(SharedString::from)
             .unwrap_or_else(|| cx.theme().font_family.clone());
         let palette_query = cx.new(|cx| InputState::new(window, cx).placeholder("Search commands"));
+        let terminal_focus = cx.focus_handle();
         let agent_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
         let rename_title =
             cx.new(|cx| InputState::new(window, cx).placeholder("Conversation name"));
@@ -1425,6 +1431,9 @@ impl DesktopShell {
             files_error: None,
             diff: LoadState::Loading,
             diff_error: None,
+            terminal: None,
+            terminal_error: None,
+            terminal_focus,
             sending_composer: false,
             home_provider: None,
             home_model: None,
@@ -1657,6 +1666,8 @@ impl DesktopShell {
         self.files_error = None;
         self.diff = LoadState::Loading;
         self.diff_error = None;
+        self.terminal = None;
+        self.terminal_error = None;
 
         let checkout = self
             .selected_workspace_data()
@@ -3432,6 +3443,7 @@ impl DesktopShell {
         match panel {
             Panel::Diff => self.refresh_diff(cx),
             Panel::Files => self.refresh_files(cx),
+            Panel::Terminal => self.start_terminal(cx),
         }
 
         cx.notify();
@@ -3453,6 +3465,56 @@ impl DesktopShell {
         self.files_error = None;
         self.diff_error = None;
         cx.notify();
+    }
+
+    /// Start a shell in the thread's checkout, once.
+    fn start_terminal(&mut self, cx: &mut Context<Self>) {
+        if self.terminal.is_some() {
+            return;
+        }
+
+        let Some(cwd) = self.active_checkout() else {
+            self.terminal_error = Some("Select a project to open a terminal.".to_string());
+            return;
+        };
+
+        match terminal::Terminal::spawn(&cwd) {
+            Ok(terminal) => {
+                self.terminal = Some(terminal);
+                self.terminal_error = None;
+            }
+            Err(message) => {
+                self.terminal_error = Some(message);
+                return;
+            }
+        }
+
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(120))
+                    .await;
+
+                let alive = this
+                    .update(cx, |this, cx| {
+                        if this.terminal.is_none() {
+                            return false;
+                        }
+
+                        if this.panel == Some(Panel::Terminal) {
+                            cx.notify();
+                        }
+
+                        true
+                    })
+                    .unwrap_or(false);
+
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Read the checkout's change against its last commit.
@@ -6851,6 +6913,69 @@ impl DesktopShell {
     }
 
     /// The thread's checkout: paths on the left, the open file on the right.
+    /// The shell in the thread's checkout.
+    fn render_terminal_surface(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(error) = &self.terminal_error {
+            return div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().danger_foreground)
+                .child(error.clone())
+                .into_any_element();
+        }
+
+        let Some(terminal) = &self.terminal else {
+            return div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Starting a shell…")
+                .into_any_element();
+        };
+
+        let snapshot = terminal.snapshot();
+        let entity = cx.entity().downgrade();
+        let focus = self.terminal_focus.clone();
+        let mut screen = v_flex().p_2();
+
+        for line in snapshot.contents.split('\n') {
+            screen = screen.child(
+                div()
+                    .h(px(15.0))
+                    .font_family(self.mono_font.clone())
+                    .text_xs()
+                    .text_color(cx.theme().foreground)
+                    .child(line.to_string()),
+            );
+        }
+
+        div()
+            .id("terminal-screen")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .cursor(CursorStyle::IBeam)
+            .track_focus(&self.terminal_focus)
+            .on_click(move |_, window, _| focus.focus(window))
+            .on_key_down(move |event, _, cx| {
+                let bytes = terminal::bytes(event);
+
+                if bytes.is_empty() {
+                    return;
+                }
+
+                let _ = entity.update(cx, |this, cx| {
+                    if let Some(terminal) = &mut this.terminal {
+                        terminal.write(&bytes);
+                    }
+
+                    cx.notify();
+                });
+            })
+            .child(screen)
+            .into_any_element()
+    }
+
     /// The thread's side panel: a tab per surface and the selected one below.
     fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let close = Button::new("panel-close")
@@ -6872,18 +6997,26 @@ impl DesktopShell {
                     .gap_1()
                     .items_center()
                     .child(self.panel_tab(Panel::Files, "Files", cx))
-                    .child(self.panel_tab(Panel::Diff, "Diff", cx)),
+                    .child(self.panel_tab(Panel::Diff, "Diff", cx))
+                    .child(self.panel_tab(Panel::Terminal, "Terminal", cx)),
             )
             .child(close);
 
         let body: AnyElement = match self.panel {
             Some(Panel::Diff) => self.render_diff_surface(cx),
             Some(Panel::Files) => self.render_files_surface(cx),
+            Some(Panel::Terminal) => self.render_terminal_surface(cx),
             None => div().into_any_element(),
         };
 
+        let width = if self.panel == Some(Panel::Terminal) {
+            620.0
+        } else {
+            560.0
+        };
+
         v_flex()
-            .w(px(560.0))
+            .w(px(width))
             .h_full()
             .flex_shrink_0()
             .border_l_1()
@@ -6899,6 +7032,7 @@ impl DesktopShell {
         let index = match panel {
             Panel::Diff => 0_usize,
             Panel::Files => 1,
+            Panel::Terminal => 2,
         };
 
         div()
@@ -7348,6 +7482,19 @@ impl DesktopShell {
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Diff, cx)),
                             ),
+                    )
+                    .child(
+                        Button::new("thread-terminal")
+                            .ghost()
+                            .small()
+                            .label(if self.panel == Some(Panel::Terminal) {
+                                "Hide terminal"
+                            } else {
+                                "Terminal"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_panel(Panel::Terminal, cx);
+                            })),
                     )
                     .child(if working {
                         Button::new("thread-stop")
