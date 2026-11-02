@@ -12,6 +12,7 @@ mod safety;
 mod settings;
 mod threads;
 mod typography;
+mod worktree;
 
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, CursorStyle, Div, Entity,
@@ -251,8 +252,17 @@ struct HomeTurn {
 
 /// A conversation on Home. Each turn is its own run, and the agent-side session
 /// is what lets later turns carry the earlier ones as context.
+/// The worktree a thread owns: its branch and where it lives on disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ThreadCheckout {
+    branch: String,
+    path: String,
+}
+
 struct HomeThread {
     agent_session: Option<String>,
+    /// The worktree this thread runs in, when it does not use the checkout.
+    checkout: Option<ThreadCheckout>,
     title: String,
     turns: Vec<HomeTurn>,
     /// Where the conversation started; its runs are listed under this workspace.
@@ -773,8 +783,14 @@ fn load_thread(client: &KloucyClient, stored: &threads::StoredThread) -> Option<
             .find_map(|turn| agent_session_id(&turn.logs))
     });
 
+    let checkout = stored.checkout_path.as_ref().map(|path| ThreadCheckout {
+        branch: stored.branch.clone().unwrap_or_default(),
+        path: path.clone(),
+    });
+
     Some(HomeThread {
         agent_session,
+        checkout,
         title: stored.title.clone(),
         turns,
         workspace_id: stored.workspace_id.clone(),
@@ -1180,6 +1196,8 @@ struct DesktopShell {
     home_model: Option<String>,
     home_effort: Option<String>,
     home_fast: bool,
+    /// Whether a new thread starts in its own worktree.
+    worktree_mode: bool,
     model_catalogs: HashMap<String, agents::ModelCatalog>,
     home_scroll: ScrollHandle,
     home_project: HomeProject,
@@ -1385,6 +1403,7 @@ impl DesktopShell {
             home_model: None,
             home_effort: None,
             home_fast: false,
+            worktree_mode: settings::load_bool("worktreeMode").unwrap_or(true),
             model_catalogs: HashMap::new(),
             home_scroll: ScrollHandle::new(),
             home_project: HomeProject::Auto,
@@ -1930,6 +1949,7 @@ impl DesktopShell {
 
             self.home_thread = Some(HomeThread {
                 agent_session: None,
+                checkout: None,
                 title: composer_title(&prompt),
                 turns: vec![HomeTurn {
                     logs: Vec::new(),
@@ -2148,10 +2168,37 @@ impl DesktopShell {
 
     /// Recompute the branch Home shows for the checkout it will use.
     fn refresh_home_checkout(&mut self) {
-        self.home_checkout = self
-            .home_workspace()
-            .map(|workspace| git::describe(std::path::Path::new(&workspace.local_path)))
+        let path = self
+            .home_thread
+            .as_ref()
+            .and_then(|thread| thread.checkout.as_ref())
+            .map(|checkout| checkout.path.clone())
+            .or_else(|| {
+                self.home_workspace()
+                    .map(|workspace| workspace.local_path.clone())
+            });
+
+        self.home_checkout = path
+            .map(|path| git::describe(std::path::Path::new(&path)))
             .unwrap_or(git::Checkout::None);
+    }
+
+    /// The checkout a thread reads from: its worktree, else the project.
+    fn active_checkout(&self) -> Option<String> {
+        self.home_thread
+            .as_ref()
+            .and_then(|thread| thread.checkout.as_ref())
+            .map(|checkout| checkout.path.clone())
+            .or_else(|| {
+                self.selected_workspace_data()
+                    .map(|workspace| workspace.local_path.clone())
+            })
+    }
+
+    fn toggle_worktree_mode(&mut self, cx: &mut Context<Self>) {
+        self.worktree_mode = !self.worktree_mode;
+        settings::save_bool("worktreeMode", self.worktree_mode);
+        cx.notify();
     }
 
     /// The agents the composer can start: installed on this machine, plus the
@@ -2318,6 +2365,18 @@ impl DesktopShell {
         let prompt = text.clone();
         let client = self.client.clone();
         let registry = self.registry.clone();
+        let existing_checkout = self
+            .home_thread
+            .as_ref()
+            .and_then(|thread| thread.checkout.clone());
+        let worktree_mode = self.worktree_mode;
+        let chat = matches!(plan, RunPlan::Chat);
+        let worktree_title = title.clone();
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| format!("{:x}", elapsed.as_nanos()))
+            .unwrap_or_default();
+        let seed = seed.chars().rev().take(6).collect::<String>();
 
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
@@ -2344,6 +2403,26 @@ impl DesktopShell {
 
                     async move {
                         let (workspace_id, cwd) = plan?;
+
+                        // A thread owns its worktree: the first message creates
+                        // one, and every later turn in the thread runs there.
+                        let checkout = match existing_checkout {
+                            Some(checkout) => Some(checkout),
+                            None if worktree_mode && !chat => {
+                                worktree::create(std::path::Path::new(&cwd), &worktree_title, &seed)
+                                    .ok()
+                                    .map(|created| ThreadCheckout {
+                                        branch: created.branch,
+                                        path: created.path,
+                                    })
+                            }
+                            None => None,
+                        };
+
+                        let cwd = checkout
+                            .as_ref()
+                            .map(|checkout| checkout.path.clone())
+                            .unwrap_or(cwd);
 
                         // The first message that works stores the agent behind
                         // it, so the registry fills itself by being used.
@@ -2372,6 +2451,7 @@ impl DesktopShell {
                             session,
                             workspace_id,
                             cwd,
+                            checkout,
                             load_agents_list(&client),
                             load_workspaces_list(&client),
                         ))
@@ -2380,7 +2460,7 @@ impl DesktopShell {
                 .await;
 
             match result {
-                Ok((session, workspace_id, cwd, agents, workspaces)) => {
+                Ok((session, workspace_id, cwd, checkout, agents, workspaces)) => {
                     let session_id = session.id.clone();
                     let runner_client = client.clone();
                     let runner_registry = registry.clone();
@@ -2421,12 +2501,19 @@ impl DesktopShell {
                             None => {
                                 this.home_thread = Some(HomeThread {
                                     agent_session: None,
+                                    checkout: checkout.clone(),
                                     title,
                                     turns: vec![turn],
                                     workspace_id: workspace_id.clone(),
                                 });
                             }
                         }
+
+                        if let Some(thread) = this.home_thread.as_mut() {
+                            thread.checkout = checkout;
+                        }
+
+                        this.refresh_home_checkout();
                         this.remember_thread();
                         this.watching = Some(session_id.clone());
                         this.watch_home_thread(session_id, cx);
@@ -2764,6 +2851,14 @@ impl DesktopShell {
 
         let stored = threads::StoredThread {
             agent_session: thread.agent_session.clone(),
+            branch: thread
+                .checkout
+                .as_ref()
+                .map(|checkout| checkout.branch.clone()),
+            checkout_path: thread
+                .checkout
+                .as_ref()
+                .map(|checkout| checkout.path.clone()),
             session_ids: thread
                 .turns
                 .iter()
@@ -3002,10 +3097,7 @@ impl DesktopShell {
 
     /// Read the checkout's change against its last commit.
     fn refresh_diff(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self
-            .selected_workspace_data()
-            .map(|workspace| workspace.local_path.clone())
-        else {
+        let Some(root) = self.active_checkout() else {
             self.diff = LoadState::Failed("Select a workspace to read its change.".to_string());
             cx.notify();
             return;
@@ -3034,10 +3126,7 @@ impl DesktopShell {
 
     /// Read the checkout's paths off the UI thread, then show them.
     fn refresh_files(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self
-            .selected_workspace_data()
-            .map(|workspace| workspace.local_path.clone())
-        else {
+        let Some(root) = self.active_checkout() else {
             self.files = LoadState::Loaded(Vec::new());
             cx.notify();
             return;
@@ -3062,10 +3151,7 @@ impl DesktopShell {
 
     /// Read one file of the checkout into the panel.
     fn open_thread_file(&mut self, path: String, cx: &mut Context<Self>) {
-        let Some(root) = self
-            .selected_workspace_data()
-            .map(|workspace| workspace.local_path.clone())
-        else {
+        let Some(root) = self.active_checkout() else {
             return;
         };
 
@@ -4928,6 +5014,8 @@ impl DesktopShell {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let stored = threads::StoredThread {
                                         agent_session: None,
+                                        branch: None,
+                                        checkout_path: None,
                                         session_ids: vec![session_id.clone()],
                                         title: title.clone(),
                                         updated_at: 0,
@@ -5071,6 +5159,8 @@ impl DesktopShell {
                                                 move |this, _, _, cx| {
                                                     let stored = threads::StoredThread {
                                                         agent_session: None,
+                                                        branch: None,
+                                                        checkout_path: None,
                                                         session_ids: vec![session.id.clone()],
                                                         title: session
                                                             .prompt
@@ -5397,6 +5487,8 @@ impl DesktopShell {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         let stored = threads::StoredThread {
                                             agent_session: None,
+                                            branch: None,
+                                            checkout_path: None,
                                             session_ids: vec![open_session.clone()],
                                             title: open_title.clone(),
                                             updated_at: 0,
@@ -5649,6 +5741,8 @@ impl DesktopShell {
                     if let Some(session_id) = &decision.session_id {
                         let stored = threads::StoredThread {
                             agent_session: None,
+                            branch: None,
+                            checkout_path: None,
                             session_ids: vec![session_id.clone()],
                             title: decision.title.clone(),
                             updated_at: 0,
@@ -7215,6 +7309,23 @@ impl DesktopShell {
                     cx,
                 ),
             );
+
+            // Where the next thread starts: its own worktree, or this checkout.
+            // Once a thread exists its checkout is fixed, so the choice is only
+            // offered before the first message.
+            if self.home_thread.is_none() {
+                checkout_row = checkout_row.child(
+                    Button::new("home-worktree-mode")
+                        .ghost()
+                        .small()
+                        .label(if self.worktree_mode {
+                            "New worktree"
+                        } else {
+                            "Current checkout"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_worktree_mode(cx))),
+                );
+            }
         }
 
         let mut details = v_flex().gap_1().px(px(6.0)).child(checkout_row);
