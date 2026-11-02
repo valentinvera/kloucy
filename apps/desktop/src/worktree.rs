@@ -17,7 +17,12 @@ pub struct Worktree {
 
 /// Create a worktree of `repo` under Kloucy's data directory, on a new branch
 /// named after the prompt. `seed` keeps two threads with the same prompt apart.
-pub fn create(repo: &Path, title: &str, seed: &str) -> Result<Worktree, String> {
+pub fn create(
+    repo: &Path,
+    title: &str,
+    seed: &str,
+    base: Option<&str>,
+) -> Result<Worktree, String> {
     let root = repository_root(repo)?;
     let slug = slug(title);
     let branch = format!("kloucy/{slug}-{seed}");
@@ -35,7 +40,7 @@ pub fn create(repo: &Path, title: &str, seed: &str) -> Result<Worktree, String> 
         .arg(&root)
         .args(["worktree", "add", "-b", &branch])
         .arg(&path)
-        .arg("HEAD")
+        .arg(base.unwrap_or("HEAD"))
         .output()
         .map_err(|_| "Kloucy could not run git.".to_string())?;
 
@@ -156,7 +161,7 @@ mod tests {
     #[test]
     fn creates_a_worktree_on_its_own_branch() {
         let root = repository("create");
-        let worktree = create(&root, "Fix the parser", "abc123").expect("a worktree");
+        let worktree = create(&root, "Fix the parser", "abc123", None).expect("a worktree");
 
         assert!(Path::new(&worktree.path).join("README.md").exists());
         assert!(worktree.branch.starts_with("kloucy/fix-the-parser-"));
@@ -176,7 +181,7 @@ mod tests {
     fn refuses_a_directory_that_is_not_a_repository() {
         let path = scratch("plain");
 
-        assert!(create(&path, "Nope", "seed").is_err());
+        assert!(create(&path, "Nope", "seed", None).is_err());
 
         let _ = fs::remove_dir_all(path);
     }

@@ -225,6 +225,32 @@ fn base_branch(path: &Path) -> String {
     "main".to_string()
 }
 
+/// The local branches of a checkout, sorted. A base branch for a worktree is
+/// picked from here.
+pub fn branches(path: &Path) -> Vec<String> {
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+        .output()
+    else {
+        return Vec::new();
+    };
+
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let mut branches = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    branches.sort();
+    branches
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +319,38 @@ mod tests {
             .success()
         );
         assert_eq!(base_branch(&root), "trunk");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lists_local_branches() {
+        let root = scratch_dir("branches");
+        let git = |arguments: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(arguments)
+                .status()
+                .expect("git")
+        };
+
+        assert!(git(&["init", "-q"]).success());
+        assert!(git(&["config", "user.email", "test@kloucy.dev"]).success());
+        assert!(git(&["config", "user.name", "Kloucy"]).success());
+        fs::write(root.join("README.md"), "# test\n").expect("file");
+        assert!(git(&["add", "."]).success());
+        assert!(git(&["commit", "-qm", "first"]).success());
+        assert!(git(&["branch", "feat/base"]).success());
+
+        let branches = branches(&root);
+        let shape = if branches.iter().any(|branch| branch == "feat/base") {
+            "with feat/base"
+        } else {
+            "missing feat/base"
+        };
+
+        assert_eq!(shape, "with feat/base");
 
         let _ = fs::remove_dir_all(root);
     }
