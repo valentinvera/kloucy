@@ -24,6 +24,14 @@ pub struct StoredThread {
     pub branch: Option<String>,
     #[serde(default)]
     pub checkout_path: Option<String>,
+    /// Tucked away: it does not need attention any more.
+    #[serde(default)]
+    pub settled: bool,
+    /// Kept at the top of the sidebar.
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub archived: bool,
     /// The runs that make up the conversation, oldest first.
     pub session_ids: Vec<String>,
     pub title: String,
@@ -122,6 +130,9 @@ mod tests {
             agent_session: None,
             branch: None,
             checkout_path: None,
+            settled: false,
+            pinned: false,
+            archived: false,
             session_ids: (0..turns).map(|index| format!("{first}-{index}")).collect(),
             title: title.to_string(),
             updated_at: 0,
