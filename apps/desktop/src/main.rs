@@ -476,6 +476,21 @@ fn worktree_base_key(workspace_id: &str) -> String {
     format!("worktreeBase:{workspace_id}")
 }
 
+/// The unsent messages each thread keeps, as a JSON object of key to text.
+const DRAFTS_KEY: &str = "drafts";
+
+/// Read the stored drafts, ignoring anything that is not an object of strings.
+fn drafts_from(value: Option<&str>) -> HashMap<String, String> {
+    value
+        .and_then(|text| serde_json::from_str::<HashMap<String, String>>(text).ok())
+        .unwrap_or_default()
+}
+
+/// A draft worth keeping: whitespace alone is the same as no draft.
+fn clean_draft(text: &str) -> Option<String> {
+    (!text.trim().is_empty()).then(|| text.to_string())
+}
+
 /// The projects the sidebar keeps collapsed, as a comma-separated setting.
 const COLLAPSED_PROJECTS_KEY: &str = "collapsedProjects";
 
@@ -1397,6 +1412,8 @@ struct DesktopShell {
     _composer_subscription: Subscription,
     _palette_subscription: Subscription,
     composer_status: Option<ComposerStatus>,
+    drafts: HashMap<String, String>,
+    pending_draft: Option<String>,
     home_thread: Option<HomeThread>,
     panel: Option<Panel>,
     files: LoadState<Vec<String>>,
@@ -1644,6 +1661,8 @@ impl DesktopShell {
             _composer_subscription: composer_subscription,
             _palette_subscription: palette_subscription,
             composer_status: None,
+            drafts: drafts_from(settings::load_text(DRAFTS_KEY).as_deref()),
+            pending_draft: None,
             home_thread: None,
             panel: None,
             files: LoadState::Loading,
@@ -3207,6 +3226,22 @@ impl DesktopShell {
                         if from_composer {
                             this.composer
                                 .update(cx, |state, cx| state.set_value("", window, cx));
+
+                            let key = this
+                                .home_thread
+                                .as_ref()
+                                .and_then(|thread| thread.turns.first())
+                                .map(|turn| turn.session_id.clone());
+
+                            if let Some(key) = key {
+                                this.drafts.remove(&key);
+                            }
+
+                            this.drafts.remove("new");
+
+                            if let Ok(stored) = serde_json::to_string(&this.drafts) {
+                                settings::save_text(DRAFTS_KEY, &stored);
+                            }
                         }
                         let turn = HomeTurn {
                             logs: Vec::new(),
@@ -3776,6 +3811,9 @@ impl DesktopShell {
         report_failure: bool,
         cx: &mut Context<Self>,
     ) {
+        self.save_draft(cx);
+        let key = stored.key().unwrap_or("new").to_string();
+        self.pending_draft = Some(self.drafts.get(&key).cloned().unwrap_or_default());
         self.home_menu = None;
         self.pr_url = None;
         let client = self.client.clone();
@@ -3999,7 +4037,33 @@ impl DesktopShell {
         .detach();
     }
 
+    /// Keep what is typed for the current thread and write the index down.
+    fn save_draft(&mut self, cx: &mut Context<Self>) {
+        let key = self
+            .home_thread
+            .as_ref()
+            .and_then(|thread| thread.turns.first())
+            .map(|turn| turn.session_id.clone())
+            .unwrap_or_else(|| "new".to_string());
+        let text = self.composer.read(cx).value().to_string();
+
+        match clean_draft(&text) {
+            Some(text) => {
+                self.drafts.insert(key, text);
+            }
+            None => {
+                self.drafts.remove(&key);
+            }
+        }
+
+        if let Ok(stored) = serde_json::to_string(&self.drafts) {
+            settings::save_text(DRAFTS_KEY, &stored);
+        }
+    }
+
     fn clear_home_thread(&mut self, cx: &mut Context<Self>) {
+        self.save_draft(cx);
+        self.pending_draft = Some(self.drafts.get("new").cloned().unwrap_or_default());
         self.home_thread = None;
         self.pr_url = None;
         self.composer_status = None;
@@ -10788,6 +10852,13 @@ impl Render for DesktopShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_terminal_size(window);
 
+        if matches!(&self.session, SessionStatus::SignedIn(_))
+            && let Some(draft) = self.pending_draft.take()
+        {
+            self.composer
+                .update(cx, |state, cx| state.set_value(&draft, window, cx));
+        }
+
         match &self.session {
             SessionStatus::Checking => centered("Checking API…", cx),
             SessionStatus::Unreachable => self.render_offline(cx),
@@ -11096,6 +11167,18 @@ mod home_tests {
         assert_eq!(empty_turn_label("failed"), "The run failed.");
         assert_eq!(empty_turn_label("stopped"), "Stopped before answering.");
         assert_eq!(empty_turn_label("done"), "The agent printed nothing.");
+    }
+
+    #[test]
+    fn keeps_a_draft_only_when_it_has_text() {
+        assert_eq!(clean_draft("hola"), Some("hola".to_string()));
+        assert_eq!(clean_draft("  \n "), None);
+
+        let drafts = drafts_from(Some(r#"{"abc":"a message","empty":"x"}"#));
+
+        assert_eq!(drafts.get("abc"), Some(&"a message".to_string()));
+        assert!(drafts_from(Some("not json")).is_empty());
+        assert!(drafts_from(None).is_empty());
     }
 
     #[test]
