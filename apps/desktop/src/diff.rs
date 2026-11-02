@@ -90,12 +90,12 @@ fn parse(diff: &str) -> Vec<FileDiff> {
 
         let (kind, text) = if line.starts_with("@@") {
             (LineKind::Hunk, line.to_string())
-        } else if line.starts_with('+') {
+        } else if let Some(added) = line.strip_prefix('+') {
             file.added += 1;
-            (LineKind::Added, line[1..].to_string())
-        } else if line.starts_with('-') {
+            (LineKind::Added, added.to_string())
+        } else if let Some(removed) = line.strip_prefix('-') {
             file.removed += 1;
-            (LineKind::Removed, line[1..].to_string())
+            (LineKind::Removed, removed.to_string())
         } else if let Some(context) = line.strip_prefix(' ') {
             (LineKind::Context, context.to_string())
         } else {
