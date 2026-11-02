@@ -1308,6 +1308,7 @@ struct DesktopShell {
     files_error: Option<String>,
     diff: LoadState<Vec<diff::FileDiff>>,
     diff_error: Option<String>,
+    change_stat: Option<diff::ChangeStat>,
     terminal: Option<terminal::Terminal>,
     terminal_error: Option<String>,
     terminal_focus: FocusHandle,
@@ -1544,6 +1545,7 @@ impl DesktopShell {
             files_error: None,
             diff: LoadState::Loading,
             diff_error: None,
+            change_stat: None,
             terminal: None,
             terminal_error: None,
             terminal_focus,
@@ -2350,7 +2352,7 @@ impl DesktopShell {
     }
 
     /// Recompute the branch Home shows for the checkout it will use.
-    fn refresh_home_checkout(&mut self) {
+    fn refresh_home_checkout(&mut self, cx: &mut Context<Self>) {
         let path = self
             .home_thread
             .as_ref()
@@ -2364,6 +2366,30 @@ impl DesktopShell {
         self.home_checkout = path
             .map(|path| git::describe(std::path::Path::new(&path)))
             .unwrap_or(git::Checkout::None);
+        self.refresh_change_stat(cx);
+    }
+
+    /// Read the checkout's line counts off the UI thread for the composer chip.
+    fn refresh_change_stat(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.active_checkout() else {
+            self.change_stat = None;
+            cx.notify();
+            return;
+        };
+
+        cx.spawn(async move |this, cx| {
+            let stat = cx
+                .background_executor()
+                .spawn(async move { diff::stat(std::path::Path::new(&root)) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.change_stat = stat;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The checkout a thread reads from: its worktree, else the project.
@@ -2446,6 +2472,8 @@ impl DesktopShell {
                         if this.panel == Some(Panel::Diff) {
                             this.refresh_diff(cx);
                         }
+
+                        this.refresh_change_stat(cx);
                     }
                     Err(message) => {
                         this.git_error = Some(message);
@@ -2982,7 +3010,7 @@ impl DesktopShell {
                         this.sending_composer = false;
                         this.agents = agents;
                         this.workspaces = workspaces;
-                        this.refresh_home_checkout();
+                        this.refresh_home_checkout(cx);
                         if from_composer {
                             this.composer
                                 .update(cx, |state, cx| state.set_value("", window, cx));
@@ -3013,7 +3041,7 @@ impl DesktopShell {
                             thread.checkout = checkout;
                         }
 
-                        this.refresh_home_checkout();
+                        this.refresh_home_checkout(cx);
                         this.remember_thread();
                         this.watching = Some(session_id.clone());
                         this.watch_home_thread(session_id, cx);
@@ -3102,6 +3130,7 @@ impl DesktopShell {
                                     this.home_scroll.scroll_to_bottom();
                                     this.remember_thread();
                                     this.watching = None;
+                                    this.refresh_change_stat(cx);
                                 }
 
                                 cx.notify();
@@ -3562,7 +3591,7 @@ impl DesktopShell {
 
                         this.home_thread = Some(thread);
                         this.composer_status = None;
-                        this.refresh_home_checkout();
+                        this.refresh_home_checkout(cx);
                         this.home_scroll.scroll_to_bottom();
                     }
                     None => {
@@ -3762,7 +3791,7 @@ impl DesktopShell {
         self.open_file = None;
         self.files_error = None;
         self.diff_error = None;
-        self.refresh_home_checkout();
+        self.refresh_home_checkout(cx);
         cx.notify();
     }
 
@@ -8433,6 +8462,39 @@ impl DesktopShell {
                 ),
             );
 
+            if let Some(stat) = self.change_stat {
+                let changed = stat.added + stat.removed;
+
+                if changed > 0 {
+                    let mut counts = h_flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .rounded(px(6.0))
+                        .px(px(6.0))
+                        .py(px(4.0))
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground);
+
+                    if stat.added > 0 {
+                        counts = counts.child(
+                            div()
+                                .text_color(cx.theme().success_foreground)
+                                .child(format!("+{}", stat.added)),
+                        );
+                    }
+
+                    if stat.removed > 0 {
+                        counts = counts.child(
+                            div()
+                                .text_color(cx.theme().danger_foreground)
+                                .child(format!("−{}", stat.removed)),
+                        );
+                    }
+
+                    checkout_row = checkout_row.child(counts);
+                }
+            }
+
             // Where the next thread starts: its own worktree, or this checkout.
             // Once a thread exists its checkout is fixed, so the choice is only
             // offered before the first message.
@@ -8855,7 +8917,7 @@ impl DesktopShell {
                         Some(Box::new(move |_, cx| {
                             let _ = entity_here.update(cx, |this, cx| {
                                 this.home_project = HomeProject::None;
-                                this.refresh_home_checkout();
+                                this.refresh_home_checkout(cx);
                                 this.home_menu = None;
                                 this.composer_status = None;
                                 cx.notify();
@@ -8883,7 +8945,7 @@ impl DesktopShell {
                             Some(Box::new(move |_, cx| {
                                 let _ = entity.update(cx, |this, cx| {
                                     this.home_project = HomeProject::Workspace(id.clone());
-                                    this.refresh_home_checkout();
+                                    this.refresh_home_checkout(cx);
                                     this.home_menu = None;
                                     this.composer_status = None;
                                     cx.notify();
