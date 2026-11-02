@@ -290,6 +290,7 @@ enum HomeMenu {
     Branch,
     Attach,
     Open,
+    Safety,
 }
 
 /// One exchange in a conversation: what was asked and what the agent answered.
@@ -394,8 +395,8 @@ fn composer_title(text: &str) -> String {
 /// How a workspace's safety mode reads in the composer pill.
 fn safety_label(mode: &str) -> &'static str {
     match mode {
-        "guarded" => "guarded",
-        _ => "open",
+        "guarded" => "Guarded",
+        _ => "Full access",
     }
 }
 
@@ -4582,6 +4583,7 @@ impl DesktopShell {
         self.saving_settings = true;
 
         let mode = mode.to_string();
+        let label = safety_label(&mode).to_string();
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -4599,13 +4601,18 @@ impl DesktopShell {
                 match result {
                     Ok(LoadState::Loaded(workspaces)) => {
                         this.workspaces = LoadState::Loaded(workspaces);
+                        this.composer_status =
+                            Some(ComposerStatus::Notice(format!("Access: {label}.")));
                     }
                     Ok(LoadState::Failed(message)) => {
+                        this.composer_status = Some(ComposerStatus::Failed(message.clone()));
                         this.settings_error = Some(message);
                     }
                     Ok(LoadState::Loading) => {}
                     Err(error) => {
-                        this.settings_error = Some(error_message(&error));
+                        let message = error_message(&error);
+                        this.composer_status = Some(ComposerStatus::Failed(message.clone()));
+                        this.settings_error = Some(message);
                     }
                 }
 
@@ -8852,9 +8859,6 @@ impl DesktopShell {
             .when(self.home_fast, |element| {
                 element.child(div().opacity(0.7).child("fast"))
             })
-            .when_some(safety, |element, mode| {
-                element.child(div().opacity(0.7).child(safety_label(&mode)))
-            })
             .on_click(cx.listener(|this, _, _, cx| this.probe_models(cx)))
             .into_any_element();
 
@@ -8904,6 +8908,23 @@ impl DesktopShell {
                         h_flex()
                             .items_center()
                             .gap(px(8.0))
+                            .when_some(safety, |element, mode| {
+                                element.child(
+                                    self.home_popover(
+                                        "composer-safety",
+                                        Self::chip(
+                                            Icon::new(IconName::Globe)
+                                                .size(px(14.0))
+                                                .into_any_element(),
+                                            safety_label(&mode).to_string(),
+                                            cx,
+                                        ),
+                                        HomeMenu::Safety,
+                                        Corner::TopRight,
+                                        cx,
+                                    ),
+                                )
+                            })
                             .child(self.home_popover(
                                 "composer-agent",
                                 agent_trigger,
@@ -9216,6 +9237,50 @@ impl DesktopShell {
                     }
 
                     list.into_any_element()
+                })
+            }
+            HomeMenu::Safety => {
+                let current = self
+                    .selected_workspace_data()
+                    .map(|workspace| workspace.safety_mode.clone())
+                    .unwrap_or_else(|| "open".to_string());
+
+                Rc::new(move |cx| {
+                    let mut list = menu_list(px(240.0));
+
+                    for (index, (value, label)) in [("open", "Full access"), ("guarded", "Guarded")]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let selected = current == value;
+                        let mut children = vec![div().flex_1().child(label).into_any_element()];
+
+                        if selected {
+                            children
+                                .push(Icon::new(IconName::Check).size(px(14.0)).into_any_element());
+                        }
+
+                        let entity = entity.clone();
+                        let choice = value.to_string();
+
+                        list = list.child(menu_row(
+                            ("home-safety", index),
+                            cx,
+                            selected,
+                            children,
+                            Some(Box::new(move |_, cx| {
+                                let choice = choice.clone();
+
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.set_safety_mode(&choice, cx);
+                                    this.home_menu = None;
+                                });
+                            })),
+                        ));
+                    }
+
+                    list.child(menu_note("Applies to this project.", cx))
+                        .into_any_element()
                 })
             }
             HomeMenu::Open => {
@@ -10644,9 +10709,9 @@ mod home_tests {
 
     #[test]
     fn labels_the_known_safety_modes() {
-        assert_eq!(safety_label("guarded"), "guarded");
-        assert_eq!(safety_label("open"), "open");
-        assert_eq!(safety_label("something-new"), "open");
+        assert_eq!(safety_label("guarded"), "Guarded");
+        assert_eq!(safety_label("open"), "Full access");
+        assert_eq!(safety_label("something-new"), "Full access");
     }
 
     fn session(id: &str, status: &str) -> AgentSession {
