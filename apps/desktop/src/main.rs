@@ -6938,14 +6938,35 @@ impl DesktopShell {
         let focus = self.terminal_focus.clone();
         let mut screen = v_flex().p_2();
 
-        for line in snapshot.contents.split('\n') {
+        for runs in &snapshot.rows {
+            let mut text = String::new();
+            let mut styled = Vec::with_capacity(runs.len());
+
+            for run in runs {
+                if run.text.is_empty() {
+                    continue;
+                }
+
+                text.push_str(&run.text);
+                styled.push(TextRun {
+                    len: run.text.len(),
+                    font: font(self.mono_font.clone()),
+                    color: run
+                        .foreground
+                        .map(|value| rgb(value).into())
+                        .unwrap_or(cx.theme().foreground),
+                    background_color: run.background.map(|value| rgb(value).into()),
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+
             screen = screen.child(
                 div()
                     .h(px(15.0))
                     .font_family(self.mono_font.clone())
                     .text_xs()
-                    .text_color(cx.theme().foreground)
-                    .child(line.to_string()),
+                    .child(StyledText::new(text).with_runs(styled)),
             );
         }
 
