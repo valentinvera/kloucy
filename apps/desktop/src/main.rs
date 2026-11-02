@@ -71,10 +71,13 @@ const SHELL_CONTEXT: &str = "KloucyShell";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaletteCommand {
     Access(&'static str),
+    CopyCheckout,
     NewPairingCode,
     NewWorkspace,
+    OpenCheckout,
     Panel(Panel),
     Section(Section),
+    ViewPullRequest,
 }
 
 struct PaletteEntry {
@@ -84,7 +87,7 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 21] = [
+const PALETTE_ENTRIES: [PaletteEntry; 24] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
@@ -174,6 +177,24 @@ const PALETTE_ENTRIES: [PaletteEntry; 21] = [
         group: "Action",
         keywords: "access guarded safe commands",
         label: "Access: Guarded",
+    },
+    PaletteEntry {
+        command: PaletteCommand::CopyCheckout,
+        group: "Action",
+        keywords: "clipboard folder path",
+        label: "Copy checkout path",
+    },
+    PaletteEntry {
+        command: PaletteCommand::OpenCheckout,
+        group: "Action",
+        keywords: "editor zed cursor code folder",
+        label: "Open checkout",
+    },
+    PaletteEntry {
+        command: PaletteCommand::ViewPullRequest,
+        group: "Action",
+        keywords: "github pr pull request",
+        label: "View pull request",
     },
     PaletteEntry {
         command: PaletteCommand::Panel(Panel::Files),
@@ -10305,6 +10326,10 @@ impl DesktopShell {
         match entry.command {
             PaletteCommand::Panel(_) => self.home_thread.is_some(),
             PaletteCommand::Access(_) => self.selected_workspace.is_some(),
+            PaletteCommand::CopyCheckout | PaletteCommand::OpenCheckout => {
+                self.active_checkout().is_some()
+            }
+            PaletteCommand::ViewPullRequest => self.pr_url.is_some(),
             _ => true,
         }
     }
@@ -10358,6 +10383,21 @@ impl DesktopShell {
             }
             PaletteCommand::Access(mode) => {
                 self.set_safety_mode(mode, cx);
+            }
+            PaletteCommand::CopyCheckout => {
+                if let Some(root) = self.active_checkout() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(root.clone()));
+                    self.composer_status = Some(ComposerStatus::Notice(format!("Copied {root}.")));
+                }
+            }
+            PaletteCommand::OpenCheckout => {
+                if let Some((_, command)) = available_editors().first() {
+                    self.open_checkout(command, cx);
+                    return;
+                }
+            }
+            PaletteCommand::ViewPullRequest => {
+                self.view_pull_request();
             }
             PaletteCommand::Panel(panel) => {
                 self.section = Section::Home;
@@ -11379,6 +11419,21 @@ mod palette_tests {
             palette_matches("full access")
                 .iter()
                 .any(|entry| entry.command == PaletteCommand::Access("open"))
+        );
+        assert!(
+            palette_matches("copy checkout")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::CopyCheckout)
+        );
+        assert!(
+            palette_matches("open checkout")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::OpenCheckout)
+        );
+        assert!(
+            palette_matches("pull request")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::ViewPullRequest)
         );
     }
 
