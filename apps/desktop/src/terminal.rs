@@ -24,10 +24,9 @@ pub struct Terminal {
     writer: Box<dyn Write + Send>,
 }
 
-/// What the panel draws: the screen as text, and where the cursor is.
+/// What the panel draws: the screen as text.
 pub struct Snapshot {
     pub contents: String,
-    pub cursor: (u16, u16),
 }
 
 impl Terminal {
@@ -100,7 +99,6 @@ impl Terminal {
         let Ok(parser) = self.parser.lock() else {
             return Snapshot {
                 contents: String::new(),
-                cursor: (0, 0),
             };
         };
 
@@ -108,7 +106,6 @@ impl Terminal {
 
         Snapshot {
             contents: screen.contents(),
-            cursor: screen.cursor_position(),
         }
     }
 }
