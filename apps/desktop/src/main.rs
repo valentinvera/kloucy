@@ -4126,11 +4126,18 @@ impl DesktopShell {
     }
 
     fn render_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let api = self.render_api_settings(cx);
+
         let Some(workspace) = self.selected_workspace_data() else {
-            return div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("Select a workspace to correct its setup data.")
+            return v_flex()
+                .gap_6()
+                .child(api)
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Select a workspace to correct its setup data."),
+                )
                 .into_any_element();
         };
 
@@ -4286,6 +4293,7 @@ impl DesktopShell {
         let mut form = v_flex()
             .w(px(360.0))
             .gap_3()
+            .child(api)
             .child(
                 div()
                     .text_sm()
@@ -7249,6 +7257,33 @@ impl DesktopShell {
             .bg(cx.theme().overlay)
             .on_click(cx.listener(|this, _, window, cx| this.close_palette(window, cx)))
             .child(panel)
+            .into_any_element()
+    }
+
+    /// Which API this app talks to, and how to change it while it is up.
+    fn render_api_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .w(px(360.0))
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("API"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Talking to {}.", self.api_url)),
+            )
+            .child(Input::new(&self.api_url_input))
+            .child(
+                Button::new("save-api-url")
+                    .small()
+                    .label("Save and reconnect")
+                    .on_click(cx.listener(|this, _, _, cx| this.reconnect(cx))),
+            )
             .into_any_element()
     }
 
