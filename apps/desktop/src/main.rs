@@ -1203,6 +1203,7 @@ struct DesktopShell {
     git_busy: bool,
     git_error: Option<String>,
     git_notice: Option<String>,
+    pr_url: Option<String>,
     model_catalogs: HashMap<String, agents::ModelCatalog>,
     home_scroll: ScrollHandle,
     home_project: HomeProject,
@@ -1415,6 +1416,7 @@ impl DesktopShell {
             git_busy: false,
             git_error: None,
             git_notice: None,
+            pr_url: None,
             model_catalogs: HashMap::new(),
             home_scroll: ScrollHandle::new(),
             home_project: HomeProject::Auto,
@@ -2335,6 +2337,70 @@ impl DesktopShell {
         .detach();
     }
 
+    /// Push the thread's branch and open a pull request for it.
+    fn create_pull_request(&mut self, cx: &mut Context<Self>) {
+        if self.git_busy {
+            return;
+        }
+
+        let Some(checkout) = self.thread_checkout() else {
+            self.git_error =
+                Some("This thread has no branch to open a pull request for.".to_string());
+            cx.notify();
+            return;
+        };
+
+        let Some(title) = self.home_thread.as_ref().map(|thread| thread.title.clone()) else {
+            return;
+        };
+
+        self.git_busy = true;
+        self.git_error = None;
+        self.git_notice = None;
+        cx.notify();
+
+        let path = checkout.path.clone();
+        let branch = checkout.branch.clone();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    git::push(std::path::Path::new(&path), &branch)?;
+                    git::pull_request(std::path::Path::new(&path), &branch, &title)
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.git_busy = false;
+
+                match result {
+                    Ok(url) => {
+                        this.pr_url = Some(url.clone());
+                        this.git_notice = Some(format!("Pull request: {url}"));
+                        this.composer_status =
+                            Some(ComposerStatus::Notice(format!("Pull request: {url}")));
+                    }
+                    Err(message) => {
+                        this.git_error = Some(message);
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn view_pull_request(&self) {
+        let Some(url) = &self.pr_url else {
+            return;
+        };
+
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+
     fn render_commit_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.git_busy;
 
@@ -2351,6 +2417,21 @@ impl DesktopShell {
             .disabled(busy)
             .on_click(cx.listener(|this, _, _, cx| this.push_thread(cx)));
 
+        let pull_request = Button::new("commit-pr")
+            .small()
+            .label("Create PR")
+            .disabled(busy)
+            .on_click(cx.listener(|this, _, _, cx| this.create_pull_request(cx)));
+
+        let view = Button::new("commit-view-pr")
+            .ghost()
+            .small()
+            .label("View PR")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.view_pull_request();
+                cx.notify();
+            }));
+
         let cancel = Button::new("commit-cancel")
             .ghost()
             .small()
@@ -2365,6 +2446,8 @@ impl DesktopShell {
                 .child(div().flex_1().child(Input::new(&self.commit_message)))
                 .child(commit)
                 .child(push)
+                .child(pull_request)
+                .when(self.pr_url.is_some(), |element| element.child(view))
                 .child(cancel),
         );
 
