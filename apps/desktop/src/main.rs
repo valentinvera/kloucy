@@ -3025,16 +3025,29 @@ impl DesktopShell {
             let review = cx
                 .background_executor()
                 .spawn(async move {
-                    if let Ok(draft) = client.generate_weekly_review(&workspace_id) {
-                        let _ = client.create_weekly_review(
-                            &workspace_id,
-                            &draft.summary,
-                            &draft.shipped,
-                            &draft.blockers,
-                            &draft.rejected_changes,
-                            &draft.next_actions,
-                            &draft.risky_patterns,
-                        );
+                    let failure = |error: &ApiError| match error {
+                        ApiError::Unauthorized => "Sign in to generate a review.".to_string(),
+                        ApiError::Unreachable => "API offline.".to_string(),
+                        ApiError::Message(message) => message.clone(),
+                    };
+
+                    let draft = match client.generate_weekly_review(&workspace_id) {
+                        Ok(draft) => draft,
+                        Err(error) => return LoadState::Failed(failure(&error)),
+                    };
+
+                    // A draft that cannot be saved is not a review: do not let the
+                    // previous one stand in for it.
+                    if let Err(error) = client.create_weekly_review(
+                        &workspace_id,
+                        &draft.summary,
+                        &draft.shipped,
+                        &draft.blockers,
+                        &draft.rejected_changes,
+                        &draft.next_actions,
+                        &draft.risky_patterns,
+                    ) {
+                        return LoadState::Failed(failure(&error));
                     }
 
                     load_weekly_review(&client, &workspace_id)
@@ -3050,8 +3063,13 @@ impl DesktopShell {
         .detach();
     }
 
-    /// A titled list of reasons, one row each, with the ink that fits the list.
-    fn readiness_list(&self, label: &str, items: Vec<String>, ink: Hsla, cx: &App) -> AnyElement {
+    /// A titled list, one bulleted row each, in the ink that fits the list.
+    fn titled_list(&self, label: &str, items: Vec<String>, ink: Hsla, cx: &App) -> AnyElement {
+        // A section with nothing to report is not a section.
+        if items.is_empty() {
+            return div().into_any_element();
+        }
+
         let mut list = v_flex().gap_1().child(
             div()
                 .text_xs()
@@ -3067,32 +3085,6 @@ impl DesktopShell {
                     .child(div().text_sm().text_color(ink).child("•"))
                     .child(div().text_sm().child(item)),
             );
-        }
-
-        list.into_any_element()
-    }
-
-    fn review_list(
-        &self,
-        label: &str,
-        items: &Option<Vec<String>>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let entries = items.clone().unwrap_or_default();
-
-        if entries.is_empty() {
-            return div().into_any_element();
-        }
-
-        let mut list = v_flex().gap_1().child(
-            div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(label.to_string()),
-        );
-
-        for entry in entries {
-            list = list.child(div().text_sm().child(entry));
         }
 
         list.into_any_element()
@@ -5411,7 +5403,7 @@ impl DesktopShell {
                         );
                     }
                 } else {
-                    body = body.child(self.readiness_list(
+                    body = body.child(self.titled_list(
                         "Blockers",
                         blockers,
                         cx.theme().danger_foreground,
@@ -5421,7 +5413,7 @@ impl DesktopShell {
 
                 let not_required = snapshot.not_required_yet.clone().unwrap_or_default();
                 if !not_required.is_empty() {
-                    body = body.child(self.readiness_list(
+                    body = body.child(self.titled_list(
                         "Not required yet",
                         not_required,
                         cx.theme().muted_foreground,
@@ -5476,18 +5468,45 @@ impl DesktopShell {
                 )
                 .into_any_element(),
             LoadState::Loaded(Some(review)) => {
-                let mut body = v_flex().gap_3();
+                let mut body = v_flex().gap_4();
 
                 if let Some(summary) = &review.summary {
-                    body = body.child(div().text_sm().child(summary.clone()));
+                    body = body.child(div().text_base().child(summary.clone()));
                 }
 
+                // Each list keeps the ink of what it reports, so a glance finds
+                // what shipped and what is holding the week back.
                 body = body
-                    .child(self.review_list("Shipped", &review.shipped, cx))
-                    .child(self.review_list("Blockers", &review.blockers, cx))
-                    .child(self.review_list("Rejected changes", &review.rejected_changes, cx))
-                    .child(self.review_list("Risky patterns", &review.risky_patterns, cx))
-                    .child(self.review_list("Next actions", &review.next_actions, cx));
+                    .child(self.titled_list(
+                        "Shipped",
+                        review.shipped.clone().unwrap_or_default(),
+                        cx.theme().success_foreground,
+                        cx,
+                    ))
+                    .child(self.titled_list(
+                        "Blockers",
+                        review.blockers.clone().unwrap_or_default(),
+                        cx.theme().danger_foreground,
+                        cx,
+                    ))
+                    .child(self.titled_list(
+                        "Rejected changes",
+                        review.rejected_changes.clone().unwrap_or_default(),
+                        cx.theme().warning_foreground,
+                        cx,
+                    ))
+                    .child(self.titled_list(
+                        "Risky patterns",
+                        review.risky_patterns.clone().unwrap_or_default(),
+                        cx.theme().warning_foreground,
+                        cx,
+                    ))
+                    .child(self.titled_list(
+                        "Next actions",
+                        review.next_actions.clone().unwrap_or_default(),
+                        cx.theme().foreground,
+                        cx,
+                    ));
 
                 body.into_any_element()
             }
