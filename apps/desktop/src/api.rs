@@ -166,13 +166,18 @@ pub struct KloucyClient {
 
 impl KloucyClient {
     pub fn new() -> Self {
+        Self::with_base_url(base_url())
+    }
+
+    /// A client for an API that is not the one the environment names.
+    pub fn with_base_url(base_url: String) -> Self {
         let http = reqwest::blocking::Client::builder()
             .cookie_store(true)
             .build()
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
 
         Self {
-            base_url: base_url(),
+            base_url: base_url.trim_end_matches('/').to_string(),
             http,
         }
     }

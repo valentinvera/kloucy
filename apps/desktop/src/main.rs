@@ -661,6 +661,33 @@ impl IntoElement for Chip {
     }
 }
 
+/// Everything the shell needs from the API and this machine to start.
+type Account = (
+    SessionStatus,
+    LoadState<Vec<Workspace>>,
+    LoadState<Vec<Agent>>,
+    Vec<DetectedAgent>,
+    HashMap<String, agents::ModelCatalog>,
+);
+
+fn load_account(client: &KloucyClient) -> Account {
+    let session = client.session();
+    let workspaces = load_workspaces(client, &session);
+    let agents = load_agents(client, &session);
+    let installed = detect::detect_installed_agents();
+    let catalogs = installed
+        .iter()
+        .map(|cli| {
+            (
+                cli.provider.clone(),
+                agents::model_catalog(&cli.provider, &cli.executable_path),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    (session, workspaces, agents, installed, catalogs)
+}
+
 fn load_workspaces(client: &KloucyClient, session: &SessionStatus) -> LoadState<Vec<Workspace>> {
     if !matches!(session, SessionStatus::SignedIn(_)) {
         return LoadState::Failed(match session {
@@ -1083,6 +1110,8 @@ struct DesktopShell {
     focus_handle: FocusHandle,
     mono_font: SharedString,
     theme_mode: ThemeMode,
+    api_url: String,
+    api_url_input: Entity<InputState>,
     composer: Entity<InputState>,
     _composer_subscription: Subscription,
     composer_status: Option<ComposerStatus>,
@@ -1175,7 +1204,13 @@ struct DesktopShell {
 
 impl DesktopShell {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let client = KloucyClient::new();
+        let api_url = settings::load_text("apiUrl").unwrap_or_else(api::base_url);
+        let client = KloucyClient::with_base_url(api_url.clone());
+        let api_url_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(api_url.clone())
+                .placeholder("http://localhost:4040")
+        });
         let registry = runner::RunRegistry::new();
         let focus_handle = cx.focus_handle();
         let theme_mode = theme_mode(
@@ -1249,46 +1284,13 @@ impl DesktopShell {
 
         let task_client = client.clone();
         cx.spawn(async move |this, cx| {
-            let (session, workspaces, agents, installed, catalogs) = cx
+            let account = cx
                 .background_executor()
-                .spawn(async move {
-                    let session = task_client.session();
-                    let workspaces = load_workspaces(&task_client, &session);
-                    let agents = load_agents(&task_client, &session);
-                    let installed = detect::detect_installed_agents();
-                    let catalogs = installed
-                        .iter()
-                        .map(|cli| {
-                            (
-                                cli.provider.clone(),
-                                agents::model_catalog(&cli.provider, &cli.executable_path),
-                            )
-                        })
-                        .collect::<HashMap<_, _>>();
-                    (session, workspaces, agents, installed, catalogs)
-                })
+                .spawn(async move { load_account(&task_client) })
                 .await;
 
             this.update(cx, |this, cx| {
-                this.session = session;
-                this.workspaces = workspaces;
-                this.agents = agents;
-                this.installed_agents = installed;
-                this.model_catalogs = catalogs;
-                this.restore_agent_choice();
-                this.pick_default_model();
-                cx.notify();
-
-                let first = match &this.workspaces {
-                    LoadState::Loaded(list) => list.first().map(|workspace| workspace.id.clone()),
-                    _ => None,
-                };
-
-                if this.selected_workspace.is_none()
-                    && let Some(id) = first
-                {
-                    this.select_workspace(id, cx);
-                }
+                this.apply_account(account, cx);
 
                 if let Some(stored) = this.threads.first().cloned() {
                     this.open_stored_thread(stored, cx);
@@ -1299,6 +1301,8 @@ impl DesktopShell {
         .detach();
 
         Self {
+            api_url,
+            api_url_input,
             agents: LoadState::Loading,
             installed_agents: Vec::new(),
             client,
@@ -1944,6 +1948,60 @@ impl DesktopShell {
                 cx.notify();
             })
             .ok();
+        })
+        .detach();
+    }
+
+    /// Take what the API and this machine answered: the session, the workspaces,
+    /// the agents and what each CLI can run.
+    fn apply_account(&mut self, account: Account, cx: &mut Context<Self>) {
+        let (session, workspaces, agents, installed, catalogs) = account;
+
+        self.session = session;
+        self.workspaces = workspaces;
+        self.agents = agents;
+        self.installed_agents = installed;
+        self.model_catalogs = catalogs;
+        self.restore_agent_choice();
+        self.pick_default_model();
+
+        let first = match &self.workspaces {
+            LoadState::Loaded(list) => list.first().map(|workspace| workspace.id.clone()),
+            _ => None,
+        };
+
+        if self.selected_workspace.is_none()
+            && let Some(id) = first
+        {
+            self.select_workspace(id, cx);
+        }
+
+        cx.notify();
+    }
+
+    /// Point the app at another API and load it again.
+    fn reconnect(&mut self, cx: &mut Context<Self>) {
+        let url = self.api_url_input.read(cx).value().trim().to_string();
+
+        if url.is_empty() {
+            return;
+        }
+
+        settings::save_text("apiUrl", &url);
+        self.api_url = url.clone();
+        self.client = KloucyClient::with_base_url(url);
+        self.session = SessionStatus::Checking;
+        cx.notify();
+
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let account = cx
+                .background_executor()
+                .spawn(async move { load_account(&client) })
+                .await;
+
+            this.update(cx, |this, cx| this.apply_account(account, cx))
+                .ok();
         })
         .detach();
     }
@@ -7194,6 +7252,40 @@ impl DesktopShell {
             .into_any_element()
     }
 
+    /// The API the app was told about is not answering: say which one, and let it
+    /// be changed without restarting from a terminal.
+    fn render_offline(&self, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .child(
+                v_flex()
+                    .w(px(360.0))
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("API offline"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("Nothing answered at {}.", self.api_url)),
+                    )
+                    .child(Input::new(&self.api_url_input))
+                    .child(
+                        Button::new("reconnect")
+                            .primary()
+                            .label("Connect")
+                            .on_click(cx.listener(|this, _, _, cx| this.reconnect(cx))),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_sign_in(&self, cx: &mut Context<Self>) -> AnyElement {
         let submit = Button::new("sign-in")
             .primary()
@@ -7239,7 +7331,7 @@ impl Render for DesktopShell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match &self.session {
             SessionStatus::Checking => centered("Checking API…", cx),
-            SessionStatus::Unreachable => centered("API offline.", cx),
+            SessionStatus::Unreachable => self.render_offline(cx),
             SessionStatus::SignedOut => self.render_sign_in(cx),
             SessionStatus::SignedIn(_) => self.render_shell(cx),
         }
