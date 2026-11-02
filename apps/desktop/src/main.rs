@@ -233,6 +233,7 @@ enum LoadState<T> {
 /// The chip menus the home composer opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HomeMenu {
+    Thread,
     Workspace,
     Agent,
     Account,
@@ -2472,6 +2473,40 @@ impl DesktopShell {
         bar.into_any_element()
     }
 
+    /// Change the stored state of the open thread (settled, pinned, archived).
+    fn update_thread_state(
+        &mut self,
+        change: impl FnOnce(&mut threads::StoredThread),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(key) = self
+            .home_thread
+            .as_ref()
+            .and_then(|thread| thread.turns.first())
+            .map(|turn| turn.session_id.clone())
+        else {
+            return;
+        };
+
+        if let Some(stored) = self
+            .threads
+            .iter_mut()
+            .find(|stored| stored.key() == Some(key.as_str()))
+        {
+            change(stored);
+        }
+
+        threads::save(&self.threads);
+        self.home_menu = None;
+        cx.notify();
+    }
+
+    fn archive_thread(&mut self, cx: &mut Context<Self>) {
+        self.update_thread_state(|stored| stored.archived = true, cx);
+        self.clear_home_thread(cx);
+        self.section = Section::Home;
+    }
+
     fn toggle_worktree_mode(&mut self, cx: &mut Context<Self>) {
         self.worktree_mode = !self.worktree_mode;
         settings::save_bool("worktreeMode", self.worktree_mode);
@@ -3126,8 +3161,17 @@ impl DesktopShell {
             return;
         };
 
+        let key = thread.turns.first().map(|turn| turn.session_id.clone());
+        let previous = key.as_deref().and_then(|key| {
+            self.threads
+                .iter()
+                .find(|stored| stored.key() == Some(key))
+                .cloned()
+        });
+
         let stored = threads::StoredThread {
             agent_session: thread.agent_session.clone(),
+            archived: previous.as_ref().is_some_and(|stored| stored.archived),
             branch: thread
                 .checkout
                 .as_ref()
@@ -3136,11 +3180,13 @@ impl DesktopShell {
                 .checkout
                 .as_ref()
                 .map(|checkout| checkout.path.clone()),
+            pinned: previous.as_ref().is_some_and(|stored| stored.pinned),
             session_ids: thread
                 .turns
                 .iter()
                 .map(|turn| turn.session_id.clone())
                 .collect(),
+            settled: previous.as_ref().is_some_and(|stored| stored.settled),
             title: thread.title.clone(),
             updated_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3472,6 +3518,7 @@ impl DesktopShell {
         self.open_file = None;
         self.files_error = None;
         self.diff_error = None;
+        self.refresh_home_checkout();
         cx.notify();
     }
 
@@ -4512,15 +4559,38 @@ impl DesktopShell {
     fn render_nav(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut items = v_flex().px_2().gap_1().child(self.nav_new_thread(cx));
 
+        let pinned = self
+            .threads
+            .iter()
+            .filter(|thread| thread.pinned && !thread.archived && !thread.settled)
+            .collect::<Vec<_>>();
+
+        if !pinned.is_empty() {
+            items = items.child(nav_label("Pinned", cx.theme().muted_foreground));
+
+            for (index, thread) in pinned.into_iter().enumerate() {
+                items = items.child(self.nav_thread(thread, (usize::MAX - 1, index), cx));
+            }
+        }
+
         if let LoadState::Loaded(workspaces) = &self.workspaces {
             for (index, workspace) in workspaces.iter().enumerate() {
-                items = items.child(self.nav_project(workspace, index, cx));
-
                 let threads = self
                     .threads
                     .iter()
-                    .filter(|thread| thread.workspace_id == workspace.id)
+                    .filter(|thread| {
+                        thread.workspace_id == workspace.id
+                            && !thread.archived
+                            && !thread.settled
+                            && !thread.pinned
+                    })
                     .collect::<Vec<_>>();
+
+                if threads.is_empty() {
+                    continue;
+                }
+
+                items = items.child(self.nav_project(workspace, index, cx));
 
                 for (thread_index, thread) in threads.into_iter().enumerate() {
                     items = items.child(self.nav_thread(thread, (index, thread_index), cx));
@@ -4531,7 +4601,12 @@ impl DesktopShell {
         let orphans = self
             .threads
             .iter()
-            .filter(|thread| self.workspace_by_id(&thread.workspace_id).is_none())
+            .filter(|thread| {
+                self.workspace_by_id(&thread.workspace_id).is_none()
+                    && !thread.archived
+                    && !thread.settled
+                    && !thread.pinned
+            })
             .collect::<Vec<_>>();
 
         if !orphans.is_empty() {
@@ -4539,6 +4614,23 @@ impl DesktopShell {
 
             for (index, thread) in orphans.into_iter().enumerate() {
                 items = items.child(self.nav_thread(thread, (usize::MAX, index), cx));
+            }
+        }
+
+        let settled = self
+            .threads
+            .iter()
+            .filter(|thread| thread.settled && !thread.archived)
+            .collect::<Vec<_>>();
+
+        if !settled.is_empty() {
+            items = items.child(nav_label(
+                &format!("Settled ({})", settled.len()),
+                cx.theme().muted_foreground,
+            ));
+
+            for (index, thread) in settled.into_iter().enumerate() {
+                items = items.child(self.nav_thread(thread, (usize::MAX - 2, index), cx));
             }
         }
 
@@ -5299,6 +5391,9 @@ impl DesktopShell {
                                         agent_session: None,
                                         branch: None,
                                         checkout_path: None,
+                                        settled: false,
+                                        pinned: false,
+                                        archived: false,
                                         session_ids: vec![session_id.clone()],
                                         title: title.clone(),
                                         updated_at: 0,
@@ -5444,6 +5539,9 @@ impl DesktopShell {
                                                         agent_session: None,
                                                         branch: None,
                                                         checkout_path: None,
+                                                        settled: false,
+                                                        pinned: false,
+                                                        archived: false,
                                                         session_ids: vec![session.id.clone()],
                                                         title: session
                                                             .prompt
@@ -5772,6 +5870,9 @@ impl DesktopShell {
                                             agent_session: None,
                                             branch: None,
                                             checkout_path: None,
+                                            settled: false,
+                                            pinned: false,
+                                            archived: false,
                                             session_ids: vec![open_session.clone()],
                                             title: open_title.clone(),
                                             updated_at: 0,
@@ -6026,6 +6127,9 @@ impl DesktopShell {
                             agent_session: None,
                             branch: None,
                             checkout_path: None,
+                            settled: false,
+                            pinned: false,
+                            archived: false,
                             session_ids: vec![session_id.clone()],
                             title: decision.title.clone(),
                             updated_at: 0,
@@ -7119,6 +7223,19 @@ impl DesktopShell {
                     .items_center()
                     .gap_1()
                     .flex_shrink_0()
+                    .child(
+                        self.home_popover(
+                            "thread-menu",
+                            Button::new("thread-menu")
+                                .ghost()
+                                .small()
+                                .icon(Icon::new(IconName::Ellipsis))
+                                .into_any_element(),
+                            HomeMenu::Thread,
+                            Corner::BottomRight,
+                            cx,
+                        ),
+                    )
                     .when(!self.threads.is_empty(), |element| {
                         element.child(
                             self.home_popover(
@@ -7746,6 +7863,73 @@ impl DesktopShell {
         let entity = cx.entity().downgrade();
 
         match menu {
+            HomeMenu::Thread => {
+                let key = self
+                    .home_thread
+                    .as_ref()
+                    .and_then(|thread| thread.turns.first())
+                    .map(|turn| turn.session_id.clone());
+                let stored = key
+                    .as_deref()
+                    .and_then(|key| self.threads.iter().find(|stored| stored.key() == Some(key)));
+                let settled = stored.is_some_and(|stored| stored.settled);
+                let pinned = stored.is_some_and(|stored| stored.pinned);
+
+                Rc::new(move |cx| {
+                    let mut list = menu_list(px(230.0));
+                    let settle = if settled {
+                        "Un-settle thread"
+                    } else {
+                        "Settle thread"
+                    };
+                    let pin = if pinned { "Unpin thread" } else { "Pin thread" };
+                    let settle_entity = entity.clone();
+                    let pin_entity = entity.clone();
+                    let archive_entity = entity.clone();
+
+                    list = list.child(menu_row(
+                        ("thread-settle", 0),
+                        cx,
+                        false,
+                        vec![div().text_sm().child(settle).into_any_element()],
+                        Some(Box::new(move |_, cx| {
+                            let _ = settle_entity.update(cx, |this, cx| {
+                                this.update_thread_state(
+                                    |stored| stored.settled = !stored.settled,
+                                    cx,
+                                );
+                            });
+                        })),
+                    ));
+                    list = list.child(menu_row(
+                        ("thread-pin", 0),
+                        cx,
+                        pinned,
+                        vec![div().text_sm().child(pin).into_any_element()],
+                        Some(Box::new(move |_, cx| {
+                            let _ = pin_entity.update(cx, |this, cx| {
+                                this.update_thread_state(
+                                    |stored| stored.pinned = !stored.pinned,
+                                    cx,
+                                );
+                            });
+                        })),
+                    ));
+                    list = list.child(menu_row(
+                        ("thread-archive", 0),
+                        cx,
+                        false,
+                        vec![div().text_sm().child("Archive thread").into_any_element()],
+                        Some(Box::new(move |_, cx| {
+                            let _ = archive_entity.update(cx, |this, cx| {
+                                this.archive_thread(cx);
+                            });
+                        })),
+                    ));
+
+                    list.into_any_element()
+                })
+            }
             HomeMenu::Workspace => {
                 let workspaces = match &self.workspaces {
                     LoadState::Loaded(workspaces) => workspaces.clone(),
