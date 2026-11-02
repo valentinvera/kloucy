@@ -2580,6 +2580,7 @@ impl DesktopShell {
                             Some(ComposerStatus::Notice(format!("Pull request: {url}")));
                     }
                     Err(message) => {
+                        this.composer_status = Some(ComposerStatus::Failed(message.clone()));
                         this.git_error = Some(message);
                     }
                 }
@@ -2597,6 +2598,38 @@ impl DesktopShell {
         };
 
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+
+    /// Find the open pull request for the thread's branch, if it has one.
+    fn detect_pull_request(&mut self, cx: &mut Context<Self>) {
+        let Some(checkout) = self.thread_checkout() else {
+            return;
+        };
+
+        let branch = checkout.branch.clone();
+
+        cx.spawn(async move |this, cx| {
+            let url = cx
+                .background_executor()
+                .spawn(async move {
+                    git::pull_request_url(std::path::Path::new(&checkout.path), &checkout.branch)
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                // A slow lookup must not land on the thread opened after it.
+                let current = this
+                    .thread_checkout()
+                    .is_some_and(|checkout| checkout.branch == branch);
+
+                if current {
+                    this.pr_url = url;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn render_commit_bar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3041,6 +3074,7 @@ impl DesktopShell {
                             thread.checkout = checkout;
                         }
 
+                        this.pr_url = None;
                         this.refresh_home_checkout(cx);
                         this.remember_thread();
                         this.watching = Some(session_id.clone());
@@ -3568,6 +3602,7 @@ impl DesktopShell {
     /// Reopen a conversation from the history, rebuilding its turns from the API.
     fn open_stored_thread(&mut self, stored: threads::StoredThread, cx: &mut Context<Self>) {
         self.home_menu = None;
+        self.pr_url = None;
         let client = self.client.clone();
 
         cx.spawn(async move |this, cx| {
@@ -3592,6 +3627,7 @@ impl DesktopShell {
                         this.home_thread = Some(thread);
                         this.composer_status = None;
                         this.refresh_home_checkout(cx);
+                        this.detect_pull_request(cx);
                         this.home_scroll.scroll_to_bottom();
                     }
                     None => {
@@ -3786,6 +3822,7 @@ impl DesktopShell {
 
     fn clear_home_thread(&mut self, cx: &mut Context<Self>) {
         self.home_thread = None;
+        self.pr_url = None;
         self.composer_status = None;
         self.panel = None;
         self.open_file = None;
@@ -7971,6 +8008,29 @@ impl DesktopShell {
                                 cx,
                             ),
                         )
+                    })
+                    .when(self.thread_checkout().is_some(), |element| {
+                        let button = if self.pr_url.is_some() {
+                            Button::new("thread-view-pr")
+                                .ghost()
+                                .small()
+                                .label("View PR")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.view_pull_request();
+                                    cx.notify();
+                                }))
+                        } else {
+                            Button::new("thread-create-pr")
+                                .ghost()
+                                .small()
+                                .label("Create PR")
+                                .disabled(self.git_busy)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.create_pull_request(cx)),
+                                )
+                        };
+
+                        element.child(button)
                     })
                     .when(self.thread_checkout().is_some(), |element| {
                         element.child(
