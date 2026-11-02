@@ -104,7 +104,7 @@ pub fn load_text(key: &str) -> Option<String> {
 }
 
 /// Persist a text setting, leaving the others alone.
-pub fn save_text(key: &'static str, value: &str) {
+pub fn save_text(key: &str, value: &str) {
     update_document(|document| {
         document[key] = json!(value);
     });
