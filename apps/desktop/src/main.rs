@@ -8293,6 +8293,7 @@ impl DesktopShell {
                         .h(px(36.0))
                         .flex_shrink_0()
                         .items_center()
+                        .justify_between()
                         .px_3()
                         .border_b_1()
                         .border_color(cx.theme().border)
@@ -8304,7 +8305,22 @@ impl DesktopShell {
                                 .font_family(self.mono_font.clone())
                                 .text_color(cx.theme().muted_foreground)
                                 .child(file.path.clone()),
-                        ),
+                        )
+                        .child({
+                            let path = file.path.clone();
+
+                            Button::new("file-copy-path")
+                                .ghost()
+                                .small()
+                                .label("Copy path")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+                                    this.composer_status = Some(ComposerStatus::Notice(
+                                        "File path copied.".to_string(),
+                                    ));
+                                    cx.notify();
+                                }))
+                        }),
                 )
                 .child(body)
                 .when(truncated, |element| {
