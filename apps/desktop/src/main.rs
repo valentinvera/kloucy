@@ -470,6 +470,24 @@ fn review_ink(action: &str, cx: &App) -> Hsla {
     }
 }
 
+/// The ink a readiness verdict is drawn in.
+fn readiness_ink(status: &str, cx: &App) -> Hsla {
+    match status {
+        "ready_to_run" => cx.theme().success_foreground,
+        "almost_ready" => cx.theme().warning_foreground,
+        _ => cx.theme().danger_foreground,
+    }
+}
+
+/// A readiness status as a sentence rather than an identifier.
+fn readiness_label(status: &str) -> &'static str {
+    match status {
+        "ready_to_run" => "Ready to run",
+        "almost_ready" => "Almost ready",
+        _ => "Not ready",
+    }
+}
+
 /// The review a run left waiting for a decision, if it left one.
 fn pending_review<'a>(reviews: &'a LoadState<Vec<Review>>, session_id: &str) -> Option<&'a Review> {
     let LoadState::Loaded(reviews) = reviews else {
@@ -3032,6 +3050,28 @@ impl DesktopShell {
         .detach();
     }
 
+    /// A titled list of reasons, one row each, with the ink that fits the list.
+    fn readiness_list(&self, label: &str, items: Vec<String>, ink: Hsla, cx: &App) -> AnyElement {
+        let mut list = v_flex().gap_1().child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(label.to_string()),
+        );
+
+        for item in items {
+            list = list.child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .child(div().text_sm().text_color(ink).child("•"))
+                    .child(div().text_sm().child(item)),
+            );
+        }
+
+        list.into_any_element()
+    }
+
     fn review_list(
         &self,
         label: &str,
@@ -5328,55 +5368,65 @@ impl DesktopShell {
                 )
                 .into_any_element(),
             LoadState::Loaded(Some(snapshot)) => {
-                let mut body = v_flex().gap_3().child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            div()
-                                .text_2xl()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(snapshot.score.to_string()),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(snapshot.status.clone()),
-                        ),
-                );
+                let verdict = readiness_ink(&snapshot.status, cx);
+
+                let mut body = v_flex()
+                    .gap_4()
+                    // The score on its own says nothing: "72" is only good or bad
+                    // next to its verdict, so both are read together.
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_end()
+                            .child(
+                                div()
+                                    .text_2xl()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(verdict)
+                                    .child(snapshot.score.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("/ 100"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(verdict)
+                            .child(readiness_label(&snapshot.status)),
+                    );
 
                 let blockers = snapshot.blockers.clone().unwrap_or_default();
-                if !blockers.is_empty() {
-                    let mut list = v_flex().gap_1().child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Blockers"),
-                    );
-                    for blocker in blockers {
-                        list = list.child(div().text_sm().child(blocker));
+                if blockers.is_empty() {
+                    // An empty list only deserves a line when it is the good news.
+                    if snapshot.status == "ready_to_run" {
+                        body = body.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().success_foreground)
+                                .child("No blockers."),
+                        );
                     }
-                    body = body.child(list);
+                } else {
+                    body = body.child(self.readiness_list(
+                        "Blockers",
+                        blockers,
+                        cx.theme().danger_foreground,
+                        cx,
+                    ));
                 }
 
                 let not_required = snapshot.not_required_yet.clone().unwrap_or_default();
                 if !not_required.is_empty() {
-                    let mut list = v_flex().gap_1().child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Not required yet"),
-                    );
-                    for item in not_required {
-                        list = list.child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(item),
-                        );
-                    }
-                    body = body.child(list);
+                    body = body.child(self.readiness_list(
+                        "Not required yet",
+                        not_required,
+                        cx.theme().muted_foreground,
+                        cx,
+                    ));
                 }
 
                 body.into_any_element()
@@ -7609,6 +7659,15 @@ mod nav_tests {
         assert_eq!(initials("Alex Rivera"), "AR");
         assert_eq!(initials("Valen"), "V");
         assert_eq!(initials("  "), "");
+    }
+
+    #[test]
+    fn reads_readiness_status_as_a_verdict() {
+        assert_eq!(readiness_label("ready_to_run"), "Ready to run");
+        assert_eq!(readiness_label("almost_ready"), "Almost ready");
+        assert_eq!(readiness_label("not_ready"), "Not ready");
+        // An identifier this version does not know still reads as a sentence.
+        assert_eq!(readiness_label("something_new"), "Not ready");
     }
 }
 
