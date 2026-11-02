@@ -6983,27 +6983,79 @@ impl DesktopShell {
         let focus = self.terminal_focus.clone();
         let mut screen = v_flex().p_2();
 
-        for runs in &snapshot.rows {
+        for (row, runs) in snapshot.rows.iter().enumerate() {
             let mut text = String::new();
             let mut styled = Vec::with_capacity(runs.len());
+            let mut cursor_drawn = false;
 
-            for run in runs {
-                if run.text.is_empty() {
-                    continue;
+            let color_of = |value: Option<u32>| {
+                value
+                    .map(|value| rgb(value).into())
+                    .unwrap_or(cx.theme().foreground)
+            };
+
+            let mut push = |value: &str, color: Hsla, background: Option<Hsla>| {
+                if value.is_empty() {
+                    return;
                 }
 
-                text.push_str(&run.text);
+                text.push_str(value);
                 styled.push(TextRun {
-                    len: run.text.len(),
+                    len: value.len(),
                     font: font(self.mono_font.clone()),
-                    color: run
-                        .foreground
-                        .map(|value| rgb(value).into())
-                        .unwrap_or(cx.theme().foreground),
-                    background_color: run.background.map(|value| rgb(value).into()),
+                    color,
+                    background_color: background,
                     underline: None,
                     strikethrough: None,
                 });
+            };
+
+            for run in runs {
+                let width = run.text.chars().count() as u16;
+                let end = run.column + width;
+                let cursor = (snapshot.cursor.0 as usize == row)
+                    .then_some(snapshot.cursor.1)
+                    .filter(|column| *column >= run.column && *column < end);
+
+                match cursor {
+                    Some(column) => {
+                        let offset = usize::from(column - run.column);
+                        let before = run.text.chars().take(offset).collect::<String>();
+                        let at = run.text.chars().skip(offset).take(1).collect::<String>();
+                        let after = run.text.chars().skip(offset + 1).collect::<String>();
+
+                        push(
+                            &before,
+                            color_of(run.foreground),
+                            run.background.map(|value| rgb(value).into()),
+                        );
+                        push(&at, cx.theme().background, Some(cx.theme().foreground));
+                        push(
+                            &after,
+                            color_of(run.foreground),
+                            run.background.map(|value| rgb(value).into()),
+                        );
+                        cursor_drawn = true;
+                    }
+                    None => push(
+                        &run.text,
+                        color_of(run.foreground),
+                        run.background.map(|value| rgb(value).into()),
+                    ),
+                }
+            }
+
+            // A cursor at the end of the row has no cell to invert.
+            if !cursor_drawn && snapshot.cursor.0 as usize == row {
+                let end = runs
+                    .iter()
+                    .map(|run| run.column + run.text.chars().count() as u16)
+                    .max()
+                    .unwrap_or(0);
+
+                if snapshot.cursor.1 >= end {
+                    push(" ", cx.theme().background, Some(cx.theme().foreground));
+                }
             }
 
             screen = screen.child(

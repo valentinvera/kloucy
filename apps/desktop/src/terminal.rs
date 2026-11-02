@@ -27,12 +27,15 @@ pub struct Terminal {
 /// One stretch of a row with the same colours.
 pub struct Run {
     pub background: Option<u32>,
+    /// The column the run starts at, so the renderer can place the cursor.
+    pub column: u16,
     pub foreground: Option<u32>,
     pub text: String,
 }
 
 /// What the panel draws: one set of runs per row.
 pub struct Snapshot {
+    pub cursor: (u16, u16),
     pub rows: Vec<Vec<Run>>,
 }
 
@@ -104,11 +107,15 @@ impl Terminal {
 
     pub fn snapshot(&self) -> Snapshot {
         let Ok(parser) = self.parser.lock() else {
-            return Snapshot { rows: Vec::new() };
+            return Snapshot {
+                cursor: (0, 0),
+                rows: Vec::new(),
+            };
         };
 
         let screen = parser.screen();
         let (rows, cols) = screen.size();
+        let cursor = screen.cursor_position();
         let mut lines = Vec::with_capacity(usize::from(rows));
 
         for row in 0..rows {
@@ -129,6 +136,7 @@ impl Terminal {
                     }
                     _ => runs.push(Run {
                         background,
+                        column: col,
                         foreground,
                         text,
                     }),
@@ -138,7 +146,10 @@ impl Terminal {
             lines.push(runs);
         }
 
-        Snapshot { rows: lines }
+        Snapshot {
+            cursor,
+            rows: lines,
+        }
     }
 }
 
