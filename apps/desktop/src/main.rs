@@ -396,6 +396,20 @@ fn folder_name(path: &str) -> String {
     }
 }
 
+/// A project's saved worktree choice, falling back to the global default.
+fn worktree_mode_value(saved: Option<&str>, global: bool) -> bool {
+    match saved {
+        Some("worktree") => true,
+        Some("checkout") => false,
+        _ => global,
+    }
+}
+
+/// The settings key that holds one project's worktree choice.
+fn worktree_mode_key(workspace_id: &str) -> String {
+    format!("worktreeMode:{workspace_id}")
+}
+
 /// Seconds since the Unix epoch, for the thread's snooze clock.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -1660,6 +1674,10 @@ impl DesktopShell {
         }
 
         self.selected_workspace = Some(workspace_id.clone());
+        self.worktree_mode = worktree_mode_value(
+            settings::load_text(&worktree_mode_key(&workspace_id)).as_deref(),
+            settings::load_bool("worktreeMode").unwrap_or(true),
+        );
         self.selected_session = None;
         self.session_logs = LoadState::Loading;
         self.session_steps = LoadState::Loading;
@@ -2553,7 +2571,22 @@ impl DesktopShell {
 
     fn toggle_worktree_mode(&mut self, cx: &mut Context<Self>) {
         self.worktree_mode = !self.worktree_mode;
-        settings::save_bool("worktreeMode", self.worktree_mode);
+
+        // The choice belongs to the project it was made in; the global value is
+        // only the default for projects that have not chosen yet.
+        if let Some(workspace_id) = &self.selected_workspace {
+            let key = worktree_mode_key(workspace_id);
+
+            settings::save_text(
+                &key,
+                if self.worktree_mode {
+                    "worktree"
+                } else {
+                    "checkout"
+                },
+            );
+        }
+
         cx.notify();
     }
 
@@ -9481,6 +9514,14 @@ mod nav_tests {
         assert_eq!(initials("Alex Rivera"), "AR");
         assert_eq!(initials("Valen"), "V");
         assert_eq!(initials("  "), "");
+    }
+
+    #[test]
+    fn reads_a_project_worktree_choice_before_the_global_one() {
+        assert!(worktree_mode_value(Some("worktree"), false));
+        assert!(!worktree_mode_value(Some("checkout"), true));
+        assert!(worktree_mode_value(None, true));
+        assert!(!worktree_mode_value(None, false));
     }
 
     #[test]
