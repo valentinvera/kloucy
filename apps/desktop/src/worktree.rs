@@ -50,23 +50,6 @@ pub fn create(repo: &Path, title: &str, seed: &str) -> Result<Worktree, String> 
     })
 }
 
-/// Remove a worktree this app created.
-pub fn remove(repo: &Path, path: &str) -> Result<(), String> {
-    let root = repository_root(repo)?;
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(&root)
-        .args(["worktree", "remove", "--force", path])
-        .output()
-        .map_err(|_| "Kloucy could not run git.".to_string())?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err("Kloucy could not remove that worktree.".to_string())
-    }
-}
-
 /// Where Kloucy keeps the worktrees of its threads.
 fn directory() -> PathBuf {
     let home = std::env::var_os("HOME")
@@ -178,8 +161,13 @@ mod tests {
         assert!(Path::new(&worktree.path).join("README.md").exists());
         assert!(worktree.branch.starts_with("kloucy/fix-the-parser-"));
 
-        remove(&root, &worktree.path).expect("removal");
-        assert!(!Path::new(&worktree.path).exists());
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "remove", "--force", &worktree.path])
+            .status()
+            .expect("git");
+        assert!(status.success());
 
         let _ = fs::remove_dir_all(root);
     }
