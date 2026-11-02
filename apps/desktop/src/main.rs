@@ -2,6 +2,7 @@ mod agents;
 mod api;
 mod assets;
 mod detect;
+mod device;
 mod diff;
 mod files;
 mod git;
@@ -17,10 +18,10 @@ mod worktree;
 
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, CursorStyle, Div, Entity,
-    FocusHandle, FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render, ScrollDelta,
-    ScrollHandle, SharedString, StrikethroughStyle, StyledText, Subscription, TextRun,
-    UnderlineStyle, WeakEntity, Window, WindowBounds, WindowOptions, actions, div, font, hsla,
-    prelude::*, px, rgb, size,
+    FocusHandle, FontStyle, FontWeight, Hsla, Image, ImageFormat, IntoElement, KeyBinding, Pixels,
+    Render, ScrollDelta, ScrollHandle, SharedString, StrikethroughStyle, StyledText, Subscription,
+    TextRun, UnderlineStyle, WeakEntity, Window, WindowBounds, WindowOptions, actions, div, font,
+    hsla, img, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable, Sizable as _, Theme,
@@ -82,7 +83,7 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 18] = [
+const PALETTE_ENTRIES: [PaletteEntry; 19] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
@@ -190,6 +191,12 @@ const PALETTE_ENTRIES: [PaletteEntry; 18] = [
         group: "Thread",
         keywords: "web preview localhost url",
         label: "Open browser",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Panel(Panel::Device),
+        group: "Thread",
+        keywords: "android emulator simulator mobile",
+        label: "Open device",
     },
 ];
 
@@ -323,6 +330,7 @@ struct OpenFile {
 enum Panel {
     Agents,
     Browser,
+    Device,
     Diff,
     Files,
     Terminal,
@@ -1342,6 +1350,11 @@ struct DesktopShell {
     browser_url: Entity<InputState>,
     browser_error: Option<String>,
     browser_notice: Option<String>,
+    devices: Option<device::Devices>,
+    devices_error: Option<String>,
+    devices_loading: bool,
+    device_image: Option<Arc<Image>>,
+    device_notice: Option<String>,
     sending_composer: bool,
     home_provider: Option<String>,
     home_model: Option<String>,
@@ -1579,6 +1592,11 @@ impl DesktopShell {
             browser_url,
             browser_error: None,
             browser_notice: None,
+            devices: None,
+            devices_error: None,
+            devices_loading: false,
+            device_image: None,
+            device_notice: None,
             sending_composer: false,
             home_provider: None,
             home_model: None,
@@ -3709,6 +3727,7 @@ impl DesktopShell {
 
         match panel {
             Panel::Agents | Panel::Browser => {}
+            Panel::Device => self.load_devices(cx),
             Panel::Diff => self.refresh_diff(cx),
             Panel::Files => self.refresh_files(cx),
             Panel::Terminal => self.start_terminal(cx),
@@ -7468,6 +7487,334 @@ impl DesktopShell {
         cx.notify();
     }
 
+    /// Find the emulators and running Android devices.
+    fn load_devices(&mut self, cx: &mut Context<Self>) {
+        if self.devices_loading {
+            return;
+        }
+
+        self.devices_loading = true;
+        self.devices_error = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let devices = cx
+                .background_executor()
+                .spawn(async { device::scan() })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.devices_loading = false;
+                let serial = devices.running.first().cloned();
+                this.devices = Some(devices);
+
+                if this.device_image.is_none()
+                    && let Some(serial) = serial
+                {
+                    this.capture_device(serial, cx);
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Start `avd` headless and look for its serial until it answers.
+    fn start_device(&mut self, avd: String, cx: &mut Context<Self>) {
+        let Some(emulator) = self
+            .devices
+            .as_ref()
+            .and_then(|devices| devices.emulator.clone())
+        else {
+            self.devices_error = Some("The Android emulator is not installed.".to_string());
+            cx.notify();
+            return;
+        };
+
+        match device::start(&emulator, &avd) {
+            Ok(()) => {
+                self.devices_error = None;
+                self.device_notice = Some(format!("Starting {avd}…"));
+                self.device_image = None;
+
+                cx.spawn(async move |this, cx| {
+                    for _ in 0..40 {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(2))
+                            .await;
+
+                        let devices = cx
+                            .background_executor()
+                            .spawn(async { device::scan() })
+                            .await;
+                        let serial = devices.running.first().cloned();
+                        let found = serial.is_some();
+
+                        this.update(cx, |this, cx| {
+                            this.devices = Some(devices);
+
+                            if let Some(serial) = serial {
+                                this.device_notice = Some(format!("{serial} is running."));
+                                this.capture_device(serial, cx);
+                            }
+
+                            cx.notify();
+                        })
+                        .ok();
+
+                        if found {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+            }
+            Err(message) => {
+                self.devices_error = Some(message);
+            }
+        }
+
+        cx.notify();
+    }
+
+    /// Stop a running device and forget its screen.
+    fn stop_device(&mut self, serial: String, cx: &mut Context<Self>) {
+        let Some(adb) = self.devices.as_ref().map(|devices| devices.adb.clone()) else {
+            return;
+        };
+
+        let label = serial.clone();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { device::stop(&adb, &serial) })
+                .await;
+
+            if let Err(message) = result {
+                this.update(cx, |this, cx| {
+                    this.devices_error = Some(message);
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+
+            // `emu kill` returns before the process has exited; wait for the
+            // serial to disappear so the list is not refreshed too early.
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            let devices = cx
+                .background_executor()
+                .spawn(async { device::scan() })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.devices = Some(devices);
+                this.device_image = None;
+                this.device_notice = Some(format!("Stopped {label}."));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Read a still of `serial` for the surface.
+    fn capture_device(&mut self, serial: String, cx: &mut Context<Self>) {
+        let Some(adb) = self.devices.as_ref().map(|devices| devices.adb.clone()) else {
+            return;
+        };
+
+        self.devices_error = None;
+        self.device_notice = Some(format!("Capturing {serial}…"));
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { device::screenshot(&adb, &serial) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(bytes) => {
+                        this.device_image =
+                            Some(Arc::new(Image::from_bytes(ImageFormat::Png, bytes)));
+                        this.device_notice = None;
+                    }
+                    Err(message) => {
+                        this.device_notice = None;
+                        this.devices_error = Some(message);
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Android devices: what is running, what can start, and its screen.
+    fn render_device_surface(&self, cx: &mut Context<Self>) -> AnyElement {
+        let refresh = Button::new("device-refresh")
+            .ghost()
+            .small()
+            .label("Refresh")
+            .disabled(self.devices_loading)
+            .on_click(cx.listener(|this, _, _, cx| this.load_devices(cx)));
+
+        let mut body = v_flex().p_3().gap_3().child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("Android devices"),
+                )
+                .child(refresh),
+        );
+
+        if let Some(error) = &self.devices_error {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        if let Some(notice) = &self.device_notice {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(notice.clone()),
+            );
+        }
+
+        let Some(devices) = &self.devices else {
+            return body
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Looking for Android devices…"),
+                )
+                .into_any_element();
+        };
+
+        if devices.running.is_empty() && devices.avds.is_empty() {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No Android devices or emulators were found."),
+            );
+        }
+
+        if devices.emulator.is_none() {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Install the Android SDK's emulator to start one."),
+            );
+        }
+
+        for (index, serial) in devices.running.iter().enumerate() {
+            let capture_serial = serial.clone();
+            let capture = Button::new(("device-capture", index))
+                .ghost()
+                .small()
+                .label("Screenshot")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.capture_device(capture_serial.clone(), cx);
+                }));
+
+            let stop_serial = serial.clone();
+            let stop = Button::new(("device-stop", index))
+                .ghost()
+                .small()
+                .label("Stop")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.stop_device(stop_serial.clone(), cx);
+                }));
+
+            body = body.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .font_family(self.mono_font.clone())
+                            .child(serial.clone()),
+                    )
+                    .child(capture)
+                    .child(stop),
+            );
+        }
+
+        for (index, avd) in devices.avds.iter().enumerate() {
+            let name = avd.clone();
+            let start = Button::new(("device-start", index))
+                .ghost()
+                .small()
+                .label("Start")
+                .disabled(self.devices_loading)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.start_device(name.clone(), cx);
+                }));
+
+            body = body.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_1().min_w_0().text_sm().child(avd.clone()))
+                    .child(start),
+            );
+        }
+
+        if let Some(image) = &self.device_image {
+            let (width, height) = device::png_size(&image.bytes).unwrap_or((900, 2000));
+            let scale = (504.0 / width as f32).min(460.0 / height as f32);
+            let display_width = (width as f32 * scale).max(1.0);
+            let display_height = (height as f32 * scale).max(1.0);
+
+            body = body.child(
+                h_flex().w_full().justify_center().child(
+                    div()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .p_2()
+                        .child(
+                            img(image.clone())
+                                .w(px(display_width))
+                                .h(px(display_height)),
+                        ),
+                ),
+            );
+        }
+
+        div()
+            .id("device-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(body)
+            .into_any_element()
+    }
+
     /// A URL launcher: GPUI has no embedded webview on Wayland, so the page
     /// opens in the browser the reader already has.
     fn render_browser_surface(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -7566,13 +7913,15 @@ impl DesktopShell {
                     .child(self.panel_tab(Panel::Diff, "Diff", cx))
                     .child(self.panel_tab(Panel::Terminal, "Terminal", cx))
                     .child(self.panel_tab(Panel::Agents, "Agents", cx))
-                    .child(self.panel_tab(Panel::Browser, "Browser", cx)),
+                    .child(self.panel_tab(Panel::Browser, "Browser", cx))
+                    .child(self.panel_tab(Panel::Device, "Device", cx)),
             )
             .child(close);
 
         let body: AnyElement = match self.panel {
             Some(Panel::Agents) => self.render_agents_surface(cx),
             Some(Panel::Browser) => self.render_browser_surface(cx),
+            Some(Panel::Device) => self.render_device_surface(cx),
             Some(Panel::Diff) => self.render_diff_surface(cx),
             Some(Panel::Files) => self.render_files_surface(cx),
             Some(Panel::Terminal) => self.render_terminal_surface(cx),
@@ -7602,9 +7951,10 @@ impl DesktopShell {
         let index = match panel {
             Panel::Agents => 0_usize,
             Panel::Browser => 1,
-            Panel::Diff => 2,
-            Panel::Files => 3,
-            Panel::Terminal => 4,
+            Panel::Device => 2,
+            Panel::Diff => 3,
+            Panel::Files => 4,
+            Panel::Terminal => 5,
         };
 
         div()
@@ -10515,6 +10865,11 @@ mod palette_tests {
             palette_matches("browser")
                 .iter()
                 .any(|entry| entry.command == PaletteCommand::Panel(Panel::Browser))
+        );
+        assert!(
+            palette_matches("device")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::Panel(Panel::Device))
         );
     }
 
