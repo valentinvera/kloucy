@@ -7445,6 +7445,75 @@ impl DesktopShell {
             .map(|turn| turn.status.as_str())
             .unwrap_or("done");
 
+        let open_key = thread.turns.first().map(|turn| turn.session_id.clone());
+        let renaming = open_key
+            .as_deref()
+            .is_some_and(|key| self.rename_thread.as_deref() == Some(key));
+
+        let title_area: AnyElement = if renaming {
+            h_flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(div().w(px(320.0)).child(Input::new(&self.rename_title)))
+                .child(
+                    Button::new("thread-rename-save")
+                        .primary()
+                        .small()
+                        .label("Save")
+                        .on_click(cx.listener(|this, _, _, cx| this.save_rename(cx))),
+                )
+                .child(
+                    Button::new("thread-rename-cancel")
+                        .ghost()
+                        .small()
+                        .label("Cancel")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.rename_thread = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element()
+        } else {
+            let mut area = h_flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .truncate()
+                        .child(thread.title.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(if status == "failed" {
+                            cx.theme().danger_foreground
+                        } else {
+                            cx.theme().muted_foreground
+                        })
+                        .child(thread_status_label(status)),
+                );
+
+            if let Some(key) = open_key {
+                let title = thread.title.clone();
+
+                area = area.child(
+                    Button::new("thread-rename")
+                        .ghost()
+                        .small()
+                        .label("Rename")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.start_renaming(key.clone(), title.clone(), window, cx);
+                        })),
+                );
+            }
+
+            area.into_any_element()
+        };
+
         let header = h_flex()
             .w_full()
             .items_center()
@@ -7452,29 +7521,7 @@ impl DesktopShell {
             .px(px(24.0))
             .pt(px(20.0))
             .pb(px(12.0))
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .truncate()
-                            .child(thread.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(if status == "failed" {
-                                cx.theme().danger_foreground
-                            } else {
-                                cx.theme().muted_foreground
-                            })
-                            .child(thread_status_label(status)),
-                    ),
-            )
+            .child(title_area)
             .child(
                 h_flex()
                     .items_center()
