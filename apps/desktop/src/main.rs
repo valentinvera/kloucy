@@ -206,30 +206,6 @@ impl Section {
         }
     }
 
-    /// The icon shown in the sidebar for this section.
-    fn icon(self) -> Icon {
-        match self {
-            Section::Chats => Icon::empty().path("icons/message-square.svg"),
-            other => Icon::new(other.icon_name()),
-        }
-    }
-
-    fn icon_name(self) -> IconName {
-        match self {
-            Section::Chats => IconName::Inbox,
-            Section::Decisions => IconName::BookOpen,
-            Section::Home => IconName::LayoutDashboard,
-            Section::Inbox => IconName::Inbox,
-            Section::Pairing => IconName::Globe,
-            Section::Readiness => IconName::ChartPie,
-            Section::Reviews => IconName::CircleCheck,
-            Section::Sessions => IconName::SquareTerminal,
-            Section::Settings => IconName::Settings,
-            Section::WeeklyReview => IconName::Calendar,
-            Section::Workspaces => IconName::Folder,
-        }
-    }
-
     fn description(self) -> &'static str {
         match self {
             Section::Home => "What your agents are doing right now.",
