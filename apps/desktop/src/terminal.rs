@@ -13,15 +13,17 @@ use vt100::Parser;
 
 /// How many rows and columns the panel opens with, sized to the 620 px panel.
 const ROWS: u16 = 40;
-const COLS: u16 = 82;
+pub const COLS: u16 = 82;
 
 /// A shell and the screen it has drawn.
 pub struct Terminal {
     child: Box<dyn Child + Send>,
     /// Kept so the PTY outlives the writer and the child.
-    _master: Box<dyn MasterPty + Send>,
+    master: Box<dyn MasterPty + Send>,
     parser: Arc<Mutex<Parser>>,
     writer: Box<dyn Write + Send>,
+    rows: u16,
+    cols: u16,
 }
 
 /// One stretch of a row with the same colours.
@@ -90,9 +92,11 @@ impl Terminal {
 
         Ok(Self {
             child,
-            _master: pty.master,
+            master: pty.master,
             parser,
             writer,
+            rows: ROWS,
+            cols: COLS,
         })
     }
 
@@ -108,6 +112,31 @@ impl Terminal {
 
         let _ = self.writer.write_all(bytes);
         let _ = self.writer.flush();
+    }
+
+    /// Resize the shell and the screen it draws on. The kernel tells the shell
+    /// about the new size, so prompts and wrapping follow the panel.
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
+
+        if (rows, cols) == (self.rows, self.cols) {
+            return;
+        }
+
+        let _ = self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+
+        if let Ok(mut parser) = self.parser.lock() {
+            parser.set_size(rows, cols);
+        }
+
+        self.rows = rows;
+        self.cols = cols;
     }
 
     /// Move the view through the scrollback; positive is older.
