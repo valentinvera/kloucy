@@ -227,6 +227,35 @@ fn base_branch(path: &Path) -> String {
 
 /// The local branches of a checkout, sorted. A base branch for a worktree is
 /// picked from here.
+/// The open pull request for `branch`, if GitHub has one. None means no pull
+/// request, no `gh`, or a branch that was never pushed.
+pub fn pull_request_url(path: &Path, branch: &str) -> Option<String> {
+    let output = Command::new("gh")
+        .current_dir(path)
+        .args([
+            "pr", "list", "--head", branch, "--state", "open", "--limit", "1", "--json", "url",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    pull_request_url_from(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Read the first URL out of `gh pr list --json url`.
+fn pull_request_url_from(json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()?
+        .as_array()?
+        .first()?
+        .get("url")?
+        .as_str()
+        .map(str::to_string)
+}
+
 pub fn branches(path: &Path) -> Vec<String> {
     let Ok(output) = Command::new("git")
         .arg("-C")
@@ -261,6 +290,16 @@ mod tests {
         fs::create_dir_all(&path).expect("scratch directory");
 
         path
+    }
+
+    #[test]
+    fn reads_a_pull_request_url() {
+        assert_eq!(
+            pull_request_url_from(r#"[{"url":"https://github.com/acme/app/pull/7"}]"#),
+            Some("https://github.com/acme/app/pull/7".to_string())
+        );
+        assert_eq!(pull_request_url_from("[]"), None);
+        assert_eq!(pull_request_url_from("not json"), None);
     }
 
     #[test]
