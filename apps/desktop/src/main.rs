@@ -27,7 +27,6 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     popover::Popover,
-    sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem},
     switch::Switch,
     v_flex,
 };
@@ -189,21 +188,6 @@ enum Section {
     Pairing,
     Settings,
 }
-
-/// Sidebar groups in reading order: the daily drivers first, then the work they
-/// produce, then what was decided, then the registry itself.
-const NAV_GROUPS: [(&str, &[Section]); 4] = [
-    ("🧭 Now", &[Section::Home, Section::Chats, Section::Inbox]),
-    (
-        "⚡ Run",
-        &[Section::Sessions, Section::Reviews, Section::Readiness],
-    ),
-    ("🗂 History", &[Section::Decisions, Section::WeeklyReview]),
-    (
-        "⚙️ Setup",
-        &[Section::Workspaces, Section::Pairing, Section::Settings],
-    ),
-];
 
 impl Section {
     fn label(self) -> &'static str {
@@ -412,6 +396,18 @@ fn folder_name(path: &str) -> String {
         Some(name) if !name.is_empty() => name.to_string(),
         _ => path.to_string(),
     }
+}
+
+/// A quiet heading above a group of sidebar rows.
+fn nav_label(label: &str, color: Hsla) -> AnyElement {
+    div()
+        .px_2()
+        .pt_3()
+        .pb_1()
+        .text_xs()
+        .text_color(color)
+        .child(label.to_string())
+        .into_any_element()
 }
 
 /// The list a home menu lives in: as wide as its content needs, and scrolling
@@ -4038,62 +4034,6 @@ impl DesktopShell {
     }
 
     /// A sidebar row for a section: icon, active state, and any badge.
-    fn nav_item(&self, section: Section, cx: &mut Context<Self>) -> SidebarMenuItem {
-        let item = SidebarMenuItem::new(section.label())
-            .icon(section.icon())
-            .active(self.section == section);
-
-        let item = match self.nav_badge(section, cx) {
-            Some(badge) => item.suffix(badge),
-            None => item,
-        };
-
-        item.on_click(cx.listener(move |this, _, _, cx| {
-            this.section = section;
-            cx.notify();
-        }))
-    }
-
-    /// A badge for the sections that carry work a developer has to act on.
-    fn nav_badge(&self, section: Section, cx: &Context<Self>) -> Option<AnyElement> {
-        let (count, background, foreground) = match section {
-            Section::Inbox => (
-                count_where(&self.tasks, |task| task.status == "new"),
-                cx.theme().accent,
-                cx.theme().accent_foreground,
-            ),
-            Section::Reviews => (
-                count_where(&self.reviews, |review| review.action == "pending"),
-                cx.theme().warning,
-                cx.theme().warning_foreground,
-            ),
-            Section::Sessions => (
-                count_where(&self.sessions, |session| session.status == "waiting"),
-                cx.theme().warning,
-                cx.theme().warning_foreground,
-            ),
-            _ => return None,
-        };
-
-        if count == 0 {
-            return None;
-        }
-
-        Some(
-            div()
-                .min_w(px(18.0))
-                .px_1()
-                .rounded(px(9.0))
-                .bg(background)
-                .text_color(foreground)
-                .flex()
-                .justify_center()
-                .child(div().text_xs().child(count.to_string()))
-                .into_any_element(),
-        )
-    }
-
-    /// Wordmark plus the palette trigger, which is the sidebar's search row.
     fn render_nav_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let shortcut = if cfg!(target_os = "macos") {
             "⌘K"
@@ -4222,26 +4162,188 @@ impl DesktopShell {
         row.into_any_element()
     }
 
-    fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut groups = Vec::new();
+    /// The sidebar is the project's threads, not a menu of sections: a project
+    /// starts a new thread in it, and every thread opens where it ran.
+    fn render_nav(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut items = v_flex().px_2().gap_1().child(self.nav_new_thread(cx));
 
-        for (label, sections) in NAV_GROUPS {
-            let mut menu = SidebarMenu::new();
+        if let LoadState::Loaded(workspaces) = &self.workspaces {
+            for (index, workspace) in workspaces.iter().enumerate() {
+                items = items.child(self.nav_project(workspace, index, cx));
 
-            for section in sections {
-                menu = menu.child(self.nav_item(*section, cx));
+                let threads = self
+                    .threads
+                    .iter()
+                    .filter(|thread| thread.workspace_id == workspace.id)
+                    .collect::<Vec<_>>();
+
+                for (thread_index, thread) in threads.into_iter().enumerate() {
+                    items = items.child(self.nav_thread(thread, (index, thread_index), cx));
+                }
             }
-
-            groups.push(SidebarGroup::new(label).child(menu));
         }
 
-        let mut sidebar = Sidebar::left().header(self.render_nav_header(cx));
+        let orphans = self
+            .threads
+            .iter()
+            .filter(|thread| self.workspace_by_id(&thread.workspace_id).is_none())
+            .collect::<Vec<_>>();
 
-        for group in groups {
-            sidebar = sidebar.child(group);
+        if !orphans.is_empty() {
+            items = items.child(nav_label("No project", cx.theme().muted_foreground));
+
+            for (index, thread) in orphans.into_iter().enumerate() {
+                items = items.child(self.nav_thread(thread, (usize::MAX, index), cx));
+            }
         }
 
-        sidebar.footer(self.render_nav_footer(cx))
+        if self.threads.is_empty() {
+            items = items.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No threads yet."),
+            );
+        }
+
+        v_flex()
+            .w(px(247.0))
+            .h_full()
+            .flex_shrink_0()
+            .bg(cx.theme().sidebar)
+            .border_r_1()
+            .border_color(cx.theme().sidebar_border)
+            .child(div().p_3().child(self.render_nav_header(cx)))
+            .child(
+                div()
+                    .id("nav-threads")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(items),
+            )
+            .child(div().p_2().child(self.render_nav_footer(cx)))
+            .into_any_element()
+    }
+
+    fn nav_new_thread(&self, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.section == Section::Home && self.home_thread.is_none();
+
+        div()
+            .id("nav-new-thread")
+            .h(px(32.0))
+            .px_2()
+            .rounded(px(6.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_sm()
+            .cursor(CursorStyle::PointingHand)
+            .when(active, |element| element.bg(cx.theme().sidebar_accent))
+            .text_color(if active {
+                cx.theme().foreground
+            } else {
+                cx.theme().muted_foreground
+            })
+            .hover(|element| element.text_color(cx.theme().foreground))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.on_action_new_chat(&NewChat, window, cx);
+            }))
+            .child(Icon::new(IconName::Plus).size_4())
+            .child("New thread")
+            .into_any_element()
+    }
+
+    fn nav_project(
+        &self,
+        workspace: &Workspace,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = workspace.id.clone();
+        let selected = self.selected_workspace.as_deref() == Some(workspace.id.as_str());
+
+        div()
+            .id(("nav-project", index))
+            .h(px(34.0))
+            .mt_2()
+            .px_2()
+            .rounded(px(6.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .cursor(CursorStyle::PointingHand)
+            .when(selected, |element| {
+                element.text_color(cx.theme().foreground)
+            })
+            .when(!selected, |element| {
+                element.text_color(cx.theme().muted_foreground)
+            })
+            .hover(|element| element.bg(cx.theme().list_hover))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_workspace(id.clone(), cx);
+                this.clear_home_thread(cx);
+                this.section = Section::Home;
+                this.composer
+                    .update(cx, |state, cx| state.focus(window, cx));
+                cx.notify();
+            }))
+            .child(Icon::new(IconName::Folder).size_4())
+            .child(div().min_w_0().truncate().child(workspace.name.clone()))
+            .into_any_element()
+    }
+
+    fn nav_thread(
+        &self,
+        thread: &threads::StoredThread,
+        index: (usize, usize),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let stored = thread.clone();
+        let title = thread.title.clone();
+        let slot = index.0.wrapping_mul(100_000).wrapping_add(index.1);
+        let active = self
+            .home_thread
+            .as_ref()
+            .and_then(|home| home.turns.first())
+            .map(|turn| turn.session_id.as_str())
+            == thread.key();
+
+        div()
+            .id(("nav-thread", slot))
+            .h(px(30.0))
+            .pl(px(26.0))
+            .pr_2()
+            .rounded(px(6.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .cursor(CursorStyle::PointingHand)
+            .when(active, |element| {
+                element
+                    .bg(cx.theme().sidebar_accent)
+                    .text_color(cx.theme().foreground)
+            })
+            .when(!active, |element| {
+                element.text_color(cx.theme().muted_foreground)
+            })
+            .hover(|element| element.bg(cx.theme().list_hover))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.section = Section::Home;
+                this.open_stored_thread(stored.clone(), cx);
+            }))
+            .child(
+                Icon::empty()
+                    .path("icons/message-square.svg")
+                    .size(px(14.0)),
+            )
+            .child(div().min_w_0().truncate().child(title))
+            .into_any_element()
     }
 
     fn render_intake(&self, cx: &mut Context<Self>) -> AnyElement {
