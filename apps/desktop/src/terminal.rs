@@ -11,9 +11,9 @@ use gpui::KeyDownEvent;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use vt100::Parser;
 
-/// How many rows and columns the panel opens with.
-const ROWS: u16 = 24;
-const COLS: u16 = 80;
+/// How many rows and columns the panel opens with, sized to the 620 px panel.
+const ROWS: u16 = 40;
+const COLS: u16 = 82;
 
 /// A shell and the screen it has drawn.
 pub struct Terminal {
