@@ -35,24 +35,26 @@ Use the same account as the web app. Create it once through the API or the web s
 
 ## What you get
 
-- **Home** is the composer: write what you want done (it wraps and grows; enter sends, shift+enter starts a new line), pick the agent that should run it, and it starts. The answer appears as a reply in the thread, its fenced code is syntax-coloured, and the composer stays at the bottom for the next message. Each message is a turn, and every turn after the first resumes the agent's own session, so the conversation keeps its context.
-- **The picker** (the pill at the composer's bottom right) opens a card with a square per installed agent, a model search, the agent's models with a star for the ones you keep, the reasoning levels that model accepts, and fast mode where the CLI has one. The first nine rows answer to `ctrl-1` … `ctrl-9` (`cmd` on macOS). Your choice is remembered for the next start.
-- **A reply carries its context**: a collapsed **Thought process** when the agent reasoned, **Copy** and **Retry** under an answer, a **Changes detected · review** link when the run changed files, and the reason the run failed when it did.
-- **The checkout chip** chooses the project to work in, or **No project**, which runs in Kloucy's own git space under `~/.local/share/kloucy/chats` so a message never needs a repository. The row also shows that checkout's git branch, and the chips switch workspace and account.
-- **Chats** lists the conversations this machine remembers, with how many turns each has and where it ran; **Open** brings one back, **Rename** names it, and **Forget** drops it from the list without touching its sessions. **New chat** (`cmd-n`, or `ctrl-n` away from macOS) starts a fresh one from anywhere. Home reopens the last conversation when the app starts.
+- **The sidebar is the work**: **New thread** sits at the top, then every project with its threads. A project row starts a new thread in that project; a thread opens where it ran. The `…` menu **settles**, **pins**, **snoozes** (one hour or one day) or **archives** a thread: pinned threads move to **Pinned**, settled ones to **Settled (n)**, snoozed ones to **Snoozed (n)**, and archived threads leave the list.
+- **Each thread gets its own checkout**: in a git project, **New worktree** (the default) creates a `kloucy/<thread>` branch and a worktree under `~/.local/share/kloucy/worktrees/`. **Current checkout** runs in the project itself, and the choice is remembered per project. **From …** picks the branch the worktree starts from. A project that is not a git repository runs in place.
+- **The thread** is the composer plus the conversation: enter sends, shift+enter adds a line, and every turn after the first resumes the agent's own session so the context survives. A reply keeps its collapsed **Thought process**, **Copy**, **Retry** and the reason it failed. The picker keeps the installed CLIs, each agent's models, the reasoning levels, favourites and fast mode.
+- **Surfaces sit beside the conversation**: **Files** lists the checkout and opens a file with syntax colour; **Diff** shows the change against `HEAD` plus untracked files as additions; **Terminal** runs `$SHELL` in the thread's checkout with its colours and keys. The panel belongs to the thread and closes with it.
+- **The loop closes in the thread**: **Commit** stages and commits the worktree with a message, **Push** sets the upstream, **Create PR** pushes and opens a GitHub pull request titled with the thread, and **View PR** opens it. A failure is a sentence in the bar, not a silent no-op.
+- **Search is the palette**: `cmd-k`, or `ctrl-k` away from macOS, finds conversations by title and commands by name. **Enter** opens the first result and **Escape** closes the palette. **Chats**, **Workspaces**, **Inbox**, **Sessions**, **Reviews**, **Decisions**, **Readiness**, **Weekly review**, **Pairing** and **Settings** are still there as palette commands.
+- **Chats** lists the conversations this machine remembers, with how many turns each has and where it ran; **Open** brings one back, **Rename** names it, and **Forget** drops it from the list without touching its sessions. Home reopens the last conversation when the app starts.
 - **Workspaces** create a workspace and record its intake: project type, package manager, runtime, safe commands, ignored paths, safety mode and whether mobile may supervise it. **Detect project** reads the workspace directory names and fills the profile in, suggesting safe commands and ignored paths for that ecosystem.
-- **Inbox** captures tasks, with the prompt they carry, their state in its own ink, and where they came from; **Start session** on one runs it and opens the run as a conversation in Home, and a task that already ran shows **Open run** instead of starting again. **Sessions** lists every run, streams its logs, and offers **Open in Home** so any run can be read as a conversation. Starting a session is an explicit action, and a guarded workspace refuses a command that is not in its safe commands.
-- **Reviews** list the files a run changed (one path per line), approve or reject them with a reason, record follow-up conditions, and open the run behind them.
-- **Readiness** scores whether this workspace can run agents: the score is coloured by its verdict — not ready, almost ready, ready to run — and every blocker is listed, with what is not required yet kept apart. **Weekly review** summarizes progress over time from stored activity: what shipped, what is blocked, what was rejected, risky patterns and next actions, each list in its own colour. **Generate review** saves a new one, and says so when it cannot.
-- **Pairing** shows a QR code for the mobile app, and the `kloucy://pair?token=…` link the code carries: **Copy link** sends it to the clipboard, so a phone that cannot scan can still open it. The state of the code (pending, claimed, revoked) is coloured.
-- **Settings** correct workspace data, set the default agent, and archive a workspace.
+- **Inbox** captures tasks with their prompt and state; **Start session** runs one and opens it in Home, and a task that already ran shows **Open run**. **Sessions** lists every run, streams its logs and opens it in Home. A guarded workspace refuses a command that is not in its safe commands.
+- **Reviews** lists the files a run changed, approves or rejects them with a reason, records follow-up conditions and opens the run behind them. **Readiness** scores whether the workspace can run agents, with a coloured verdict and the blockers it still has. **Weekly review** summarizes what shipped, what is blocked, what was rejected, risky patterns and next actions, and **Generate review** saves a new one.
+- **Pairing** shows a QR code and the `kloucy://pair?token=…` link the code carries; **Copy link** puts it on the clipboard for a phone that cannot scan, and the state (pending, claimed, revoked) is coloured.
+- **Settings** shows the API the app is talking to, corrects workspace data, sets the default agent and archives a workspace.
 
 ## Command palette
 
-Press `cmd-k`, or `ctrl-k` away from macOS, to open the palette from anywhere in the app. Type to filter, then pick a command:
+Press `cmd-k`, or `ctrl-k` away from macOS, to open the palette from anywhere in the app. Type to filter; conversations appear under **Threads** and commands below them:
 
-- jump to any section, chats included
+- open a conversation by title
+- jump to any supervision section, chats included
 - start a new workspace
 - create a new pairing code
 
-Press the shortcut again, press escape, or click outside the palette to close it.
+Press **Enter** to open the first result, escape or the shortcut again to close it, or click a row.
