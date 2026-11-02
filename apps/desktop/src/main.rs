@@ -1247,6 +1247,18 @@ fn thread_answer(logs: &[SessionLog]) -> Option<String> {
     (!printed.is_empty()).then(|| printed.join("\n"))
 }
 
+/// Input and output tokens the agent reported for a run, from the usage line
+/// the runner adds when the CLI reports it.
+fn turn_tokens(logs: &[SessionLog]) -> Option<(u64, u64)> {
+    logs.iter().rev().find_map(|log| {
+        let rest = log.message.strip_prefix("turn completed · ")?;
+        let rest = rest.strip_suffix(" out")?;
+        let (input, output) = rest.split_once(" tokens in · ")?;
+
+        Some((input.parse().ok()?, output.parse().ok()?))
+    })
+}
+
 /// The agent-side session a run reported, which is what carries context into
 /// the next turn of the same conversation.
 fn agent_session_id(logs: &[SessionLog]) -> Option<String> {
@@ -7413,6 +7425,7 @@ impl DesktopShell {
                 .split('-')
                 .next()
                 .unwrap_or(turn.session_id.as_str());
+            let tokens = turn_tokens(&turn.logs);
 
             list = list.child(
                 v_flex()
@@ -7450,7 +7463,16 @@ impl DesktopShell {
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(turn.prompt.clone()),
-                    ),
+                    )
+                    .when_some(tokens, |element, (input, output)| {
+                        element.child(
+                            div()
+                                .text_xs()
+                                .font_family(self.mono_font.clone())
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{input} tokens in · {output} out")),
+                        )
+                    }),
             );
         }
 
@@ -10771,6 +10793,17 @@ mod home_tests {
             message: message.to_string(),
             stream: stream.to_string(),
         }
+    }
+
+    #[test]
+    fn reads_the_tokens_a_run_used() {
+        let logs = vec![
+            log("trace", "turn completed · 14087 tokens in · 5 out"),
+            log("answer", "done"),
+        ];
+
+        assert_eq!(turn_tokens(&logs), Some((14_087, 5)));
+        assert_eq!(turn_tokens(&[log("answer", "done")]), None);
     }
 
     #[test]
