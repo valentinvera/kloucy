@@ -82,7 +82,7 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 17] = [
+const PALETTE_ENTRIES: [PaletteEntry; 18] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
@@ -184,6 +184,12 @@ const PALETTE_ENTRIES: [PaletteEntry; 17] = [
         group: "Thread",
         keywords: "subagents runs turns",
         label: "Open agents",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Panel(Panel::Browser),
+        group: "Thread",
+        keywords: "web preview localhost url",
+        label: "Open browser",
     },
 ];
 
@@ -315,6 +321,7 @@ struct OpenFile {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Panel {
     Agents,
+    Browser,
     Diff,
     Files,
     Terminal,
@@ -439,6 +446,44 @@ fn worktree_mode_key(workspace_id: &str) -> String {
 /// The settings key that holds the branch a project's worktrees start from.
 fn worktree_base_key(workspace_id: &str) -> String {
     format!("worktreeBase:{workspace_id}")
+}
+
+/// A URL the browser surface can open: the value as typed, with a scheme when
+/// it has none. An empty value stays empty so the caller can refuse it.
+fn browser_url(value: &str) -> String {
+    let value = value.trim();
+
+    if value.is_empty() {
+        return String::new();
+    }
+
+    if value.contains("://") {
+        value.to_string()
+    } else {
+        format!("http://{value}")
+    }
+}
+
+/// Open a URL in the platform's browser.
+fn open_external(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", ""]);
+        command
+    };
+
+    command
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "Kloucy could not open a browser.".to_string())
 }
 
 /// Seconds since the Unix epoch, for the thread's snooze clock.
@@ -1260,6 +1305,9 @@ struct DesktopShell {
     terminal: Option<terminal::Terminal>,
     terminal_error: Option<String>,
     terminal_focus: FocusHandle,
+    browser_url: Entity<InputState>,
+    browser_error: Option<String>,
+    browser_notice: Option<String>,
     sending_composer: bool,
     home_provider: Option<String>,
     home_model: Option<String>,
@@ -1429,6 +1477,8 @@ impl DesktopShell {
                 .auto_grow(1, 6)
         });
         let commit_message = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
+        let browser_url =
+            cx.new(|cx| InputState::new(window, cx).placeholder("http://localhost:3000"));
         let composer_subscription = cx.subscribe_in(
             &composer,
             window,
@@ -1491,6 +1541,9 @@ impl DesktopShell {
             terminal: None,
             terminal_error: None,
             terminal_focus,
+            browser_url,
+            browser_error: None,
+            browser_notice: None,
             sending_composer: false,
             home_provider: None,
             home_model: None,
@@ -3532,7 +3585,7 @@ impl DesktopShell {
         self.diff_error = None;
 
         match panel {
-            Panel::Agents => {}
+            Panel::Agents | Panel::Browser => {}
             Panel::Diff => self.refresh_diff(cx),
             Panel::Files => self.refresh_files(cx),
             Panel::Terminal => self.start_terminal(cx),
@@ -7257,6 +7310,104 @@ impl DesktopShell {
             .into_any_element()
     }
 
+    fn open_browser_url(&mut self, cx: &mut Context<Self>) {
+        let url = browser_url(&self.browser_url.read(cx).value());
+
+        if url.is_empty() {
+            self.browser_error = Some("Write a URL to open.".to_string());
+            self.browser_notice = None;
+            cx.notify();
+            return;
+        }
+
+        match open_external(&url) {
+            Ok(()) => {
+                self.browser_error = None;
+                self.browser_notice = Some(format!("Opened {url} in your browser."));
+            }
+            Err(message) => {
+                self.browser_error = Some(message);
+                self.browser_notice = None;
+            }
+        }
+
+        cx.notify();
+    }
+
+    /// A URL launcher: GPUI has no embedded webview on Wayland, so the page
+    /// opens in the browser the reader already has.
+    fn render_browser_surface(&self, cx: &mut Context<Self>) -> AnyElement {
+        let open = Button::new("browser-open")
+            .primary()
+            .small()
+            .label("Open")
+            .on_click(cx.listener(|this, _, _, cx| this.open_browser_url(cx)));
+
+        let quick = |index: usize, url: &'static str, cx: &mut Context<Self>| {
+            let label = url.rsplit(':').next().unwrap_or(url).to_string();
+
+            Button::new(("browser-quick", index))
+                .ghost()
+                .small()
+                .label(label)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.browser_url
+                        .update(cx, |state, cx| state.set_value(url, window, cx));
+                    this.open_browser_url(cx);
+                }))
+        };
+
+        let mut body = v_flex()
+            .p_3()
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Open a page"),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_1().child(Input::new(&self.browser_url)))
+                    .child(open),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(quick(0, "http://localhost:3000", cx))
+                    .child(quick(1, "http://localhost:5173", cx))
+                    .child(quick(2, "http://localhost:8080", cx)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("The page opens in your browser: GPUI has no embedded webview."),
+            );
+
+        if let Some(error) = &self.browser_error {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        if let Some(notice) = &self.browser_notice {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().success_foreground)
+                    .child(notice.clone()),
+            );
+        }
+
+        body.into_any_element()
+    }
+
     /// The thread's side panel: a tab per surface and the selected one below.
     fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let close = Button::new("panel-close")
@@ -7280,12 +7431,14 @@ impl DesktopShell {
                     .child(self.panel_tab(Panel::Files, "Files", cx))
                     .child(self.panel_tab(Panel::Diff, "Diff", cx))
                     .child(self.panel_tab(Panel::Terminal, "Terminal", cx))
-                    .child(self.panel_tab(Panel::Agents, "Agents", cx)),
+                    .child(self.panel_tab(Panel::Agents, "Agents", cx))
+                    .child(self.panel_tab(Panel::Browser, "Browser", cx)),
             )
             .child(close);
 
         let body: AnyElement = match self.panel {
             Some(Panel::Agents) => self.render_agents_surface(cx),
+            Some(Panel::Browser) => self.render_browser_surface(cx),
             Some(Panel::Diff) => self.render_diff_surface(cx),
             Some(Panel::Files) => self.render_files_surface(cx),
             Some(Panel::Terminal) => self.render_terminal_surface(cx),
@@ -7314,9 +7467,10 @@ impl DesktopShell {
 
         let index = match panel {
             Panel::Agents => 0_usize,
-            Panel::Diff => 1,
-            Panel::Files => 2,
-            Panel::Terminal => 3,
+            Panel::Browser => 1,
+            Panel::Diff => 2,
+            Panel::Files => 3,
+            Panel::Terminal => 4,
         };
 
         div()
@@ -9820,6 +9974,13 @@ mod nav_tests {
     }
 
     #[test]
+    fn adds_a_scheme_to_a_browser_url() {
+        assert_eq!(browser_url("localhost:3000"), "http://localhost:3000");
+        assert_eq!(browser_url("https://kloucy.dev"), "https://kloucy.dev");
+        assert_eq!(browser_url("  "), "");
+    }
+
+    #[test]
     fn reads_readiness_status_as_a_verdict() {
         assert_eq!(readiness_label("ready_to_run"), "Ready to run");
         assert_eq!(readiness_label("almost_ready"), "Almost ready");
@@ -10100,6 +10261,11 @@ mod palette_tests {
             palette_matches("agents")
                 .iter()
                 .any(|entry| entry.command == PaletteCommand::Panel(Panel::Agents))
+        );
+        assert!(
+            palette_matches("browser")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::Panel(Panel::Browser))
         );
     }
 
