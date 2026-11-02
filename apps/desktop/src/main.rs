@@ -385,6 +385,14 @@ fn folder_name(path: &str) -> String {
     }
 }
 
+/// Seconds since the Unix epoch, for the thread's snooze clock.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+}
+
 /// A quiet heading above a group of sidebar rows.
 fn nav_label(label: &str, color: Hsla) -> AnyElement {
     div()
@@ -3187,6 +3195,10 @@ impl DesktopShell {
                 .map(|turn| turn.session_id.clone())
                 .collect(),
             settled: previous.as_ref().is_some_and(|stored| stored.settled),
+            snoozed_until: previous
+                .as_ref()
+                .map(|stored| stored.snoozed_until)
+                .unwrap_or_default(),
             title: thread.title.clone(),
             updated_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -4558,11 +4570,14 @@ impl DesktopShell {
     /// starts a new thread in it, and every thread opens where it ran.
     fn render_nav(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut items = v_flex().px_2().gap_1().child(self.nav_new_thread(cx));
+        let now = now_secs();
 
         let pinned = self
             .threads
             .iter()
-            .filter(|thread| thread.pinned && !thread.archived && !thread.settled)
+            .filter(|thread| {
+                thread.pinned && !thread.archived && !thread.settled && thread.snoozed_until <= now
+            })
             .collect::<Vec<_>>();
 
         if !pinned.is_empty() {
@@ -4583,6 +4598,7 @@ impl DesktopShell {
                             && !thread.archived
                             && !thread.settled
                             && !thread.pinned
+                            && thread.snoozed_until <= now
                     })
                     .collect::<Vec<_>>();
 
@@ -4606,6 +4622,7 @@ impl DesktopShell {
                     && !thread.archived
                     && !thread.settled
                     && !thread.pinned
+                    && thread.snoozed_until <= now
             })
             .collect::<Vec<_>>();
 
@@ -4620,7 +4637,7 @@ impl DesktopShell {
         let settled = self
             .threads
             .iter()
-            .filter(|thread| thread.settled && !thread.archived)
+            .filter(|thread| thread.settled && !thread.archived && thread.snoozed_until <= now)
             .collect::<Vec<_>>();
 
         if !settled.is_empty() {
@@ -4631,6 +4648,23 @@ impl DesktopShell {
 
             for (index, thread) in settled.into_iter().enumerate() {
                 items = items.child(self.nav_thread(thread, (usize::MAX - 2, index), cx));
+            }
+        }
+
+        let snoozed = self
+            .threads
+            .iter()
+            .filter(|thread| thread.snoozed_until > now && !thread.archived)
+            .collect::<Vec<_>>();
+
+        if !snoozed.is_empty() {
+            items = items.child(nav_label(
+                &format!("Snoozed ({})", snoozed.len()),
+                cx.theme().muted_foreground,
+            ));
+
+            for (index, thread) in snoozed.into_iter().enumerate() {
+                items = items.child(self.nav_thread(thread, (usize::MAX - 3, index), cx));
             }
         }
 
@@ -5394,6 +5428,7 @@ impl DesktopShell {
                                         settled: false,
                                         pinned: false,
                                         archived: false,
+                                        snoozed_until: 0,
                                         session_ids: vec![session_id.clone()],
                                         title: title.clone(),
                                         updated_at: 0,
@@ -5542,6 +5577,7 @@ impl DesktopShell {
                                                         settled: false,
                                                         pinned: false,
                                                         archived: false,
+                                                        snoozed_until: 0,
                                                         session_ids: vec![session.id.clone()],
                                                         title: session
                                                             .prompt
@@ -5873,6 +5909,7 @@ impl DesktopShell {
                                             settled: false,
                                             pinned: false,
                                             archived: false,
+                                            snoozed_until: 0,
                                             session_ids: vec![open_session.clone()],
                                             title: open_title.clone(),
                                             updated_at: 0,
@@ -6130,6 +6167,7 @@ impl DesktopShell {
                             settled: false,
                             pinned: false,
                             archived: false,
+                            snoozed_until: 0,
                             session_ids: vec![session_id.clone()],
                             title: decision.title.clone(),
                             updated_at: 0,
@@ -7874,6 +7912,7 @@ impl DesktopShell {
                     .and_then(|key| self.threads.iter().find(|stored| stored.key() == Some(key)));
                 let settled = stored.is_some_and(|stored| stored.settled);
                 let pinned = stored.is_some_and(|stored| stored.pinned);
+                let snoozed = stored.is_some_and(|stored| stored.snoozed_until > now_secs());
 
                 Rc::new(move |cx| {
                     let mut list = menu_list(px(230.0));
@@ -7915,6 +7954,52 @@ impl DesktopShell {
                             });
                         })),
                     ));
+                    let hour_entity = entity.clone();
+                    let day_entity = entity.clone();
+                    let wake_entity = entity.clone();
+
+                    list = list.child(menu_row(
+                        ("thread-snooze-hour", 0),
+                        cx,
+                        false,
+                        vec![div().text_sm().child("Snooze 1 hour").into_any_element()],
+                        Some(Box::new(move |_, cx| {
+                            let _ = hour_entity.update(cx, |this, cx| {
+                                this.update_thread_state(
+                                    |stored| stored.snoozed_until = now_secs() + 3600,
+                                    cx,
+                                );
+                            });
+                        })),
+                    ));
+                    list = list.child(menu_row(
+                        ("thread-snooze-day", 0),
+                        cx,
+                        false,
+                        vec![div().text_sm().child("Snooze 1 day").into_any_element()],
+                        Some(Box::new(move |_, cx| {
+                            let _ = day_entity.update(cx, |this, cx| {
+                                this.update_thread_state(
+                                    |stored| stored.snoozed_until = now_secs() + 86_400,
+                                    cx,
+                                );
+                            });
+                        })),
+                    ));
+                    if snoozed {
+                        list = list.child(menu_row(
+                            ("thread-wake", 0),
+                            cx,
+                            true,
+                            vec![div().text_sm().child("Wake thread").into_any_element()],
+                            Some(Box::new(move |_, cx| {
+                                let _ = wake_entity.update(cx, |this, cx| {
+                                    this.update_thread_state(|stored| stored.snoozed_until = 0, cx);
+                                });
+                            })),
+                        ));
+                    }
+
                     list = list.child(menu_row(
                         ("thread-archive", 0),
                         cx,

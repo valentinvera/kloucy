@@ -32,6 +32,9 @@ pub struct StoredThread {
     pub pinned: bool,
     #[serde(default)]
     pub archived: bool,
+    /// Unix seconds until which the thread is out of the way. Zero is awake.
+    #[serde(default)]
+    pub snoozed_until: u64,
     /// The runs that make up the conversation, oldest first.
     pub session_ids: Vec<String>,
     pub title: String,
@@ -133,6 +136,7 @@ mod tests {
             settled: false,
             pinned: false,
             archived: false,
+            snoozed_until: 0,
             session_ids: (0..turns).map(|index| format!("{first}-{index}")).collect(),
             title: title.to_string(),
             updated_at: 0,
