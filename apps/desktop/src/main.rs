@@ -70,6 +70,7 @@ const SHELL_CONTEXT: &str = "KloucyShell";
 /// A command offered by the palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaletteCommand {
+    Access(&'static str),
     NewPairingCode,
     NewWorkspace,
     Panel(Panel),
@@ -83,7 +84,7 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 19] = [
+const PALETTE_ENTRIES: [PaletteEntry; 21] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
@@ -161,6 +162,18 @@ const PALETTE_ENTRIES: [PaletteEntry; 19] = [
         group: "Action",
         keywords: "mobile qr code",
         label: "New pairing code",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Access("open"),
+        group: "Action",
+        keywords: "access full safety unrestricted",
+        label: "Access: Full access",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Access("guarded"),
+        group: "Action",
+        keywords: "access guarded safe commands",
+        label: "Access: Guarded",
     },
     PaletteEntry {
         command: PaletteCommand::Panel(Panel::Files),
@@ -10067,7 +10080,11 @@ impl DesktopShell {
 
     /// Surfaces only make sense while a thread is open.
     fn palette_available(&self, entry: &PaletteEntry) -> bool {
-        !matches!(entry.command, PaletteCommand::Panel(_)) || self.home_thread.is_some()
+        match entry.command {
+            PaletteCommand::Panel(_) => self.home_thread.is_some(),
+            PaletteCommand::Access(_) => self.selected_workspace.is_some(),
+            _ => true,
+        }
     }
 
     /// Enter runs what the palette is showing: a matching thread first, then
@@ -10116,6 +10133,9 @@ impl DesktopShell {
             PaletteCommand::NewPairingCode => {
                 self.section = Section::Pairing;
                 self.create_pairing(cx);
+            }
+            PaletteCommand::Access(mode) => {
+                self.set_safety_mode(mode, cx);
             }
             PaletteCommand::Panel(panel) => {
                 self.section = Section::Home;
@@ -11092,6 +11112,16 @@ mod palette_tests {
             palette_matches("device")
                 .iter()
                 .any(|entry| entry.command == PaletteCommand::Panel(Panel::Device))
+        );
+        assert!(
+            palette_matches("guarded")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::Access("guarded"))
+        );
+        assert!(
+            palette_matches("full access")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::Access("open"))
         );
     }
 
