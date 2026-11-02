@@ -167,6 +167,64 @@ pub fn push(path: &Path, branch: &str) -> Result<(), String> {
     Err("Kloucy could not push this branch.".to_string())
 }
 
+/// Open a pull request for `branch` with `gh`, returning its URL.
+pub fn pull_request(path: &Path, branch: &str, title: &str) -> Result<String, String> {
+    let base = base_branch(path);
+    let body = format!("Opened from a Kloucy thread: {title}");
+
+    let output = Command::new("gh")
+        .current_dir(path)
+        .args(["pr", "create", "--base", &base, "--head", branch])
+        .args(["--title", title, "--body", &body])
+        .output()
+        .map_err(|_| "Kloucy could not run the GitHub CLI.".to_string())?;
+
+    if output.status.success() {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if url.is_empty() {
+            return Err("GitHub did not return a pull request URL.".to_string());
+        }
+
+        return Ok(url);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if stderr.contains("already exists") {
+        return Err("A pull request for this branch already exists.".to_string());
+    }
+
+    if stderr.contains("not logged") || stderr.contains("authentication") {
+        return Err("Sign in to GitHub with `gh auth login` first.".to_string());
+    }
+
+    Err("Kloucy could not open a pull request.".to_string())
+}
+
+/// The branch a pull request should target: origin's default, else `main`.
+fn base_branch(path: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .output();
+
+    if let Ok(output) = output
+        && output.status.success()
+    {
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if let Some(name) = name.strip_prefix("origin/")
+            && !name.is_empty()
+        {
+            return name.to_string();
+        }
+    }
+
+    "main".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +264,35 @@ mod tests {
         fs::write(root.join("README.md"), "# test\n").expect("file");
         assert!(commit(&root, "first").is_ok());
         assert!(commit(&root, "again").is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_the_default_branch_from_origin() {
+        let root = scratch_dir("base");
+        let git = |arguments: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(arguments)
+                .status()
+                .expect("git")
+        };
+
+        assert!(git(&["init", "-q"]).success());
+        assert_eq!(base_branch(&root), "main");
+
+        assert!(git(&["remote", "add", "origin", "https://example.com/x.git"]).success());
+        assert!(
+            git(&[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk"
+            ])
+            .success()
+        );
+        assert_eq!(base_branch(&root), "trunk");
 
         let _ = fs::remove_dir_all(root);
     }
