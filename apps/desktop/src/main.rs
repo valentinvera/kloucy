@@ -71,6 +71,7 @@ const SHELL_CONTEXT: &str = "KloucyShell";
 enum PaletteCommand {
     NewPairingCode,
     NewWorkspace,
+    Panel(Panel),
     Section(Section),
 }
 
@@ -81,7 +82,7 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 13] = [
+const PALETTE_ENTRIES: [PaletteEntry; 16] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
@@ -159,6 +160,24 @@ const PALETTE_ENTRIES: [PaletteEntry; 13] = [
         group: "Action",
         keywords: "mobile qr code",
         label: "New pairing code",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Panel(Panel::Files),
+        group: "Thread",
+        keywords: "checkout browse",
+        label: "Open files",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Panel(Panel::Diff),
+        group: "Thread",
+        keywords: "change review",
+        label: "Open diff",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Panel(Panel::Terminal),
+        group: "Thread",
+        keywords: "shell command",
+        label: "Open terminal",
     },
 ];
 
@@ -9004,6 +9023,11 @@ impl DesktopShell {
         cx.notify();
     }
 
+    /// Surfaces only make sense while a thread is open.
+    fn palette_available(&self, entry: &PaletteEntry) -> bool {
+        !matches!(entry.command, PaletteCommand::Panel(_)) || self.home_thread.is_some()
+    }
+
     /// Enter runs what the palette is showing: a matching thread first, then
     /// the first command.
     fn run_palette_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -9022,7 +9046,10 @@ impl DesktopShell {
             return;
         }
 
-        if let Some(entry) = palette_matches(&query).first() {
+        if let Some(entry) = palette_matches(&query)
+            .into_iter()
+            .find(|entry| self.palette_available(entry))
+        {
             self.run_palette_command(entry.command, window, cx);
         }
     }
@@ -9047,6 +9074,10 @@ impl DesktopShell {
             PaletteCommand::NewPairingCode => {
                 self.section = Section::Pairing;
                 self.create_pairing(cx);
+            }
+            PaletteCommand::Panel(panel) => {
+                self.section = Section::Home;
+                self.select_panel(panel, cx);
             }
         }
 
@@ -9309,7 +9340,10 @@ impl DesktopShell {
 
     fn render_command_palette(&self, cx: &mut Context<Self>) -> AnyElement {
         let query = self.palette_query.read(cx).value().to_string();
-        let matches = palette_matches(&query);
+        let matches = palette_matches(&query)
+            .into_iter()
+            .filter(|entry| self.palette_available(entry))
+            .collect::<Vec<_>>();
         let threads = self
             .threads
             .iter()
@@ -9924,6 +9958,20 @@ mod palette_tests {
     #[test]
     fn an_unknown_query_matches_nothing() {
         assert!(palette_matches("zzzz").is_empty());
+    }
+
+    #[test]
+    fn offers_the_thread_surfaces() {
+        assert!(
+            palette_matches("terminal")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::Panel(Panel::Terminal))
+        );
+        assert!(
+            palette_matches("diff")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::Panel(Panel::Diff))
+        );
     }
 
     #[test]
