@@ -161,6 +161,14 @@ const PALETTE_ENTRIES: [PaletteEntry; 13] = [
     },
 ];
 
+/// Whether a thread title matches the palette's query. An empty query never
+/// matches, so opening the palette does not list every conversation.
+fn thread_matches_title(title: &str, query: &str) -> bool {
+    let needle = query.trim().to_lowercase();
+
+    !needle.is_empty() && title.to_lowercase().contains(&needle)
+}
+
 /// Commands matching a query, by label or keywords.
 fn palette_matches(query: &str) -> Vec<&'static PaletteEntry> {
     let needle = query.trim().to_lowercase();
@@ -8929,17 +8937,64 @@ impl DesktopShell {
     fn render_command_palette(&self, cx: &mut Context<Self>) -> AnyElement {
         let query = self.palette_query.read(cx).value().to_string();
         let matches = palette_matches(&query);
+        let threads = self
+            .threads
+            .iter()
+            .filter(|thread| !thread.archived && thread_matches_title(&thread.title, &query))
+            .take(8)
+            .collect::<Vec<_>>();
 
         let mut list = v_flex().gap_1();
 
-        if matches.is_empty() {
+        if !threads.is_empty() {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Threads"),
+            );
+
+            for (index, thread) in threads.iter().enumerate() {
+                let stored = (*thread).clone();
+                let project = self
+                    .workspace_by_id(&thread.workspace_id)
+                    .map(|workspace| workspace.name)
+                    .unwrap_or_else(|| "No project".to_string());
+                let turns = thread.session_ids.len();
+
+                list = list.child(
+                    div()
+                        .id(("palette-thread", index))
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.0))
+                        .hover(|element| element.bg(cx.theme().list_hover))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close_palette(window, cx);
+                            this.section = Section::Home;
+                            this.open_stored_thread(stored.clone(), cx);
+                        }))
+                        .child(div().text_sm().child(thread.title.clone()))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{project} · {turns} turns")),
+                        ),
+                );
+            }
+        }
+
+        if matches.is_empty() && threads.is_empty() {
             list = list.child(
                 div()
                     .px_2()
                     .py_1()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child("No matching commands."),
+                    .child("No matching threads or commands."),
             );
         }
 
@@ -8966,10 +9021,16 @@ impl DesktopShell {
             );
         }
 
+        let results = div()
+            .id("palette-results")
+            .max_h(px(330.0))
+            .overflow_y_scroll()
+            .child(list);
+
         let panel = v_flex()
             .id("command-palette")
             .w(px(560.0))
-            .max_h(px(420.0))
+            .max_h(px(440.0))
             .gap_3()
             .p_3()
             .rounded(px(8.0))
@@ -8977,7 +9038,7 @@ impl DesktopShell {
             .border_color(cx.theme().border)
             .bg(cx.theme().popover)
             .child(Input::new(&self.palette_query))
-            .child(list)
+            .child(results)
             .on_click(|_, _, cx| cx.stop_propagation());
 
         div()
@@ -9482,5 +9543,13 @@ mod palette_tests {
     #[test]
     fn an_unknown_query_matches_nothing() {
         assert!(palette_matches("zzzz").is_empty());
+    }
+
+    #[test]
+    fn a_thread_matches_by_title_and_never_by_an_empty_query() {
+        assert!(thread_matches_title("Charla de prueba", "prueba"));
+        assert!(thread_matches_title("Charla de prueba", "CHARLA"));
+        assert!(!thread_matches_title("Charla de prueba", "sesión"));
+        assert!(!thread_matches_title("Charla de prueba", "  "));
     }
 }
