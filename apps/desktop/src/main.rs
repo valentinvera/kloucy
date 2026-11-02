@@ -1403,6 +1403,7 @@ struct DesktopShell {
     browser_notice: Option<String>,
     collapsed_projects: HashSet<String>,
     settled_collapsed: bool,
+    archived_collapsed: bool,
     devices: Option<device::Devices>,
     devices_error: Option<String>,
     devices_loading: bool,
@@ -1651,6 +1652,7 @@ impl DesktopShell {
                 settings::load_text(COLLAPSED_PROJECTS_KEY).as_deref(),
             ),
             settled_collapsed: settings::load_bool("settledCollapsed").unwrap_or(false),
+            archived_collapsed: settings::load_bool("archivedCollapsed").unwrap_or(true),
             devices: None,
             devices_error: None,
             devices_loading: false,
@@ -2879,6 +2881,10 @@ impl DesktopShell {
         self.update_thread_state(|stored| stored.archived = true, cx);
         self.clear_home_thread(cx);
         self.section = Section::Home;
+    }
+
+    fn unarchive_thread(&mut self, cx: &mut Context<Self>) {
+        self.update_thread_state(|stored| stored.archived = false, cx);
     }
 
     fn toggle_worktree_mode(&mut self, cx: &mut Context<Self>) {
@@ -5163,6 +5169,51 @@ impl DesktopShell {
 
             for (index, thread) in snoozed.into_iter().enumerate() {
                 items = items.child(self.nav_thread(thread, (usize::MAX - 3, index), cx));
+            }
+        }
+
+        let archived = self
+            .threads
+            .iter()
+            .filter(|thread| thread.archived)
+            .collect::<Vec<_>>();
+
+        if !archived.is_empty() {
+            let count = archived.len();
+            let collapsed = self.archived_collapsed;
+
+            items = items.child(
+                h_flex()
+                    .id("nav-archived")
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .text_xs()
+                    .cursor(CursorStyle::PointingHand)
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|element| element.bg(cx.theme().list_hover))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.archived_collapsed = !this.archived_collapsed;
+                        settings::save_bool("archivedCollapsed", this.archived_collapsed);
+                        cx.notify();
+                    }))
+                    .child(
+                        Icon::new(if collapsed {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .size(px(12.0)),
+                    )
+                    .child(format!("Archived ({count})")),
+            );
+
+            if !collapsed {
+                for (index, thread) in archived.into_iter().enumerate() {
+                    items = items.child(self.nav_thread(thread, (usize::MAX - 4, index), cx));
+                }
             }
         }
 
@@ -9459,6 +9510,7 @@ impl DesktopShell {
                     .and_then(|key| self.threads.iter().find(|stored| stored.key() == Some(key)));
                 let settled = stored.is_some_and(|stored| stored.settled);
                 let pinned = stored.is_some_and(|stored| stored.pinned);
+                let archived = stored.is_some_and(|stored| stored.archived);
                 let snoozed = stored.is_some_and(|stored| stored.snoozed_until > now_secs());
 
                 Rc::new(move |cx| {
@@ -9547,14 +9599,24 @@ impl DesktopShell {
                         ));
                     }
 
+                    let archive = if archived {
+                        "Unarchive thread"
+                    } else {
+                        "Archive thread"
+                    };
+
                     list = list.child(menu_row(
                         ("thread-archive", 0),
                         cx,
                         false,
-                        vec![div().text_sm().child("Archive thread").into_any_element()],
+                        vec![div().text_sm().child(archive).into_any_element()],
                         Some(Box::new(move |_, cx| {
                             let _ = archive_entity.update(cx, |this, cx| {
-                                this.archive_thread(cx);
+                                if archived {
+                                    this.unarchive_thread(cx);
+                                } else {
+                                    this.archive_thread(cx);
+                                }
                             });
                         })),
                     ));
