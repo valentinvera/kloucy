@@ -2,6 +2,7 @@ mod agents;
 mod api;
 mod assets;
 mod detect;
+mod diff;
 mod files;
 mod git;
 mod highlight;
@@ -38,6 +39,7 @@ use crate::api::{
 };
 
 use crate::detect::DetectedAgent;
+use crate::diff::LineKind;
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -301,6 +303,13 @@ struct HomeThread {
 struct OpenFile {
     content: String,
     path: String,
+}
+
+/// A surface the thread can show beside its conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Panel {
+    Diff,
+    Files,
 }
 
 /// What picking a row in the agent menu changes.
@@ -1188,10 +1197,12 @@ struct DesktopShell {
     _composer_subscription: Subscription,
     composer_status: Option<ComposerStatus>,
     home_thread: Option<HomeThread>,
-    files_open: bool,
+    panel: Option<Panel>,
     files: LoadState<Vec<String>>,
     open_file: Option<OpenFile>,
     files_error: Option<String>,
+    diff: LoadState<Vec<diff::FileDiff>>,
+    diff_error: Option<String>,
     sending_composer: bool,
     home_provider: Option<String>,
     home_model: Option<String>,
@@ -1391,10 +1402,12 @@ impl DesktopShell {
             _composer_subscription: composer_subscription,
             composer_status: None,
             home_thread: None,
-            files_open: false,
+            panel: None,
             files: LoadState::Loading,
             open_file: None,
             files_error: None,
+            diff: LoadState::Loading,
+            diff_error: None,
             sending_composer: false,
             home_provider: None,
             home_model: None,
@@ -1612,10 +1625,12 @@ impl DesktopShell {
         self.weekly_review = LoadState::Loading;
         self.home_provider = None;
         self.home_checkout = git::Checkout::None;
-        self.files_open = false;
+        self.panel = None;
         self.files = LoadState::Loading;
         self.open_file = None;
         self.files_error = None;
+        self.diff = LoadState::Loading;
+        self.diff_error = None;
 
         let checkout = self
             .selected_workspace_data()
@@ -2976,22 +2991,73 @@ impl DesktopShell {
         .detach();
     }
 
-    /// Leave the thread and go back to the empty composer.
-    /// Open or close the files of the thread's checkout.
-    fn toggle_files_panel(&mut self, cx: &mut Context<Self>) {
-        if self.files_open {
-            self.files_open = false;
-            self.open_file = None;
-            self.files_error = None;
-            cx.notify();
+    /// Switch the side panel to a surface, loading what it needs.
+    fn select_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        if self.panel == Some(panel) {
             return;
         }
 
-        self.files_open = true;
+        self.panel = Some(panel);
         self.open_file = None;
         self.files_error = None;
-        self.refresh_files(cx);
+        self.diff_error = None;
+
+        match panel {
+            Panel::Diff => self.refresh_diff(cx),
+            Panel::Files => self.refresh_files(cx),
+        }
+
         cx.notify();
+    }
+
+    /// Open a surface, or close it when it is already the one showing.
+    fn toggle_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        if self.panel == Some(panel) {
+            self.close_panel(cx);
+            return;
+        }
+
+        self.select_panel(panel, cx);
+    }
+
+    fn close_panel(&mut self, cx: &mut Context<Self>) {
+        self.panel = None;
+        self.open_file = None;
+        self.files_error = None;
+        self.diff_error = None;
+        cx.notify();
+    }
+
+    /// Read the checkout's change against its last commit.
+    fn refresh_diff(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self
+            .selected_workspace_data()
+            .map(|workspace| workspace.local_path.clone())
+        else {
+            self.diff = LoadState::Failed("Select a workspace to read its change.".to_string());
+            cx.notify();
+            return;
+        };
+
+        self.diff = LoadState::Loading;
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { diff::read(std::path::Path::new(&root)) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.diff = match result {
+                    Ok(files) => LoadState::Loaded(files),
+                    Err(message) => LoadState::Failed(message),
+                };
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Read the checkout's paths off the UI thread, then show them.
@@ -3061,9 +3127,10 @@ impl DesktopShell {
     fn clear_home_thread(&mut self, cx: &mut Context<Self>) {
         self.home_thread = None;
         self.composer_status = None;
-        self.files_open = false;
+        self.panel = None;
         self.open_file = None;
         self.files_error = None;
+        self.diff_error = None;
         cx.notify();
     }
 
@@ -6168,12 +6235,13 @@ impl DesktopShell {
     }
 
     /// The thread's checkout: paths on the left, the open file on the right.
-    fn render_files_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let close = Button::new("files-close")
+    /// The thread's side panel: a tab per surface and the selected one below.
+    fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let close = Button::new("panel-close")
             .ghost()
             .small()
             .icon(Icon::new(IconName::Close))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_files_panel(cx)));
+            .on_click(cx.listener(|this, _, _, cx| this.close_panel(cx)));
 
         let header = h_flex()
             .h(px(44.0))
@@ -6185,18 +6253,61 @@ impl DesktopShell {
             .border_color(cx.theme().border)
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap_1()
                     .items_center()
-                    .child(Icon::new(IconName::Folder).size(px(14.0)))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Files"),
-                    ),
+                    .child(self.panel_tab(Panel::Files, "Files", cx))
+                    .child(self.panel_tab(Panel::Diff, "Diff", cx)),
             )
             .child(close);
 
+        let body: AnyElement = match self.panel {
+            Some(Panel::Diff) => self.render_diff_surface(cx),
+            Some(Panel::Files) => self.render_files_surface(cx),
+            None => div().into_any_element(),
+        };
+
+        v_flex()
+            .w(px(560.0))
+            .h_full()
+            .flex_shrink_0()
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .child(header)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn panel_tab(&self, panel: Panel, label: &str, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.panel == Some(panel);
+
+        let index = match panel {
+            Panel::Diff => 0_usize,
+            Panel::Files => 1,
+        };
+
+        div()
+            .id(("panel-tab", index))
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .text_xs()
+            .cursor(CursorStyle::PointingHand)
+            .when(active, |element| {
+                element
+                    .bg(cx.theme().secondary)
+                    .text_color(cx.theme().foreground)
+            })
+            .when(!active, |element| {
+                element.text_color(cx.theme().muted_foreground)
+            })
+            .hover(|element| element.bg(cx.theme().list_hover))
+            .on_click(cx.listener(move |this, _, _, cx| this.select_panel(panel, cx)))
+            .child(label.to_string())
+            .into_any_element()
+    }
+
+    /// The checkout: paths on the left, the open file on the right.
+    fn render_files_surface(&self, cx: &mut Context<Self>) -> AnyElement {
         let paths: AnyElement = match &self.files {
             LoadState::Loading => div()
                 .p_3()
@@ -6339,29 +6450,168 @@ impl DesktopShell {
                 .into_any_element()
         };
 
-        v_flex()
-            .w(px(560.0))
-            .h_full()
-            .flex_shrink_0()
-            .border_l_1()
-            .border_color(cx.theme().border)
-            .child(header)
+        h_flex()
+            .flex_1()
+            .min_h_0()
+            .items_start()
             .child(
-                h_flex()
+                div()
+                    .w(px(200.0))
+                    .h_full()
+                    .flex_shrink_0()
+                    .border_r_1()
+                    .border_color(cx.theme().border)
+                    .child(paths),
+            )
+            .child(viewer)
+            .into_any_element()
+    }
+
+    /// The change in the checkout: tracked work against HEAD plus new files.
+    fn render_diff_surface(&self, cx: &mut Context<Self>) -> AnyElement {
+        let content: AnyElement = match &self.diff {
+            LoadState::Loading => div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Reading the change…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().danger_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(files) if files.is_empty() => v_flex()
+                .p_3()
+                .gap_1()
+                .child(div().text_sm().child("No changes in this checkout."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("The diff reads tracked changes against HEAD and untracked files."),
+                )
+                .into_any_element(),
+            LoadState::Loaded(files) => {
+                const MAX_LINES: usize = 4000;
+
+                let mut body = v_flex().p_3().gap_4();
+                let mut drawn = 0;
+
+                for file in files {
+                    if drawn >= MAX_LINES {
+                        break;
+                    }
+
+                    let mut block = v_flex().child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .pb_2()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .font_family(self.mono_font.clone())
+                                    .child(file.path.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().success_foreground)
+                                    .child(format!("+{}", file.added)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger_foreground)
+                                    .child(format!("-{}", file.removed)),
+                            ),
+                    );
+
+                    for line in &file.lines {
+                        if drawn >= MAX_LINES {
+                            break;
+                        }
+
+                        drawn += 1;
+
+                        let (sign, ink, background) = match line.kind {
+                            LineKind::Added => (
+                                "+",
+                                Some(cx.theme().success_foreground),
+                                Some(cx.theme().success),
+                            ),
+                            LineKind::Removed => (
+                                "-",
+                                Some(cx.theme().danger_foreground),
+                                Some(cx.theme().danger),
+                            ),
+                            LineKind::Hunk => ("", Some(cx.theme().muted_foreground), None),
+                            LineKind::Meta => ("", Some(cx.theme().muted_foreground), None),
+                            LineKind::Context => ("", None, None),
+                        };
+
+                        block = block.child(
+                            h_flex()
+                                .w_full()
+                                .items_start()
+                                .when_some(background, |element, background| element.bg(background))
+                                .child(
+                                    div()
+                                        .w(px(14.0))
+                                        .flex_shrink_0()
+                                        .pl_1()
+                                        .text_xs()
+                                        .font_family(self.mono_font.clone())
+                                        .text_color(ink.unwrap_or(cx.theme().muted_foreground))
+                                        .child(sign),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .font_family(self.mono_font.clone())
+                                        .text_color(cx.theme().foreground)
+                                        .child(line.text.clone()),
+                                ),
+                        );
+                    }
+
+                    body = body.child(block);
+                }
+
+                let mut scroll = div()
+                    .id("diff-body")
                     .flex_1()
                     .min_h_0()
-                    .items_start()
-                    .child(
+                    .overflow_y_scroll()
+                    .child(body);
+
+                if drawn >= MAX_LINES {
+                    scroll = scroll.child(
                         div()
-                            .w(px(200.0))
-                            .h_full()
-                            .flex_shrink_0()
-                            .border_r_1()
-                            .border_color(cx.theme().border)
-                            .child(paths),
-                    )
-                    .child(viewer),
-            )
+                            .px_3()
+                            .pb_3()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "Showing the first {MAX_LINES} lines of the change."
+                            )),
+                    );
+                }
+
+                scroll.into_any_element()
+            }
+        };
+
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .child(content)
             .into_any_element()
     }
 
@@ -6433,12 +6683,27 @@ impl DesktopShell {
                         Button::new("thread-files")
                             .ghost()
                             .small()
-                            .label(if self.files_open {
+                            .label(if self.panel == Some(Panel::Files) {
                                 "Hide files"
                             } else {
                                 "Files"
                             })
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_files_panel(cx))),
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Files, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("thread-diff")
+                            .ghost()
+                            .small()
+                            .label(if self.panel == Some(Panel::Diff) {
+                                "Hide diff"
+                            } else {
+                                "Diff"
+                            })
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Diff, cx)),
+                            ),
                     )
                     .child(if working {
                         Button::new("thread-stop")
@@ -6656,8 +6921,8 @@ impl DesktopShell {
         h_flex()
             .size_full()
             .child(conversation)
-            .when(self.files_open, |element| {
-                element.child(self.render_files_panel(cx))
+            .when(self.panel.is_some(), |element| {
+                element.child(self.render_panel(cx))
             })
             .into_any_element()
     }
