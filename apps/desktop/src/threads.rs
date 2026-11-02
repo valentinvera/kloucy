@@ -19,6 +19,11 @@ pub struct StoredThread {
     /// The agent's own session id, which is what makes it resumable.
     #[serde(default)]
     pub agent_session: Option<String>,
+    /// The worktree this thread works in, when it does not use the checkout.
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub checkout_path: Option<String>,
     /// The runs that make up the conversation, oldest first.
     pub session_ids: Vec<String>,
     pub title: String,
@@ -115,6 +120,8 @@ mod tests {
     fn thread(title: &str, first: &str, turns: usize) -> StoredThread {
         StoredThread {
             agent_session: None,
+            branch: None,
+            checkout_path: None,
             session_ids: (0..turns).map(|index| format!("{first}-{index}")).collect(),
             title: title.to_string(),
             updated_at: 0,
