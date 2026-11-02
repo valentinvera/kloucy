@@ -45,6 +45,7 @@ use std::sync::Arc;
 actions!(
     kloucy,
     [
+        NewChat,
         OpenCommandPalette,
         PickModel1,
         PickModel2,
@@ -5525,20 +5526,32 @@ impl DesktopShell {
     /// The conversations this machine remembers, with the ones still in the API
     /// as their turns.
     fn render_chats(&self, cx: &mut Context<Self>) -> AnyElement {
+        let new_chat = Button::new("new-chat")
+            .small()
+            .label("New chat")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.on_action_new_chat(&NewChat, window, cx);
+            }));
+
         if self.threads.is_empty() {
             return v_flex()
-                .gap_1()
-                .child(div().text_sm().child("No conversations yet."))
+                .gap_4()
+                .child(new_chat)
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Start one from Home; it will be listed here."),
+                    v_flex()
+                        .gap_1()
+                        .child(div().text_sm().child("No conversations yet."))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Start one from Home, or with New chat."),
+                        ),
                 )
                 .into_any_element();
         }
 
-        let mut list = v_flex().gap_2();
+        let mut list = v_flex().gap_2().child(new_chat);
 
         for (index, thread) in self.threads.iter().enumerate() {
             let value = thread.clone();
@@ -6903,6 +6916,7 @@ impl DesktopShell {
             .key_context(SHELL_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_action_open_palette))
+            .on_action(cx.listener(Self::on_action_new_chat))
             .on_action(cx.listener(Self::on_action_close_palette))
             .on_action(cx.listener(|this, _: &PickModel1, _, cx| this.on_action_pick_model(0, cx)))
             .on_action(cx.listener(|this, _: &PickModel2, _, cx| this.on_action_pick_model(1, cx)))
@@ -6922,6 +6936,14 @@ impl DesktopShell {
         }
 
         shell.into_any_element()
+    }
+
+    fn on_action_new_chat(&mut self, _: &NewChat, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_home_thread(cx);
+        self.section = Section::Home;
+        self.composer
+            .update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
     }
 
     fn on_action_open_palette(
@@ -7460,6 +7482,8 @@ fn main() {
             apply_theme(theme_mode(&stored), None, cx);
 
             cx.bind_keys([
+                KeyBinding::new("cmd-n", NewChat, Some(SHELL_CONTEXT)),
+                KeyBinding::new("ctrl-n", NewChat, Some(SHELL_CONTEXT)),
                 KeyBinding::new("cmd-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
                 KeyBinding::new("ctrl-k", OpenCommandPalette, Some(SHELL_CONTEXT)),
                 KeyBinding::new("cmd-1", PickModel1, Some(SHELL_CONTEXT)),
