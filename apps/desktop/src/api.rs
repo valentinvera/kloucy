@@ -25,8 +25,11 @@ pub struct Workspace {
 
 /// An agent task as returned by the `agentTasks.list` tRPC procedure.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentTask {
+    pub created_session_id: Option<String>,
     pub id: String,
+    pub prompt: Option<String>,
     pub source: String,
     pub status: String,
     pub title: String,
@@ -746,4 +749,52 @@ fn read_value(response: reqwest::blocking::Response) -> Result<Value, ApiError> 
     }
 
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_task_that_already_became_a_run() {
+        let value = serde_json::json!({
+            "assignedAgentId": null,
+            "createdAt": "2026-11-01T10:00:00.000Z",
+            "createdSessionId": "session-1",
+            "id": "task-1",
+            "prompt": "Ship the pairing link",
+            "source": "desktop",
+            "status": "converted",
+            "title": "Pair a phone",
+            "updatedAt": "2026-11-01T10:00:00.000Z",
+            "workspaceId": "workspace-1"
+        });
+
+        let task: AgentTask = serde_json::from_value(value).expect("a task reads");
+
+        assert_eq!(task.id, "task-1");
+        assert_eq!(task.created_session_id.as_deref(), Some("session-1"));
+        assert_eq!(task.prompt.as_deref(), Some("Ship the pairing link"));
+    }
+
+    #[test]
+    fn reads_a_task_that_has_not_run_yet() {
+        let value = serde_json::json!({
+            "assignedAgentId": null,
+            "createdAt": "2026-11-01T10:00:00.000Z",
+            "createdSessionId": null,
+            "id": "task-2",
+            "prompt": null,
+            "source": "mobile",
+            "status": "new",
+            "title": "Check the inbox",
+            "updatedAt": "2026-11-01T10:00:00.000Z",
+            "workspaceId": "workspace-1"
+        });
+
+        let task: AgentTask = serde_json::from_value(value).expect("a task reads");
+
+        assert!(task.created_session_id.is_none());
+        assert!(task.prompt.is_none());
+    }
 }

@@ -511,9 +511,11 @@ fn restored_status(status: &str) -> &str {
 fn status_ink(status: &str, cx: &App) -> Hsla {
     match status {
         "running" | "ready" => cx.theme().info_foreground,
-        "waiting" => cx.theme().warning_foreground,
-        "failed" => cx.theme().danger_foreground,
-        "done" => cx.theme().success_foreground,
+        // A task keeps its own vocabulary: waiting for setup and parked work
+        // are both things the reader has to come back to.
+        "waiting" | "needs_setup" | "later" => cx.theme().warning_foreground,
+        "failed" | "rejected" => cx.theme().danger_foreground,
+        "done" | "converted" => cx.theme().success_foreground,
         _ => cx.theme().muted_foreground,
     }
 }
@@ -4639,9 +4641,48 @@ impl DesktopShell {
                 let mut list = v_flex().gap_3();
 
                 for (index, task) in tasks.iter().enumerate() {
-                    let task_id = task.id.clone();
+                    // A task that already became a run is not something to start
+                    // again: the row goes to the run instead.
+                    let action: AnyElement = match &task.created_session_id {
+                        Some(session_id) => {
+                            let session_id = session_id.clone();
+                            let title = task.title.clone();
 
-                    list = list.child(
+                            Button::new(("task-open", index))
+                                .ghost()
+                                .small()
+                                .label("Open run")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let stored = threads::StoredThread {
+                                        agent_session: None,
+                                        session_ids: vec![session_id.clone()],
+                                        title: title.clone(),
+                                        updated_at: 0,
+                                        workspace_id: this
+                                            .selected_workspace
+                                            .clone()
+                                            .unwrap_or_default(),
+                                    };
+
+                                    this.section = Section::Home;
+                                    this.open_stored_thread(stored, cx);
+                                }))
+                                .into_any_element()
+                        }
+                        None => {
+                            let task_id = task.id.clone();
+
+                            Button::new(("task-start", index))
+                                .small()
+                                .label("Start session")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.start_session_from_task(task_id.clone(), cx);
+                                }))
+                                .into_any_element()
+                        }
+                    };
+
+                    let mut row = v_flex().gap_1().child(
                         h_flex()
                             .gap_2()
                             .items_center()
@@ -4649,7 +4690,7 @@ impl DesktopShell {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
+                                    .text_color(status_ink(&task.status, cx))
                                     .child(task.status.clone()),
                             )
                             .child(
@@ -4658,15 +4699,21 @@ impl DesktopShell {
                                     .text_color(cx.theme().muted_foreground)
                                     .child(task.source.clone()),
                             )
-                            .child(
-                                Button::new(("task-start", index))
-                                    .small()
-                                    .label("Start session")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.start_session_from_task(task_id.clone(), cx);
-                                    })),
-                            ),
+                            .child(action),
                     );
+
+                    if let Some(prompt) = &task.prompt {
+                        row = row.child(
+                            div()
+                                .max_w(px(560.0))
+                                .truncate()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(prompt.clone()),
+                        );
+                    }
+
+                    list = list.child(row);
                 }
 
                 list.into_any_element()
