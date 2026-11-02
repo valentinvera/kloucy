@@ -452,6 +452,15 @@ fn changed_paths(output: &str) -> Vec<String> {
         .collect()
 }
 
+/// The ink a pairing code's state is drawn in.
+fn pairing_ink(status: &str, cx: &App) -> Hsla {
+    match status {
+        "claimed" => cx.theme().success_foreground,
+        "revoked" => cx.theme().muted_foreground,
+        _ => cx.theme().warning_foreground,
+    }
+}
+
 /// The ink a review's state is drawn in.
 fn review_ink(action: &str, cx: &App) -> Hsla {
     match action {
@@ -1193,6 +1202,7 @@ struct DesktopShell {
     session_error: Option<String>,
     blocked_command: Option<String>,
     session_notice: Option<String>,
+    pairing_notice: Option<String>,
     review_reason_for: Option<(String, ReviewReason)>,
     review_reason: Entity<InputState>,
     saving_review_reason: bool,
@@ -1383,6 +1393,7 @@ impl DesktopShell {
             session_error: None,
             blocked_command: None,
             session_notice: None,
+            pairing_notice: None,
             review_reason_for: None,
             review_reason,
             saving_review_reason: false,
@@ -3049,6 +3060,7 @@ impl DesktopShell {
 
     fn create_pairing(&mut self, cx: &mut Context<Self>) {
         self.pairing = LoadState::Loading;
+        self.pairing_notice = None;
 
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
@@ -5465,23 +5477,56 @@ impl DesktopShell {
                         .child("Scan the code from the Kloucy mobile app to pair a phone."),
                 )
                 .into_any_element(),
-            LoadState::Loaded(Some(session)) => v_flex()
-                .gap_3()
-                .child(self.render_qr(&format!("kloucy://pair?token={}", session.token)))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!("Status: {}", session.status)),
-                )
-                .into_any_element(),
+            LoadState::Loaded(Some(session)) => {
+                let link = format!("kloucy://pair?token={}", session.token);
+                let copy = link.clone();
+
+                v_flex()
+                    .gap_3()
+                    .child(self.render_qr(&link))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(pairing_ink(&session.status, cx))
+                            .child(format!("Status: {}", session.status)),
+                    )
+                    // A phone that cannot scan still needs a way in: the link is
+                    // what the QR carries, so it is shown and can be copied.
+                    .child(
+                        div()
+                            .max_w(px(420.0))
+                            .font_family(self.mono_font.clone())
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(link),
+                    )
+                    .child(
+                        Button::new("copy-pairing-link")
+                            .ghost()
+                            .small()
+                            .label("Copy link")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                                this.pairing_notice = Some("Pairing link copied.".to_string());
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element()
+            }
         };
 
-        v_flex()
-            .gap_4()
-            .child(new_code)
-            .child(content)
-            .into_any_element()
+        let mut section = v_flex().gap_4().child(new_code).child(content);
+
+        if let Some(notice) = &self.pairing_notice {
+            section = section.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().success_foreground)
+                    .child(notice.clone()),
+            );
+        }
+
+        section.into_any_element()
     }
 
     /// Home: a composer while nothing runs, a thread while an agent works.
