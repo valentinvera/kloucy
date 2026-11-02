@@ -980,6 +980,16 @@ fn error_message(error: &ApiError) -> String {
     }
 }
 
+/// Why an action the API refused did not happen.
+fn refusal(error: &ApiError) -> String {
+    match error {
+        // Signing in is a different screen, not a wrong password.
+        ApiError::Unauthorized => "Sign in to do that.".to_string(),
+        ApiError::Unreachable => "API offline.".to_string(),
+        ApiError::Message(message) => message.clone(),
+    }
+}
+
 fn split_list(value: &str) -> Vec<String> {
     value
         .split(',')
@@ -1616,18 +1626,24 @@ impl DesktopShell {
             return;
         };
 
+        self.review_error = None;
+
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let reviews = cx
+            let (reviews, error) = cx
                 .background_executor()
                 .spawn(async move {
-                    let _ = client.approve_review(&review_id);
-                    load_reviews(&client, &workspace_id)
+                    let error = client
+                        .approve_review(&review_id)
+                        .err()
+                        .map(|error| refusal(&error));
+                    (load_reviews(&client, &workspace_id), error)
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.reviews = reviews;
+                this.review_error = error;
                 cx.notify();
             })
             .ok();
@@ -1899,45 +1915,69 @@ impl DesktopShell {
         let client = self.client.clone();
         let registry = self.registry.clone();
         cx.spawn(async move |this, cx| {
-            let sessions = cx
+            let (sessions, error) = cx
                 .background_executor()
                 .spawn(async move {
-                    match &action {
+                    let error = match &action {
                         SessionAction::Start(id) => {
-                            let _ = client.start_session(id);
+                            // An agent whose session the API refused to start would
+                            // write logs nobody can reach: report it instead.
+                            match client.start_session(id) {
+                                Ok(()) => {
+                                    if let (Some(command), Some(cwd)) = (command, cwd) {
+                                        let runner_client = client.clone();
+                                        let runner_registry = registry.clone();
+                                        let runner_workspace_id = workspace_id.clone();
+                                        let session_id = id.clone();
+                                        std::thread::spawn(move || {
+                                            runner::run_agent(
+                                                runner_registry,
+                                                runner_client,
+                                                runner_workspace_id,
+                                                session_id,
+                                                command,
+                                                cwd,
+                                            );
+                                        });
+                                    }
 
-                            if let (Some(command), Some(cwd)) = (command, cwd) {
-                                let runner_client = client.clone();
-                                let runner_registry = registry.clone();
-                                let runner_workspace_id = workspace_id.clone();
-                                let session_id = id.clone();
-                                std::thread::spawn(move || {
-                                    runner::run_agent(
-                                        runner_registry,
-                                        runner_client,
-                                        runner_workspace_id,
-                                        session_id,
-                                        command,
-                                        cwd,
-                                    );
-                                });
+                                    None
+                                }
+                                Err(error) => Some(refusal(&error)),
                             }
                         }
                         SessionAction::Stop(id) => {
-                            let _ = client.stop_session(id);
+                            let error = client.stop_session(id).err().map(|error| refusal(&error));
+                            // The process still goes down: an agent left running
+                            // after a refused stop is worse than a stale row.
                             registry.stop(id);
+                            error
                         }
                         SessionAction::Retry(id) => {
-                            let _ = client.retry_session(id);
+                            client.retry_session(id).err().map(|error| refusal(&error))
                         }
-                    }
+                    };
 
-                    load_sessions(&client, &workspace_id)
+                    (load_sessions(&client, &workspace_id), error)
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.sessions = sessions;
+                this.session_error = error.clone();
+
+                // Starting from the inbox lands on Home, where the sessions
+                // error is not drawn: the composer carries it instead, and a run
+                // that never started leaves no thread to watch.
+                if open_in_home {
+                    if error.is_some() {
+                        this.home_thread = None;
+                        this.watching = None;
+                    }
+
+                    this.composer_status = error.map(ComposerStatus::Failed);
+                }
+
                 cx.notify();
             })
             .ok();
@@ -2999,7 +3039,10 @@ impl DesktopShell {
             let readiness = cx
                 .background_executor()
                 .spawn(async move {
-                    let _ = client.calculate_readiness(&workspace_id);
+                    if let Err(error) = client.calculate_readiness(&workspace_id) {
+                        return LoadState::Failed(refusal(&error));
+                    }
+
                     load_readiness(&client, &workspace_id)
                 })
                 .await;
@@ -3025,15 +3068,9 @@ impl DesktopShell {
             let review = cx
                 .background_executor()
                 .spawn(async move {
-                    let failure = |error: &ApiError| match error {
-                        ApiError::Unauthorized => "Sign in to generate a review.".to_string(),
-                        ApiError::Unreachable => "API offline.".to_string(),
-                        ApiError::Message(message) => message.clone(),
-                    };
-
                     let draft = match client.generate_weekly_review(&workspace_id) {
                         Ok(draft) => draft,
-                        Err(error) => return LoadState::Failed(failure(&error)),
+                        Err(error) => return LoadState::Failed(refusal(&error)),
                     };
 
                     // A draft that cannot be saved is not a review: do not let the
@@ -3047,7 +3084,7 @@ impl DesktopShell {
                         &draft.next_actions,
                         &draft.risky_patterns,
                     ) {
-                        return LoadState::Failed(failure(&error));
+                        return LoadState::Failed(refusal(&error));
                     }
 
                     load_weekly_review(&client, &workspace_id)
