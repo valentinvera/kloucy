@@ -453,6 +453,11 @@ fn worktree_mode_key(workspace_id: &str) -> String {
     format!("worktreeMode:{workspace_id}")
 }
 
+/// The thread Home reopens at startup: the newest one still in the sidebar.
+fn startup_thread(threads: &[threads::StoredThread]) -> Option<threads::StoredThread> {
+    threads.iter().find(|thread| !thread.archived).cloned()
+}
+
 /// The settings key that holds the branch a project's worktrees start from.
 fn worktree_base_key(workspace_id: &str) -> String {
     format!("worktreeBase:{workspace_id}")
@@ -1580,8 +1585,10 @@ impl DesktopShell {
             this.update(cx, |this, cx| {
                 this.apply_account(account, cx);
 
-                if let Some(stored) = this.threads.first().cloned() {
-                    this.open_stored_thread(stored, cx);
+                if matches!(this.session, SessionStatus::SignedIn(_))
+                    && let Some(stored) = startup_thread(&this.threads)
+                {
+                    this.restore_stored_thread(stored, cx);
                 }
             })
             .ok();
@@ -1757,6 +1764,10 @@ impl DesktopShell {
                         this.session = session;
                         this.workspaces = workspaces;
                         this.agents = agents;
+
+                        if let Some(stored) = startup_thread(&this.threads) {
+                            this.restore_stored_thread(stored, cx);
+                        }
                     }
                     Err(error) => {
                         this.sign_in_error = Some(error_message(&error));
@@ -3717,8 +3728,23 @@ impl DesktopShell {
         cx.notify();
     }
 
-    /// Reopen a conversation from the history, rebuilding its turns from the API.
+    /// Reopen a conversation the reader chose, and say so when it fails.
     fn open_stored_thread(&mut self, stored: threads::StoredThread, cx: &mut Context<Self>) {
+        self.load_stored_thread(stored, true, cx);
+    }
+
+    /// Reopen the thread the app had open, without a red sentence if the API
+    /// has moved on and the conversation is gone.
+    fn restore_stored_thread(&mut self, stored: threads::StoredThread, cx: &mut Context<Self>) {
+        self.load_stored_thread(stored, false, cx);
+    }
+
+    fn load_stored_thread(
+        &mut self,
+        stored: threads::StoredThread,
+        report_failure: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.home_menu = None;
         self.pr_url = None;
         let client = self.client.clone();
@@ -3750,11 +3776,12 @@ impl DesktopShell {
                         this.detect_pull_request(cx);
                         this.home_scroll.scroll_to_bottom();
                     }
-                    None => {
+                    None if report_failure => {
                         this.composer_status = Some(ComposerStatus::Failed(
                             "That conversation could not be reopened.".to_string(),
                         ));
                     }
+                    None => {}
                 }
 
                 cx.notify();
@@ -10710,6 +10737,27 @@ mod nav_tests {
         assert!(!worktree_mode_value(Some("checkout"), true));
         assert!(worktree_mode_value(None, true));
         assert!(!worktree_mode_value(None, false));
+    }
+
+    #[test]
+    fn reopens_the_first_thread_that_is_still_listed() {
+        let archived = threads::StoredThread {
+            archived: true,
+            title: "Archived".to_string(),
+            workspace_id: "w".to_string(),
+            ..Default::default()
+        };
+        let live = threads::StoredThread {
+            title: "Live".to_string(),
+            workspace_id: "w".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            startup_thread(&[archived.clone(), live]).map(|thread| thread.title),
+            Some("Live".to_string())
+        );
+        assert_eq!(startup_thread(&[archived]), None);
     }
 
     #[test]
