@@ -101,8 +101,25 @@ impl Terminal {
             return;
         }
 
+        // Typing returns to the live screen, the way a terminal does.
+        if let Ok(mut parser) = self.parser.lock() {
+            parser.set_scrollback(0);
+        }
+
         let _ = self.writer.write_all(bytes);
         let _ = self.writer.flush();
+    }
+
+    /// Move the view through the scrollback; positive is older.
+    pub fn scroll_by(&mut self, lines: i32) {
+        let Ok(mut parser) = self.parser.lock() else {
+            return;
+        };
+
+        let current = parser.screen().scrollback();
+        let next = (current as i64 + i64::from(lines)).max(0) as usize;
+
+        parser.set_scrollback(next);
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -115,7 +132,12 @@ impl Terminal {
 
         let screen = parser.screen();
         let (rows, cols) = screen.size();
-        let cursor = screen.cursor_position();
+        // The cursor is only on the live screen; history has no insertion point.
+        let cursor = if screen.scrollback() == 0 {
+            screen.cursor_position()
+        } else {
+            (u16::MAX, u16::MAX)
+        };
         let mut lines = Vec::with_capacity(usize::from(rows));
 
         for row in 0..rows {
