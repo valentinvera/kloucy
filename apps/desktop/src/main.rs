@@ -233,6 +233,7 @@ enum LoadState<T> {
 /// The chip menus the home composer opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HomeMenu {
+    Base,
     Thread,
     Workspace,
     Agent,
@@ -1207,6 +1208,8 @@ struct DesktopShell {
     home_fast: bool,
     /// Whether a new thread starts in its own worktree.
     worktree_mode: bool,
+    /// The branch a new worktree starts from; `None` is the current HEAD.
+    worktree_base: Option<String>,
     commit_open: bool,
     commit_message: Entity<InputState>,
     git_busy: bool,
@@ -1420,6 +1423,7 @@ impl DesktopShell {
             home_effort: None,
             home_fast: false,
             worktree_mode: settings::load_bool("worktreeMode").unwrap_or(true),
+            worktree_base: None,
             commit_open: false,
             commit_message,
             git_busy: false,
@@ -1638,6 +1642,7 @@ impl DesktopShell {
         self.weekly_review = LoadState::Loading;
         self.home_provider = None;
         self.home_checkout = git::Checkout::None;
+        self.worktree_base = None;
         self.panel = None;
         self.files = LoadState::Loading;
         self.open_file = None;
@@ -2690,6 +2695,7 @@ impl DesktopShell {
             .as_ref()
             .and_then(|thread| thread.checkout.clone());
         let worktree_mode = self.worktree_mode;
+        let worktree_base = self.worktree_base.clone();
         let chat = matches!(plan, RunPlan::Chat);
         let worktree_title = title.clone();
         let seed = std::time::SystemTime::now()
@@ -2728,14 +2734,17 @@ impl DesktopShell {
                         // one, and every later turn in the thread runs there.
                         let checkout = match existing_checkout {
                             Some(checkout) => Some(checkout),
-                            None if worktree_mode && !chat => {
-                                worktree::create(std::path::Path::new(&cwd), &worktree_title, &seed)
-                                    .ok()
-                                    .map(|created| ThreadCheckout {
-                                        branch: created.branch,
-                                        path: created.path,
-                                    })
-                            }
+                            None if worktree_mode && !chat => worktree::create(
+                                std::path::Path::new(&cwd),
+                                &worktree_title,
+                                &seed,
+                                worktree_base.as_deref(),
+                            )
+                            .ok()
+                            .map(|created| ThreadCheckout {
+                                branch: created.branch,
+                                path: created.path,
+                            }),
                             None => None,
                         };
 
@@ -2832,6 +2841,8 @@ impl DesktopShell {
                         if let Some(thread) = this.home_thread.as_mut() {
                             thread.checkout = checkout;
                         }
+
+                        this.worktree_base = None;
 
                         this.refresh_home_checkout();
                         this.remember_thread();
@@ -7769,6 +7780,30 @@ impl DesktopShell {
             // Where the next thread starts: its own worktree, or this checkout.
             // Once a thread exists its checkout is fixed, so the choice is only
             // offered before the first message.
+            if self.worktree_mode && self.home_thread.is_none() {
+                let base = self
+                    .worktree_base
+                    .clone()
+                    .unwrap_or_else(|| "HEAD".to_string());
+
+                checkout_row = checkout_row.child(
+                    self.home_popover(
+                        "home-base",
+                        Self::chip(
+                            Icon::empty()
+                                .path("icons/git-branch.svg")
+                                .size(px(14.0))
+                                .into_any_element(),
+                            format!("From {base}"),
+                            cx,
+                        ),
+                        HomeMenu::Base,
+                        Corner::BottomRight,
+                        cx,
+                    ),
+                );
+            }
+
             if self.home_thread.is_none() {
                 checkout_row = checkout_row.child(
                     Button::new("home-worktree-mode")
@@ -7901,6 +7936,56 @@ impl DesktopShell {
         let entity = cx.entity().downgrade();
 
         match menu {
+            HomeMenu::Base => {
+                let root = self.active_checkout().unwrap_or_default();
+                let branches = git::branches(std::path::Path::new(&root));
+                let selected = self.worktree_base.clone();
+
+                Rc::new(move |cx| {
+                    let mut list = menu_list(px(250.0));
+                    let head_entity = entity.clone();
+                    let head_label = match &selected {
+                        Some(_) => "Current branch (HEAD)".to_string(),
+                        None => "Current branch (HEAD) · selected".to_string(),
+                    };
+
+                    list = list.child(menu_row(
+                        ("base-head", 0),
+                        cx,
+                        selected.is_none(),
+                        vec![div().text_sm().child(head_label).into_any_element()],
+                        Some(Box::new(move |_, cx| {
+                            let _ = head_entity.update(cx, |this, cx| {
+                                this.worktree_base = None;
+                                this.home_menu = None;
+                                cx.notify();
+                            });
+                        })),
+                    ));
+
+                    for (index, branch) in branches.iter().take(40).enumerate() {
+                        let branch_entity = entity.clone();
+                        let value = branch.clone();
+                        let is_selected = selected.as_deref() == Some(branch.as_str());
+
+                        list = list.child(menu_row(
+                            ("base-branch", index),
+                            cx,
+                            is_selected,
+                            vec![div().text_sm().child(branch.clone()).into_any_element()],
+                            Some(Box::new(move |_, cx| {
+                                let _ = branch_entity.update(cx, |this, cx| {
+                                    this.worktree_base = Some(value.clone());
+                                    this.home_menu = None;
+                                    cx.notify();
+                                });
+                            })),
+                        ));
+                    }
+
+                    list.into_any_element()
+                })
+            }
             HomeMenu::Thread => {
                 let key = self
                     .home_thread
