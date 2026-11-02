@@ -32,6 +32,14 @@ pub struct DiffLine {
     pub text: String,
 }
 
+/// How much the checkout has changed, without the lines themselves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChangeStat {
+    pub added: usize,
+    pub files: usize,
+    pub removed: usize,
+}
+
 /// How many lines of one untracked file the panel reads.
 const MAX_UNTRACKED_LINES: usize = 200;
 
@@ -58,6 +66,42 @@ pub fn read(root: &Path) -> Result<Vec<FileDiff>, String> {
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
     Ok(files)
+}
+
+/// Count what changed in `root` without reading the change itself. None means
+/// the directory is not a repository.
+pub fn stat(root: &Path) -> Option<ChangeStat> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "HEAD", "--numstat", "--no-color"])
+        .output()
+        .ok()?;
+
+    // A repository without a first commit has no HEAD; its worktree still counts.
+    let output = if output.status.success() {
+        output
+    } else {
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["diff", "--numstat", "--no-color"])
+            .output()
+            .ok()?
+    };
+
+    let mut stat = parse_numstat(&String::from_utf8_lossy(&output.stdout));
+
+    for path in untracked_paths(root) {
+        let Ok(content) = std::fs::read_to_string(root.join(&path)) else {
+            continue;
+        };
+
+        stat.files += 1;
+        stat.added += content.lines().count();
+    }
+
+    Some(stat)
 }
 
 /// Parse a unified diff, grouping lines by the file they belong to.
@@ -116,8 +160,26 @@ fn file_path(line: &str) -> Option<String> {
     Some(path.to_string())
 }
 
-/// Untracked files, read as additions.
-fn untracked(root: &Path) -> Vec<FileDiff> {
+/// Add up `git diff --numstat` lines. A binary file prints `-` for both
+/// counts; it still counts as a changed file.
+fn parse_numstat(output: &str) -> ChangeStat {
+    let mut stat = ChangeStat::default();
+
+    for line in output.lines() {
+        let mut fields = line.split('\t');
+        let added = fields.next().unwrap_or_default();
+        let removed = fields.next().unwrap_or_default();
+
+        stat.files += 1;
+        stat.added += added.parse::<usize>().unwrap_or_default();
+        stat.removed += removed.parse::<usize>().unwrap_or_default();
+    }
+
+    stat
+}
+
+/// The paths git reports as untracked.
+fn untracked_paths(root: &Path) -> Vec<String> {
     let Ok(output) = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -134,9 +196,17 @@ fn untracked(root: &Path) -> Vec<FileDiff> {
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Untracked files, read as additions.
+fn untracked(root: &Path) -> Vec<FileDiff> {
+    untracked_paths(root)
+        .into_iter()
         .take(MAX_UNTRACKED_FILES)
         .filter_map(|path| {
-            let content = crate::files::read(root, path).ok()?;
+            let content = crate::files::read(root, &path).ok()?;
             let lines = content
                 .lines()
                 .take(MAX_UNTRACKED_LINES)
@@ -206,6 +276,15 @@ index 3333333..4444444 100644
         assert!(kinds.contains(&LineKind::Context));
         assert!(kinds.contains(&LineKind::Added));
         assert!(kinds.contains(&LineKind::Removed));
+    }
+
+    #[test]
+    fn adds_up_a_numstat() {
+        let stat = parse_numstat("12\t3\tsrc/main.rs\n-\t-\tassets/logo.png\n");
+
+        assert_eq!(stat.files, 2);
+        assert_eq!(stat.added, 12);
+        assert_eq!(stat.removed, 3);
     }
 
     #[test]
