@@ -1402,6 +1402,7 @@ struct DesktopShell {
     browser_error: Option<String>,
     browser_notice: Option<String>,
     collapsed_projects: HashSet<String>,
+    settled_collapsed: bool,
     devices: Option<device::Devices>,
     devices_error: Option<String>,
     devices_loading: bool,
@@ -1649,6 +1650,7 @@ impl DesktopShell {
             collapsed_projects: collapsed_from(
                 settings::load_text(COLLAPSED_PROJECTS_KEY).as_deref(),
             ),
+            settled_collapsed: settings::load_bool("settledCollapsed").unwrap_or(false),
             devices: None,
             devices_error: None,
             devices_loading: false,
@@ -5109,13 +5111,41 @@ impl DesktopShell {
             .collect::<Vec<_>>();
 
         if !settled.is_empty() {
-            items = items.child(nav_label(
-                &format!("Settled ({})", settled.len()),
-                cx.theme().muted_foreground,
-            ));
+            let count = settled.len();
+            let collapsed = self.settled_collapsed;
 
-            for (index, thread) in settled.into_iter().enumerate() {
-                items = items.child(self.nav_thread(thread, (usize::MAX - 2, index), cx));
+            items = items.child(
+                h_flex()
+                    .id("nav-settled")
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .text_xs()
+                    .cursor(CursorStyle::PointingHand)
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|element| element.bg(cx.theme().list_hover))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.settled_collapsed = !this.settled_collapsed;
+                        settings::save_bool("settledCollapsed", this.settled_collapsed);
+                        cx.notify();
+                    }))
+                    .child(
+                        Icon::new(if collapsed {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .size(px(12.0)),
+                    )
+                    .child(format!("Settled ({count})")),
+            );
+
+            if !collapsed {
+                for (index, thread) in settled.into_iter().enumerate() {
+                    items = items.child(self.nav_thread(thread, (usize::MAX - 2, index), cx));
+                }
             }
         }
 
