@@ -2,6 +2,7 @@ mod agents;
 mod api;
 mod assets;
 mod detect;
+mod files;
 mod git;
 mod highlight;
 mod markdown;
@@ -294,6 +295,12 @@ struct HomeThread {
     turns: Vec<HomeTurn>,
     /// Where the conversation started; its runs are listed under this workspace.
     workspace_id: String,
+}
+
+/// One file open in the thread's file panel.
+struct OpenFile {
+    content: String,
+    path: String,
 }
 
 /// What picking a row in the agent menu changes.
@@ -1156,6 +1163,10 @@ struct DesktopShell {
     _composer_subscription: Subscription,
     composer_status: Option<ComposerStatus>,
     home_thread: Option<HomeThread>,
+    files_open: bool,
+    files: LoadState<Vec<String>>,
+    open_file: Option<OpenFile>,
+    files_error: Option<String>,
     sending_composer: bool,
     home_provider: Option<String>,
     home_model: Option<String>,
@@ -1355,6 +1366,10 @@ impl DesktopShell {
             _composer_subscription: composer_subscription,
             composer_status: None,
             home_thread: None,
+            files_open: false,
+            files: LoadState::Loading,
+            open_file: None,
+            files_error: None,
             sending_composer: false,
             home_provider: None,
             home_model: None,
@@ -1572,6 +1587,10 @@ impl DesktopShell {
         self.weekly_review = LoadState::Loading;
         self.home_provider = None;
         self.home_checkout = git::Checkout::None;
+        self.files_open = false;
+        self.files = LoadState::Loading;
+        self.open_file = None;
+        self.files_error = None;
 
         let checkout = self
             .selected_workspace_data()
@@ -2933,9 +2952,93 @@ impl DesktopShell {
     }
 
     /// Leave the thread and go back to the empty composer.
+    /// Open or close the files of the thread's checkout.
+    fn toggle_files_panel(&mut self, cx: &mut Context<Self>) {
+        if self.files_open {
+            self.files_open = false;
+            self.open_file = None;
+            self.files_error = None;
+            cx.notify();
+            return;
+        }
+
+        self.files_open = true;
+        self.open_file = None;
+        self.files_error = None;
+        self.refresh_files(cx);
+        cx.notify();
+    }
+
+    /// Read the checkout's paths off the UI thread, then show them.
+    fn refresh_files(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self
+            .selected_workspace_data()
+            .map(|workspace| workspace.local_path.clone())
+        else {
+            self.files = LoadState::Loaded(Vec::new());
+            cx.notify();
+            return;
+        };
+
+        self.files = LoadState::Loading;
+
+        cx.spawn(async move |this, cx| {
+            let entries = cx
+                .background_executor()
+                .spawn(async move { files::list(std::path::Path::new(&root)) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.files = LoadState::Loaded(entries);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Read one file of the checkout into the panel.
+    fn open_thread_file(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(root) = self
+            .selected_workspace_data()
+            .map(|workspace| workspace.local_path.clone())
+        else {
+            return;
+        };
+
+        self.files_error = None;
+
+        cx.spawn(async move |this, cx| {
+            let read = path.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { files::read(std::path::Path::new(&root), &read) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(content) => {
+                        this.open_file = Some(OpenFile { content, path });
+                    }
+                    Err(message) => {
+                        this.open_file = None;
+                        this.files_error = Some(message);
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn clear_home_thread(&mut self, cx: &mut Context<Self>) {
         self.home_thread = None;
         self.composer_status = None;
+        self.files_open = false;
+        self.open_file = None;
+        self.files_error = None;
         cx.notify();
     }
 
@@ -6039,6 +6142,204 @@ impl DesktopShell {
         StyledText::new(text).with_runs(runs)
     }
 
+    /// The thread's checkout: paths on the left, the open file on the right.
+    fn render_files_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let close = Button::new("files-close")
+            .ghost()
+            .small()
+            .icon(Icon::new(IconName::Close))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_files_panel(cx)));
+
+        let header = h_flex()
+            .h(px(44.0))
+            .flex_shrink_0()
+            .items_center()
+            .justify_between()
+            .px_3()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Icon::new(IconName::Folder).size(px(14.0)))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Files"),
+                    ),
+            )
+            .child(close);
+
+        let paths: AnyElement = match &self.files {
+            LoadState::Loading => div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Reading the checkout…")
+                .into_any_element(),
+            LoadState::Failed(message) => div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            LoadState::Loaded(files) if files.is_empty() => div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("No files in this checkout.")
+                .into_any_element(),
+            LoadState::Loaded(files) => {
+                let mut list = v_flex().p_2().gap_1();
+
+                for (index, path) in files.iter().enumerate() {
+                    let selected = self
+                        .open_file
+                        .as_ref()
+                        .is_some_and(|file| file.path == *path);
+                    let value = path.clone();
+
+                    list = list.child(
+                        div()
+                            .id(("file-path", index))
+                            .px_2()
+                            .py_1()
+                            .rounded(px(4.0))
+                            .text_xs()
+                            .font_family(self.mono_font.clone())
+                            .truncate()
+                            .cursor(CursorStyle::PointingHand)
+                            .when(selected, |element| element.bg(cx.theme().secondary))
+                            .hover(|element| element.bg(cx.theme().list_hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_thread_file(value.clone(), cx);
+                            }))
+                            .child(path.clone()),
+                    );
+                }
+
+                div()
+                    .id("files-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(list)
+                    .into_any_element()
+            }
+        };
+
+        let viewer: AnyElement = if let Some(error) = &self.files_error {
+            div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().danger_foreground)
+                .child(error.clone())
+                .into_any_element()
+        } else if let Some(file) = &self.open_file {
+            // A sanitized checkout can hold a generated bundle: the panel reads
+            // the head of it rather than drawing thousands of rows.
+            const MAX_VIEW_LINES: usize = 1200;
+
+            let lines = file.content.split('\n').collect::<Vec<_>>();
+            let truncated = lines.len() > MAX_VIEW_LINES;
+            let shown = lines
+                .iter()
+                .take(MAX_VIEW_LINES)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let body = div()
+                .id("file-body")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p_3()
+                .child(self.render_code(&shown, files::language(&file.path), cx));
+
+            v_flex()
+                .flex_1()
+                .h_full()
+                .min_w_0()
+                .min_h_0()
+                .child(
+                    h_flex()
+                        .h(px(36.0))
+                        .flex_shrink_0()
+                        .items_center()
+                        .px_3()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .font_family(self.mono_font.clone())
+                                .text_color(cx.theme().muted_foreground)
+                                .child(file.path.clone()),
+                        ),
+                )
+                .child(body)
+                .when(truncated, |element| {
+                    element.child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("Showing the first {MAX_VIEW_LINES} lines.")),
+                    )
+                })
+                .into_any_element()
+        } else {
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .px_6()
+                .child(div().text_sm().child("No file open."))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Choose a file to read it here."),
+                )
+                .into_any_element()
+        };
+
+        v_flex()
+            .w(px(560.0))
+            .h_full()
+            .flex_shrink_0()
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .child(header)
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .items_start()
+                    .child(
+                        div()
+                            .w(px(200.0))
+                            .h_full()
+                            .flex_shrink_0()
+                            .border_r_1()
+                            .border_color(cx.theme().border)
+                            .child(paths),
+                    )
+                    .child(viewer),
+            )
+            .into_any_element()
+    }
+
     fn render_thread(
         &self,
         thread: &HomeThread,
@@ -6103,6 +6404,17 @@ impl DesktopShell {
                             ),
                         )
                     })
+                    .child(
+                        Button::new("thread-files")
+                            .ghost()
+                            .small()
+                            .label(if self.files_open {
+                                "Hide files"
+                            } else {
+                                "Files"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_files_panel(cx))),
+                    )
                     .child(if working {
                         Button::new("thread-stop")
                             .ghost()
@@ -6279,8 +6591,10 @@ impl DesktopShell {
             }
         }
 
-        div()
-            .size_full()
+        let conversation = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
             .child(header)
@@ -6312,7 +6626,14 @@ impl DesktopShell {
                             .child(card)
                             .child(details),
                     ),
-            )
+            );
+
+        h_flex()
+            .size_full()
+            .child(conversation)
+            .when(self.files_open, |element| {
+                element.child(self.render_files_panel(cx))
+            })
             .into_any_element()
     }
 
