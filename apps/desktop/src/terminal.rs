@@ -24,9 +24,16 @@ pub struct Terminal {
     writer: Box<dyn Write + Send>,
 }
 
-/// What the panel draws: the screen as text.
+/// One stretch of a row with the same colours.
+pub struct Run {
+    pub background: Option<u32>,
+    pub foreground: Option<u32>,
+    pub text: String,
+}
+
+/// What the panel draws: one set of runs per row.
 pub struct Snapshot {
-    pub contents: String,
+    pub rows: Vec<Vec<Run>>,
 }
 
 impl Terminal {
@@ -97,22 +104,83 @@ impl Terminal {
 
     pub fn snapshot(&self) -> Snapshot {
         let Ok(parser) = self.parser.lock() else {
-            return Snapshot {
-                contents: String::new(),
-            };
+            return Snapshot { rows: Vec::new() };
         };
 
         let screen = parser.screen();
+        let (rows, cols) = screen.size();
+        let mut lines = Vec::with_capacity(usize::from(rows));
 
-        Snapshot {
-            contents: screen.contents(),
+        for row in 0..rows {
+            let mut runs: Vec<Run> = Vec::new();
+
+            for col in 0..cols {
+                let Some(cell) = screen.cell(row, col) else {
+                    continue;
+                };
+
+                let text = cell.contents();
+                let foreground = rgb_of(cell.fgcolor());
+                let background = rgb_of(cell.bgcolor());
+
+                match runs.last_mut() {
+                    Some(run) if run.foreground == foreground && run.background == background => {
+                        run.text.push_str(&text);
+                    }
+                    _ => runs.push(Run {
+                        background,
+                        foreground,
+                        text,
+                    }),
+                }
+            }
+
+            lines.push(runs);
         }
+
+        Snapshot { rows: lines }
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = self.child.kill();
+    }
+}
+
+/// The RGB value a terminal colour draws with, or `None` for the default.
+fn rgb_of(color: vt100::Color) -> Option<u32> {
+    match color {
+        vt100::Color::Default => None,
+        vt100::Color::Rgb(red, green, blue) => {
+            Some((u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue))
+        }
+        vt100::Color::Idx(index) => Some(indexed(index)),
+    }
+}
+
+/// The xterm palette: sixteen named colours, a 6×6×6 cube and a grey ramp.
+fn indexed(index: u8) -> u32 {
+    const BASIC: [u32; 16] = [
+        0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f,
+        0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
+    ];
+
+    match index {
+        0..=15 => BASIC[usize::from(index)],
+        16..=231 => {
+            const LEVELS: [u32; 6] = [0, 95, 135, 175, 215, 255];
+            let value = u32::from(index - 16);
+
+            (LEVELS[(value / 36) as usize] << 16)
+                | (LEVELS[((value % 36) / 6) as usize] << 8)
+                | LEVELS[(value % 6) as usize]
+        }
+        _ => {
+            let grey = 8 + 10 * u32::from(index - 232);
+
+            (grey << 16) | (grey << 8) | grey
+        }
     }
 }
 
@@ -205,6 +273,15 @@ mod tests {
         event.keystroke.modifiers.control = true;
 
         assert_eq!(bytes(&event), vec![0x03]);
+    }
+
+    #[test]
+    fn maps_terminal_colours_to_rgb() {
+        assert_eq!(rgb_of(vt100::Color::Default), None);
+        assert_eq!(rgb_of(vt100::Color::Rgb(1, 2, 3)), Some(0x010203));
+        assert_eq!(rgb_of(vt100::Color::Idx(1)), Some(0xcd0000));
+        assert_eq!(rgb_of(vt100::Color::Idx(16)), Some(0x000000));
+        assert_eq!(rgb_of(vt100::Color::Idx(232)), Some(0x080808));
     }
 
     #[test]
