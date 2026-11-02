@@ -1049,6 +1049,31 @@ fn apply_theme(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
     theme.sidebar_accent = sidebar_accent;
     theme.sidebar_accent_foreground = theme.foreground;
     theme.sidebar_border = sidebar_border;
+
+    // The component library ships these as near-white pastels, meant for text
+    // on a solid coloured badge. Kloucy draws status as text on the surface, so
+    // the inks have to be readable on black and on white, and tell each state
+    // apart: mint for success, salmon for danger, amber for warnings, sky for
+    // information.
+    let (success, danger, warning, info) = match mode {
+        ThemeMode::Light => (
+            hsla(150.0 / 360.0, 0.62, 0.30, 1.0),
+            hsla(1.0 / 360.0, 0.68, 0.44, 1.0),
+            hsla(38.0 / 360.0, 0.85, 0.34, 1.0),
+            hsla(210.0 / 360.0, 0.72, 0.38, 1.0),
+        ),
+        _ => (
+            hsla(150.0 / 360.0, 0.85, 0.62, 1.0),
+            hsla(1.0 / 360.0, 0.95, 0.74, 1.0),
+            hsla(46.0 / 360.0, 0.95, 0.58, 1.0),
+            hsla(210.0 / 360.0, 0.90, 0.70, 1.0),
+        ),
+    };
+
+    theme.success_foreground = success;
+    theme.danger_foreground = danger;
+    theme.warning_foreground = warning;
+    theme.info_foreground = info;
 }
 
 /// What the thread shows as the agent's reply: the message it reported, or the
