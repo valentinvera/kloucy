@@ -448,6 +448,12 @@ fn worktree_base_key(workspace_id: &str) -> String {
     format!("worktreeBase:{workspace_id}")
 }
 
+/// The terminal rows that fit a panel `height` pixels tall, below the tab
+/// header and the screen's padding. Each row is 15 pixels.
+fn terminal_rows(height: f32) -> u16 {
+    ((height - 60.0) / 15.0).floor().max(1.0) as u16
+}
+
 /// A URL the browser surface can open: the value as typed, with a scheme when
 /// it has none. An empty value stays empty so the caller can refuse it.
 fn browser_url(value: &str) -> String {
@@ -7059,6 +7065,16 @@ impl DesktopShell {
 
     /// The thread's checkout: paths on the left, the open file on the right.
     /// The shell in the thread's checkout.
+    /// Keep the shell's size equal to the panel's while a terminal is open.
+    fn sync_terminal_size(&mut self, window: &Window) {
+        let Some(terminal) = self.terminal.as_mut() else {
+            return;
+        };
+
+        let rows = terminal_rows(f32::from(window.viewport_size().height));
+        terminal.resize(rows, terminal::COLS);
+    }
+
     fn render_terminal_surface(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(error) = &self.terminal_error {
             return div()
@@ -9843,7 +9859,9 @@ impl DesktopShell {
 }
 
 impl Render for DesktopShell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_terminal_size(window);
+
         match &self.session {
             SessionStatus::Checking => centered("Checking API…", cx),
             SessionStatus::Unreachable => self.render_offline(cx),
@@ -9971,6 +9989,13 @@ mod nav_tests {
         assert!(!worktree_mode_value(Some("checkout"), true));
         assert!(worktree_mode_value(None, true));
         assert!(!worktree_mode_value(None, false));
+    }
+
+    #[test]
+    fn fits_terminal_rows_to_the_panel_height() {
+        assert_eq!(terminal_rows(1080.0), 68);
+        assert_eq!(terminal_rows(800.0), 49);
+        assert_eq!(terminal_rows(60.0), 1);
     }
 
     #[test]
