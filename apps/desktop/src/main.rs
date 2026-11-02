@@ -17,7 +17,7 @@ mod worktree;
 
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, Corner, CursorStyle, Div, Entity,
-    FocusHandle, FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render,
+    FocusHandle, FontStyle, FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render, ScrollDelta,
     ScrollHandle, SharedString, StrikethroughStyle, StyledText, Subscription, TextRun,
     UnderlineStyle, WeakEntity, Window, WindowBounds, WindowOptions, actions, div, font, hsla,
     prelude::*, px, rgb, size,
@@ -7071,11 +7071,27 @@ impl DesktopShell {
             .id("terminal-screen")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
             .cursor(CursorStyle::IBeam)
             .track_focus(&self.terminal_focus)
             .on_click(move |_, window, _| focus.focus(window))
             .on_key_down(move |event, _, cx| {
+                let key = event.keystroke.key.as_str();
+                let shift = event.keystroke.modifiers.shift;
+
+                // Shift+PageUp/PageDown reads the scrollback, as in a terminal.
+                if shift && (key == "pageup" || key == "pagedown") {
+                    let lines = if key == "pageup" { 10 } else { -10 };
+
+                    let _ = entity.update(cx, |this, cx| {
+                        if let Some(terminal) = &mut this.terminal {
+                            terminal.scroll_by(lines);
+                        }
+
+                        cx.notify();
+                    });
+                    return;
+                }
+
                 let bytes = terminal::bytes(event);
 
                 if bytes.is_empty() {
@@ -7089,6 +7105,28 @@ impl DesktopShell {
 
                     cx.notify();
                 });
+            })
+            .on_scroll_wheel({
+                let entity = cx.entity().downgrade();
+
+                move |event, _, cx| {
+                    let lines = match event.delta {
+                        ScrollDelta::Lines(delta) => -delta.y as i32,
+                        ScrollDelta::Pixels(delta) => -(delta.y / px(15.0)) as i32,
+                    };
+
+                    if lines == 0 {
+                        return;
+                    }
+
+                    let _ = entity.update(cx, |this, cx| {
+                        if let Some(terminal) = &mut this.terminal {
+                            terminal.scroll_by(lines);
+                        }
+
+                        cx.notify();
+                    });
+                }
             })
             .child(screen)
             .into_any_element()
