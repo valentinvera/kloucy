@@ -1198,6 +1198,11 @@ struct DesktopShell {
     home_fast: bool,
     /// Whether a new thread starts in its own worktree.
     worktree_mode: bool,
+    commit_open: bool,
+    commit_message: Entity<InputState>,
+    git_busy: bool,
+    git_error: Option<String>,
+    git_notice: Option<String>,
     model_catalogs: HashMap<String, agents::ModelCatalog>,
     home_scroll: ScrollHandle,
     home_project: HomeProject,
@@ -1350,6 +1355,7 @@ impl DesktopShell {
                 .placeholder("Do anything…")
                 .auto_grow(1, 6)
         });
+        let commit_message = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
         let composer_subscription = cx.subscribe_in(
             &composer,
             window,
@@ -1404,6 +1410,11 @@ impl DesktopShell {
             home_effort: None,
             home_fast: false,
             worktree_mode: settings::load_bool("worktreeMode").unwrap_or(true),
+            commit_open: false,
+            commit_message,
+            git_busy: false,
+            git_error: None,
+            git_notice: None,
             model_catalogs: HashMap::new(),
             home_scroll: ScrollHandle::new(),
             home_project: HomeProject::Auto,
@@ -1662,7 +1673,7 @@ impl DesktopShell {
                 this.tasks = tasks;
                 this.weekly_review = weekly_review;
 
-                if this.home_project == HomeProject::Auto {
+                if this.home_project == HomeProject::Auto && this.thread_checkout().is_none() {
                     this.home_checkout = checkout;
                 }
 
@@ -2193,6 +2204,189 @@ impl DesktopShell {
                 self.selected_workspace_data()
                     .map(|workspace| workspace.local_path.clone())
             })
+    }
+
+    fn thread_checkout(&self) -> Option<ThreadCheckout> {
+        self.home_thread
+            .as_ref()
+            .and_then(|thread| thread.checkout.clone())
+    }
+
+    fn toggle_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_open = !self.commit_open;
+        self.git_error = None;
+        self.git_notice = None;
+
+        if self.commit_open {
+            self.commit_message
+                .update(cx, |state, cx| state.focus(window, cx));
+        }
+
+        cx.notify();
+    }
+
+    /// Commit everything the thread changed in its worktree.
+    fn commit_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.git_busy {
+            return;
+        }
+
+        let Some(checkout) = self.thread_checkout() else {
+            self.git_error = Some("This thread has no worktree to commit.".to_string());
+            cx.notify();
+            return;
+        };
+
+        let message = self.commit_message.read(cx).value().trim().to_string();
+
+        if message.is_empty() {
+            self.git_error = Some("Write a commit message.".to_string());
+            cx.notify();
+            return;
+        }
+
+        self.git_busy = true;
+        self.git_error = None;
+        self.git_notice = None;
+        cx.notify();
+
+        let path = checkout.path.clone();
+        let branch = checkout.branch.clone();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { git::commit(std::path::Path::new(&path), &message) })
+                .await;
+
+            this.update_in(cx, |this, window, cx| {
+                this.git_busy = false;
+
+                match result {
+                    Ok(()) => {
+                        this.commit_open = false;
+                        this.git_notice = Some(format!("Committed on {branch}."));
+                        this.composer_status =
+                            Some(ComposerStatus::Notice(format!("Committed on {branch}.")));
+                        this.commit_message
+                            .update(cx, |state, cx| state.set_value("", window, cx));
+
+                        if this.panel == Some(Panel::Diff) {
+                            this.refresh_diff(cx);
+                        }
+                    }
+                    Err(message) => {
+                        this.git_error = Some(message);
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Push the thread's branch to its remote.
+    fn push_thread(&mut self, cx: &mut Context<Self>) {
+        if self.git_busy {
+            return;
+        }
+
+        let Some(checkout) = self.thread_checkout() else {
+            self.git_error = Some("This thread has no branch to push.".to_string());
+            cx.notify();
+            return;
+        };
+
+        self.git_busy = true;
+        self.git_error = None;
+        self.git_notice = None;
+        cx.notify();
+
+        let path = checkout.path.clone();
+        let branch = checkout.branch.clone();
+        let pushed = branch.clone();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { git::push(std::path::Path::new(&path), &pushed) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.git_busy = false;
+
+                match result {
+                    Ok(()) => {
+                        this.git_notice = Some(format!("Pushed {branch}."));
+                        this.composer_status =
+                            Some(ComposerStatus::Notice(format!("Pushed {branch}.")));
+                    }
+                    Err(message) => {
+                        this.git_error = Some(message);
+                    }
+                }
+
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_commit_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.git_busy;
+
+        let commit = Button::new("commit-run")
+            .primary()
+            .small()
+            .label(if busy { "Working…" } else { "Commit" })
+            .disabled(busy)
+            .on_click(cx.listener(|this, _, window, cx| this.commit_thread(window, cx)));
+
+        let push = Button::new("commit-push")
+            .small()
+            .label("Push")
+            .disabled(busy)
+            .on_click(cx.listener(|this, _, _, cx| this.push_thread(cx)));
+
+        let cancel = Button::new("commit-cancel")
+            .ghost()
+            .small()
+            .label("Cancel")
+            .disabled(busy)
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_commit(window, cx)));
+
+        let mut bar = v_flex().px(px(24.0)).pb(px(4.0)).gap_1().child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(div().flex_1().child(Input::new(&self.commit_message)))
+                .child(commit)
+                .child(push)
+                .child(cancel),
+        );
+
+        if let Some(error) = &self.git_error {
+            bar = bar.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        if let Some(notice) = &self.git_notice {
+            bar = bar.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().success_foreground)
+                    .child(notice.clone()),
+            );
+        }
+
+        bar.into_any_element()
     }
 
     fn toggle_worktree_mode(&mut self, cx: &mut Context<Self>) {
@@ -3040,8 +3234,14 @@ impl DesktopShell {
             this.update(cx, |this, cx| {
                 match thread {
                     Some(thread) => {
+                        if this.selected_workspace.as_deref() != Some(thread.workspace_id.as_str())
+                        {
+                            this.select_workspace(thread.workspace_id.clone(), cx);
+                        }
+
                         this.home_thread = Some(thread);
                         this.composer_status = None;
+                        this.refresh_home_checkout();
                         this.home_scroll.scroll_to_bottom();
                     }
                     None => {
@@ -6851,6 +7051,21 @@ impl DesktopShell {
                             ),
                         )
                     })
+                    .when(self.thread_checkout().is_some(), |element| {
+                        element.child(
+                            Button::new("thread-commit")
+                                .ghost()
+                                .small()
+                                .label(if self.commit_open {
+                                    "Hide commit"
+                                } else {
+                                    "Commit"
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_commit(window, cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("thread-files")
                             .ghost()
@@ -7060,6 +7275,9 @@ impl DesktopShell {
             .flex()
             .flex_col()
             .child(header)
+            .when(self.commit_open, |element| {
+                element.child(self.render_commit_bar(cx))
+            })
             .child(
                 // A row would centre its child vertically, which would drop the
                 // conversation into the middle of the window; this keeps it

@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// What can be said about a checkout from the machine the desktop runs on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +110,63 @@ fn git_dir(path: &Path) -> Option<PathBuf> {
     })
 }
 
+/// Stage everything the thread changed and commit it with `message`.
+pub fn commit(path: &Path, message: &str) -> Result<(), String> {
+    let staged = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["add", "-A"])
+        .output()
+        .map_err(|_| "Kloucy could not run git.".to_string())?;
+
+    if !staged.status.success() {
+        return Err("Kloucy could not stage this change.".to_string());
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["commit", "-m", message])
+        .output()
+        .map_err(|_| "Kloucy could not run git.".to_string())?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if stderr.contains("nothing to commit") || stderr.contains("no changes added") {
+        return Err("There is nothing to commit.".to_string());
+    }
+
+    Err("Kloucy could not commit this change.".to_string())
+}
+
+/// Push `branch` to its remote, setting the upstream on the first push.
+pub fn push(path: &Path, branch: &str) -> Result<(), String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["push", "-u", "origin", branch])
+        .output()
+        .map_err(|_| "Kloucy could not run git.".to_string())?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if stderr.contains("No configured push destination")
+        || stderr.contains("does not appear to be a git repository")
+    {
+        return Err("This checkout has no remote to push to.".to_string());
+    }
+
+    Err("Kloucy could not push this branch.".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +186,28 @@ mod tests {
             Some("feat/mobile-shared-spaces".to_string())
         );
         assert_eq!(parse_head("ref: refs/heads/main"), Some("main".to_string()));
+    }
+
+    #[test]
+    fn commits_a_change() {
+        let root = scratch_dir("commit");
+        let git = |arguments: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(arguments)
+                .status()
+                .expect("git")
+        };
+
+        assert!(git(&["init", "-q"]).success());
+        assert!(git(&["config", "user.email", "test@kloucy.dev"]).success());
+        assert!(git(&["config", "user.name", "Kloucy"]).success());
+        fs::write(root.join("README.md"), "# test\n").expect("file");
+        assert!(commit(&root, "first").is_ok());
+        assert!(commit(&root, "again").is_err());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
