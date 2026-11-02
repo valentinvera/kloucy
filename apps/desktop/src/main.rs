@@ -82,7 +82,7 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 16] = [
+const PALETTE_ENTRIES: [PaletteEntry; 17] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
@@ -178,6 +178,12 @@ const PALETTE_ENTRIES: [PaletteEntry; 16] = [
         group: "Thread",
         keywords: "shell command",
         label: "Open terminal",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Panel(Panel::Agents),
+        group: "Thread",
+        keywords: "subagents runs turns",
+        label: "Open agents",
     },
 ];
 
@@ -308,6 +314,7 @@ struct OpenFile {
 /// A surface the thread can show beside its conversation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Panel {
+    Agents,
     Diff,
     Files,
     Terminal,
@@ -3525,6 +3532,7 @@ impl DesktopShell {
         self.diff_error = None;
 
         match panel {
+            Panel::Agents => {}
             Panel::Diff => self.refresh_diff(cx),
             Panel::Files => self.refresh_files(cx),
             Panel::Terminal => self.start_terminal(cx),
@@ -7171,6 +7179,84 @@ impl DesktopShell {
             .into_any_element()
     }
 
+    /// The agent runs that worked in this thread, newest first.
+    fn render_agents_surface(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(thread) = &self.home_thread else {
+            return div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Open a thread to see its agent runs.")
+                .into_any_element();
+        };
+
+        if thread.turns.is_empty() {
+            return div()
+                .p_3()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("No agent runs yet.")
+                .into_any_element();
+        }
+
+        let mut list = v_flex().p_3().gap_3();
+
+        for (index, turn) in thread.turns.iter().enumerate().rev() {
+            let short = turn
+                .session_id
+                .split('-')
+                .next()
+                .unwrap_or(turn.session_id.as_str());
+
+            list = list.child(
+                v_flex()
+                    .gap_1()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .p_3()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(format!("Run {}", index + 1)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(status_ink(&turn.status, cx))
+                                    .child(turn.status.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_family(self.mono_font.clone())
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(short.to_string()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(turn.prompt.clone()),
+                    ),
+            );
+        }
+
+        div()
+            .id("agents-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(list)
+            .into_any_element()
+    }
+
     /// The thread's side panel: a tab per surface and the selected one below.
     fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let close = Button::new("panel-close")
@@ -7193,11 +7279,13 @@ impl DesktopShell {
                     .items_center()
                     .child(self.panel_tab(Panel::Files, "Files", cx))
                     .child(self.panel_tab(Panel::Diff, "Diff", cx))
-                    .child(self.panel_tab(Panel::Terminal, "Terminal", cx)),
+                    .child(self.panel_tab(Panel::Terminal, "Terminal", cx))
+                    .child(self.panel_tab(Panel::Agents, "Agents", cx)),
             )
             .child(close);
 
         let body: AnyElement = match self.panel {
+            Some(Panel::Agents) => self.render_agents_surface(cx),
             Some(Panel::Diff) => self.render_diff_surface(cx),
             Some(Panel::Files) => self.render_files_surface(cx),
             Some(Panel::Terminal) => self.render_terminal_surface(cx),
@@ -7225,9 +7313,10 @@ impl DesktopShell {
         let active = self.panel == Some(panel);
 
         let index = match panel {
-            Panel::Diff => 0_usize,
-            Panel::Files => 1,
-            Panel::Terminal => 2,
+            Panel::Agents => 0_usize,
+            Panel::Diff => 1,
+            Panel::Files => 2,
+            Panel::Terminal => 3,
         };
 
         div()
@@ -10006,6 +10095,11 @@ mod palette_tests {
             palette_matches("diff")
                 .iter()
                 .any(|entry| entry.command == PaletteCommand::Panel(Panel::Diff))
+        );
+        assert!(
+            palette_matches("agents")
+                .iter()
+                .any(|entry| entry.command == PaletteCommand::Panel(Panel::Agents))
         );
     }
 
