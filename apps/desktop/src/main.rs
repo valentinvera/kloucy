@@ -1203,6 +1203,7 @@ struct DesktopShell {
     api_url_input: Entity<InputState>,
     composer: Entity<InputState>,
     _composer_subscription: Subscription,
+    _palette_subscription: Subscription,
     composer_status: Option<ComposerStatus>,
     home_thread: Option<HomeThread>,
     panel: Option<Panel>,
@@ -1411,6 +1412,16 @@ impl DesktopShell {
         })
         .detach();
 
+        let palette_subscription = cx.subscribe_in(
+            &palette_query,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { secondary: false } = event {
+                    this.run_palette_first(window, cx);
+                }
+            },
+        );
+
         Self {
             api_url,
             api_url_input,
@@ -1423,6 +1434,7 @@ impl DesktopShell {
             theme_mode,
             composer,
             _composer_subscription: composer_subscription,
+            _palette_subscription: palette_subscription,
             composer_status: None,
             home_thread: None,
             panel: None,
@@ -8820,6 +8832,29 @@ impl DesktopShell {
         self.focus_handle.focus(window);
 
         cx.notify();
+    }
+
+    /// Enter runs what the palette is showing: a matching thread first, then
+    /// the first command.
+    fn run_palette_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.palette_query.read(cx).value().to_string();
+
+        let thread = self
+            .threads
+            .iter()
+            .find(|thread| !thread.archived && thread_matches_title(&thread.title, &query))
+            .cloned();
+
+        if let Some(thread) = thread {
+            self.close_palette(window, cx);
+            self.section = Section::Home;
+            self.open_stored_thread(thread, cx);
+            return;
+        }
+
+        if let Some(entry) = palette_matches(&query).first() {
+            self.run_palette_command(entry.command, window, cx);
+        }
     }
 
     fn run_palette_command(
