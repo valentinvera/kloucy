@@ -429,6 +429,11 @@ fn worktree_mode_key(workspace_id: &str) -> String {
     format!("worktreeMode:{workspace_id}")
 }
 
+/// The settings key that holds the branch a project's worktrees start from.
+fn worktree_base_key(workspace_id: &str) -> String {
+    format!("worktreeBase:{workspace_id}")
+}
+
 /// Seconds since the Unix epoch, for the thread's snooze clock.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -1697,6 +1702,23 @@ impl DesktopShell {
             settings::load_text(&worktree_mode_key(&workspace_id)).as_deref(),
             settings::load_bool("worktreeMode").unwrap_or(true),
         );
+        self.worktree_base =
+            settings::load_text(&worktree_base_key(&workspace_id)).and_then(|base| {
+                if base == "HEAD" {
+                    return None;
+                }
+
+                let exists = self
+                    .workspace_by_id(&workspace_id)
+                    .map(|workspace| {
+                        git::branches(std::path::Path::new(&workspace.local_path))
+                            .iter()
+                            .any(|branch| branch == &base)
+                    })
+                    .unwrap_or(false);
+
+                exists.then_some(base)
+            });
         self.selected_session = None;
         self.session_logs = LoadState::Loading;
         self.session_steps = LoadState::Loading;
@@ -2924,8 +2946,6 @@ impl DesktopShell {
                         if let Some(thread) = this.home_thread.as_mut() {
                             thread.checkout = checkout;
                         }
-
-                        this.worktree_base = None;
 
                         this.refresh_home_checkout();
                         this.remember_thread();
@@ -8317,10 +8337,12 @@ impl DesktopShell {
                 let root = self.active_checkout().unwrap_or_default();
                 let branches = git::branches(std::path::Path::new(&root));
                 let selected = self.worktree_base.clone();
+                let project = self.selected_workspace.clone();
 
                 Rc::new(move |cx| {
                     let mut list = menu_list(px(250.0));
                     let head_entity = entity.clone();
+                    let head_project = project.clone();
                     let head_label = match &selected {
                         Some(_) => "Current branch (HEAD)".to_string(),
                         None => "Current branch (HEAD) · selected".to_string(),
@@ -8334,6 +8356,12 @@ impl DesktopShell {
                         Some(Box::new(move |_, cx| {
                             let _ = head_entity.update(cx, |this, cx| {
                                 this.worktree_base = None;
+
+                                if let Some(project) = &head_project {
+                                    let key = worktree_base_key(project);
+                                    settings::save_text(&key, "HEAD");
+                                }
+
                                 this.home_menu = None;
                                 cx.notify();
                             });
@@ -8342,6 +8370,7 @@ impl DesktopShell {
 
                     for (index, branch) in branches.iter().take(40).enumerate() {
                         let branch_entity = entity.clone();
+                        let branch_project = project.clone();
                         let value = branch.clone();
                         let is_selected = selected.as_deref() == Some(branch.as_str());
 
@@ -8353,6 +8382,12 @@ impl DesktopShell {
                             Some(Box::new(move |_, cx| {
                                 let _ = branch_entity.update(cx, |this, cx| {
                                     this.worktree_base = Some(value.clone());
+
+                                    if let Some(project) = &branch_project {
+                                        let key = worktree_base_key(project);
+                                        settings::save_text(&key, &value);
+                                    }
+
                                     this.home_menu = None;
                                     cx.notify();
                                 });
