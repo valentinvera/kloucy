@@ -5186,10 +5186,10 @@ impl DesktopShell {
                 )
                 .into_any_element(),
             LoadState::Loaded(decisions) => {
-                let mut list = v_flex().gap_3();
+                let mut list = v_flex().gap_4();
 
-                for decision in decisions {
-                    list = list.child(
+                for (index, decision) in decisions.iter().enumerate() {
+                    let mut row = v_flex().gap_1().child(
                         h_flex()
                             .gap_2()
                             .items_center()
@@ -5198,15 +5198,74 @@ impl DesktopShell {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(decision.summary.clone().unwrap_or_default()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
                                     .child(decision.decision_type.clone()),
                             ),
                     );
+
+                    // A change of value is the decision: show it as one line.
+                    if let (Some(from), Some(to)) = (&decision.from_value, &decision.to_value) {
+                        row = row.child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .font_family(self.mono_font.clone())
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(from.clone())
+                                .child(Icon::new(IconName::ArrowRight).size(px(12.0)))
+                                .child(div().text_color(cx.theme().foreground).child(to.clone())),
+                        );
+                    }
+
+                    if let Some(summary) = &decision.summary {
+                        row = row.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(summary.clone()),
+                        );
+                    }
+
+                    if let Some(reason) = &decision.reason {
+                        row = row.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("Because {reason}")),
+                        );
+                    }
+
+                    if let Some(revisit) = &decision.revisit_when {
+                        row = row.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().warning_foreground)
+                                .child(format!("Revisit when {revisit}")),
+                        );
+                    }
+
+                    if let Some(session_id) = &decision.session_id {
+                        let stored = threads::StoredThread {
+                            agent_session: None,
+                            session_ids: vec![session_id.clone()],
+                            title: decision.title.clone(),
+                            updated_at: 0,
+                            workspace_id: self.selected_workspace.clone().unwrap_or_default(),
+                        };
+
+                        row = row.child(
+                            Button::new(("decision-open", index))
+                                .ghost()
+                                .small()
+                                .label("Open run")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.section = Section::Home;
+                                    this.open_stored_thread(stored.clone(), cx);
+                                })),
+                        );
+                    }
+
+                    list = list.child(row);
                 }
 
                 list.into_any_element()

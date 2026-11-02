@@ -73,11 +73,17 @@ pub struct Review {
 
 /// A decision as returned by the `decisions.list` tRPC procedure.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Decision {
+    pub from_value: Option<String>,
+    pub reason: Option<String>,
+    pub revisit_when: Option<String>,
+    pub session_id: Option<String>,
     pub summary: Option<String>,
     pub title: String,
     #[serde(rename = "type")]
     pub decision_type: String,
+    pub to_value: Option<String>,
 }
 
 /// A readiness snapshot as returned by the `readiness.latest` tRPC procedure.
