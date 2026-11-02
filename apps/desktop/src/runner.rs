@@ -137,18 +137,88 @@ fn classify_item(event: &serde_json::Value) -> (&'static str, String) {
     match kind {
         Some("agent_message") => ("answer", text.unwrap_or_default().to_string()),
         Some("reasoning") => ("trace", format!("reasoning: {}", text.unwrap_or_default())),
-        Some("command_execution") => (
-            "trace",
-            format!(
-                "$ {}",
-                item.get("command")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-            ),
-        ),
-        Some("file_change") => ("trace", "file changes".to_string()),
+        // Tool work rides the trace stream with a marker: the API already
+        // accepts trace, and the thread lifts the marked lines out of it.
+        Some("command_execution") => ("trace", format!("tool: {}", command_text(item))),
+        Some("file_change") => ("trace", format!("tool: {}", file_change_text(item))),
+        Some("mcp_tool_call") => ("trace", format!("tool: {}", mcp_text(item))),
+        Some("web_search") => ("trace", format!("tool: {}", web_search_text(item))),
         _ => ("trace", event.to_string()),
     }
+}
+
+/// A command the agent ran, with its exit code when it reported one.
+fn command_text(item: &serde_json::Value) -> String {
+    let command = item
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    match item.get("exit_code").and_then(serde_json::Value::as_i64) {
+        Some(0) | None => format!("$ {command}"),
+        Some(code) => format!("$ {command} · exit {code}"),
+    }
+}
+
+/// The files an edit touched, one verb per change.
+fn file_change_text(item: &serde_json::Value) -> String {
+    let changes = item
+        .get("changes")
+        .and_then(serde_json::Value::as_array)
+        .map(|changes| {
+            changes
+                .iter()
+                .filter_map(|change| {
+                    let path = change.get("path").and_then(serde_json::Value::as_str)?;
+                    let kind = change
+                        .get("kind")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("update");
+                    let verb = match kind {
+                        "add" | "create" => "Added",
+                        "delete" | "remove" => "Removed",
+                        _ => "Edited",
+                    };
+
+                    Some(format!("{verb} {path}"))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if changes.is_empty() {
+        "Changed files".to_string()
+    } else {
+        changes.join(" · ")
+    }
+}
+
+/// A tool call made through an MCP server.
+fn mcp_text(item: &serde_json::Value) -> String {
+    let server = item
+        .get("server")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("MCP");
+    let tool = item
+        .get("tool")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("tool call");
+    let status = item
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("completed");
+
+    format!("MCP · {server} · {tool} · {status}")
+}
+
+/// A web search the agent made.
+fn web_search_text(item: &serde_json::Value) -> String {
+    let query = item
+        .get("query")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    format!("Searched the web: {query}")
 }
 
 /// Quote a value for `sh -c`, where single quotes take everything literally.
@@ -360,13 +430,47 @@ mod tests {
     }
 
     #[test]
-    fn keeps_the_rest_of_a_run_as_trace() {
+    fn reads_tool_work_out_of_codex_events() {
         assert_eq!(
             classify(
-                r#"{"type":"item.completed","item":{"type":"command_execution","command":"ls -la"}}"#
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"ls -la","exit_code":0}}"#
             ),
-            ("trace", "$ ls -la".to_string())
+            ("trace", "tool: $ ls -la".to_string())
         );
+        assert_eq!(
+            classify(
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"false","exit_code":1}}"#
+            ),
+            ("trace", "tool: $ false · exit 1".to_string())
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"src/main.rs","kind":"update"},{"path":"README.md","kind":"add"}]}}"#
+            ),
+            (
+                "trace",
+                "tool: Edited src/main.rs · Added README.md".to_string()
+            )
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"github","tool":"search","status":"completed"}}"#
+            ),
+            (
+                "trace",
+                "tool: MCP · github · search · completed".to_string()
+            )
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"item.completed","item":{"type":"web_search","query":"gpui canvas"}}"#
+            ),
+            ("trace", "tool: Searched the web: gpui canvas".to_string())
+        );
+    }
+
+    #[test]
+    fn keeps_the_rest_of_a_run_as_trace() {
         assert_eq!(
             classify(
                 r#"{"type":"turn.completed","usage":{"input_tokens":14087,"output_tokens":5}}"#

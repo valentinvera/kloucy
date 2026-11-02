@@ -1329,6 +1329,16 @@ fn reasoning_text(logs: &[SessionLog]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
+/// The tool work a run reported, in the order it happened. It rides the trace
+/// stream behind a `tool: ` marker, so the API needs no new stream.
+fn tool_logs(logs: &[SessionLog]) -> Vec<String> {
+    logs.iter()
+        .filter(|log| log.stream == "trace")
+        .filter_map(|log| log.message.strip_prefix("tool: "))
+        .map(str::to_string)
+        .collect()
+}
+
 /// How a run's status reads in the thread header.
 fn thread_status_label(status: &str) -> &'static str {
     match status {
@@ -8808,7 +8818,47 @@ impl DesktopShell {
             }
 
             let reasoning = reasoning_text(&turn.logs);
+            let tools = tool_logs(&turn.logs);
             let mut column = v_flex().max_w(px(620.0)).gap_1();
+
+            if !tools.is_empty() {
+                const SHOWN_TOOLS: usize = 16;
+                let mut work = v_flex()
+                    .gap_1()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("Tool calls ({})", tools.len())),
+                    );
+
+                for line in tools.iter().take(SHOWN_TOOLS) {
+                    work = work.child(
+                        div()
+                            .text_xs()
+                            .font_family(self.mono_font.clone())
+                            .text_color(cx.theme().muted_foreground)
+                            .child(line.clone()),
+                    );
+                }
+
+                if tools.len() > SHOWN_TOOLS {
+                    work = work.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("+{} more tool calls", tools.len() - SHOWN_TOOLS)),
+                    );
+                }
+
+                column = column.child(work);
+            }
 
             if let Some(reasoning) = &reasoning {
                 let id = turn.session_id.clone();
@@ -11046,6 +11096,22 @@ mod home_tests {
         assert_eq!(empty_turn_label("failed"), "The run failed.");
         assert_eq!(empty_turn_label("stopped"), "Stopped before answering.");
         assert_eq!(empty_turn_label("done"), "The agent printed nothing.");
+    }
+
+    #[test]
+    fn lists_tool_calls_in_order() {
+        let logs = vec![
+            log("trace", "tool: $ ls"),
+            log("trace", "reasoning: mira"),
+            log("trace", "tool: Edited src/main.rs"),
+            log("answer", "listo"),
+        ];
+
+        assert_eq!(
+            tool_logs(&logs),
+            vec!["$ ls".to_string(), "Edited src/main.rs".to_string()]
+        );
+        assert!(tool_logs(&[log("answer", "listo")]).is_empty());
     }
 
     #[test]
