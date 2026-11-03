@@ -357,6 +357,10 @@ struct ProjectAction {
     open_preview: bool,
     #[serde(default)]
     preview_url: String,
+    #[serde(default)]
+    run_on_create: bool,
+    #[serde(default)]
+    wait_before_agent: bool,
 }
 
 /// A conversation on Home. Each turn is its own run, and the agent-side session
@@ -536,6 +540,52 @@ fn actions_from(value: Option<&str>) -> Vec<ProjectAction> {
 /// Write a project's actions as a stable JSON list.
 fn actions_to(actions: &[ProjectAction]) -> String {
     serde_json::to_string(actions).unwrap_or_default()
+}
+
+/// Run a project action and return what it printed. The error keeps a short
+/// tail of the output so the composer can say why it stopped the agent.
+fn run_action_command(cwd: &str, command: &str) -> Result<String, String> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(cwd)
+        .output()
+        .map_err(|_| "Kloucy could not run the command.".to_string())?;
+
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    let text = text.trim().to_string();
+
+    if output.status.success() {
+        return Ok(text);
+    }
+
+    if text.is_empty() {
+        Err(format!("exit {}", output.status.code().unwrap_or(-1)))
+    } else {
+        let tail = text
+            .chars()
+            .rev()
+            .take(600)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
+
+        Err(tail)
+    }
+}
+
+/// Run a project action without waiting and without a console.
+fn spawn_action_command(cwd: &str, command: &str) {
+    let _ = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 /// The unsent messages each thread keeps, as a JSON object of key to text.
@@ -1485,6 +1535,8 @@ struct DesktopShell {
     action_error: Option<String>,
     action_notice: Option<String>,
     action_open_preview: bool,
+    action_run_on_create: bool,
+    action_wait_before_agent: bool,
     editing_action: Option<String>,
     home_thread: Option<HomeThread>,
     panel: Option<Panel>,
@@ -1749,6 +1801,8 @@ impl DesktopShell {
             action_error: None,
             action_notice: None,
             action_open_preview: false,
+            action_run_on_create: false,
+            action_wait_before_agent: false,
             editing_action: None,
             home_thread: None,
             panel: None,
@@ -2135,6 +2189,8 @@ impl DesktopShell {
         self.actions = actions_from(settings::load_text(&actions_key(&workspace_id)).as_deref());
         self.editing_action = None;
         self.action_open_preview = false;
+        self.action_run_on_create = false;
+        self.action_wait_before_agent = false;
         self.selected_session = None;
         self.session_logs = LoadState::Loading;
         self.session_steps = LoadState::Loading;
@@ -3296,6 +3352,7 @@ impl DesktopShell {
         self.sending_composer = true;
 
         let title = composer_title(&text);
+        let setup_actions = self.actions.clone();
         let prompt = text.clone();
         let client = self.client.clone();
         let registry = self.registry.clone();
@@ -3341,6 +3398,7 @@ impl DesktopShell {
 
                         // A thread owns its worktree: the first message creates
                         // one, and every later turn in the thread runs there.
+                        let wants_worktree = existing_checkout.is_none() && worktree_mode && !chat;
                         let checkout = match existing_checkout {
                             Some(checkout) => Some(checkout),
                             None if worktree_mode && !chat => worktree::create(
@@ -3357,10 +3415,27 @@ impl DesktopShell {
                             None => None,
                         };
 
+                        let created_worktree = wants_worktree && checkout.is_some();
                         let cwd = checkout
                             .as_ref()
                             .map(|checkout| checkout.path.clone())
                             .unwrap_or(cwd);
+
+                        if created_worktree {
+                            for action in setup_actions.iter().filter(|action| action.run_on_create)
+                            {
+                                if action.wait_before_agent {
+                                    run_action_command(&cwd, &action.command).map_err(|error| {
+                                        ApiError::Message(format!(
+                                            "{} failed before the agent: {error}",
+                                            action.name
+                                        ))
+                                    })?;
+                                } else {
+                                    spawn_action_command(&cwd, &action.command);
+                                }
+                            }
+                        }
 
                         // The first message that works stores the agent behind
                         // it, so the registry fills itself by being used.
@@ -7352,6 +7427,8 @@ impl DesktopShell {
         }
 
         let open_preview = self.action_open_preview;
+        let run_on_create = self.action_run_on_create;
+        let wait_before_agent = self.action_wait_before_agent;
 
         if let Some(id) = self.editing_action.clone() {
             if let Some(action) = self.actions.iter_mut().find(|action| action.id == id) {
@@ -7359,6 +7436,8 @@ impl DesktopShell {
                 action.name = name.clone();
                 action.open_preview = open_preview;
                 action.preview_url = preview_url;
+                action.run_on_create = run_on_create;
+                action.wait_before_agent = wait_before_agent;
             }
         } else {
             let id = format!("action-{}-{}", now_secs(), self.actions.len());
@@ -7369,6 +7448,8 @@ impl DesktopShell {
                 name: name.clone(),
                 open_preview,
                 preview_url,
+                run_on_create,
+                wait_before_agent,
             });
         }
 
@@ -7377,6 +7458,8 @@ impl DesktopShell {
         self.action_error = None;
         self.editing_action = None;
         self.action_open_preview = false;
+        self.action_run_on_create = false;
+        self.action_wait_before_agent = false;
         self.action_notice = Some(format!("Action {name} saved."));
         self.action_name
             .update(cx, |state, cx| state.set_value("", window, cx));
@@ -7397,6 +7480,8 @@ impl DesktopShell {
         if self.editing_action.as_deref() == Some(id.as_str()) {
             self.editing_action = None;
             self.action_open_preview = false;
+            self.action_run_on_create = false;
+            self.action_wait_before_agent = false;
         }
 
         settings::save_text(&actions_key(&workspace_id), &actions_to(&self.actions));
@@ -7449,6 +7534,8 @@ impl DesktopShell {
             state.set_value(&action.preview_url, window, cx)
         });
         self.action_open_preview = action.open_preview;
+        self.action_run_on_create = action.run_on_create;
+        self.action_wait_before_agent = action.wait_before_agent;
         self.editing_action = Some(action.id);
         self.action_error = None;
         self.action_notice = None;
@@ -7458,6 +7545,8 @@ impl DesktopShell {
     fn cancel_action_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_action = None;
         self.action_open_preview = false;
+        self.action_run_on_create = false;
+        self.action_wait_before_agent = false;
         self.action_error = None;
         self.action_notice = None;
         self.action_name
@@ -7519,6 +7608,42 @@ impl DesktopShell {
                                 this.action_open_preview = !this.action_open_preview;
                                 cx.notify();
                             })),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_6()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_sm().child("Run on worktree creation"))
+                            .child(
+                                Switch::new("action-run-on-create")
+                                    .cursor(CursorStyle::PointingHand)
+                                    .checked(self.action_run_on_create)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.action_run_on_create = !this.action_run_on_create;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_sm().child("Wait before the agent starts"))
+                            .child(
+                                Switch::new("action-wait-agent")
+                                    .cursor(CursorStyle::PointingHand)
+                                    .checked(self.action_wait_before_agent)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.action_wait_before_agent =
+                                            !this.action_wait_before_agent;
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             );
 
@@ -11772,6 +11897,8 @@ mod home_tests {
             name: "Test".to_string(),
             open_preview: true,
             preview_url: "http://localhost:5173".to_string(),
+            run_on_create: true,
+            wait_before_agent: true,
         };
         let stored = actions_to(std::slice::from_ref(&action));
 
@@ -11782,6 +11909,15 @@ mod home_tests {
         assert!(!parsed[0].open_preview);
         assert!(actions_from(Some("not json")).is_empty());
         assert!(actions_from(None).is_empty());
+    }
+
+    #[test]
+    fn runs_an_action_command_and_keeps_its_failure() {
+        assert_eq!(
+            run_action_command(".", "printf action-ok"),
+            Ok("action-ok".to_string())
+        );
+        assert!(run_action_command(".", "false").is_err());
     }
 
     #[test]
