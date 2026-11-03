@@ -43,6 +43,7 @@ use crate::api::{
 use crate::detect::DetectedAgent;
 use crate::diff::LineKind;
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -87,12 +88,18 @@ struct PaletteEntry {
     label: &'static str,
 }
 
-const PALETTE_ENTRIES: [PaletteEntry; 24] = [
+const PALETTE_ENTRIES: [PaletteEntry; 25] = [
     PaletteEntry {
         command: PaletteCommand::Section(Section::Home),
         group: "Go to",
         keywords: "home overview activity",
         label: "Open home",
+    },
+    PaletteEntry {
+        command: PaletteCommand::Section(Section::Actions),
+        group: "Go to",
+        keywords: "actions commands test build",
+        label: "Open actions",
     },
     PaletteEntry {
         command: PaletteCommand::Section(Section::Workspaces),
@@ -258,6 +265,7 @@ fn palette_matches(query: &str) -> Vec<&'static PaletteEntry> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Section {
+    Actions,
     Home,
     Chats,
     Workspaces,
@@ -274,6 +282,7 @@ enum Section {
 impl Section {
     fn label(self) -> &'static str {
         match self {
+            Section::Actions => "Actions",
             Section::Home => "Home",
             Section::Chats => "Chats",
             Section::Workspaces => "Workspaces",
@@ -290,6 +299,7 @@ impl Section {
 
     fn description(self) -> &'static str {
         match self {
+            Section::Actions => "Commands a project can run from its header.",
             Section::Home => "What your agents are doing right now.",
             Section::Chats => "Conversations you had with your agents.",
             Section::Workspaces => "Local projects Kloucy can supervise.",
@@ -323,6 +333,7 @@ enum HomeMenu {
     Checkout,
     Branch,
     Attach,
+    Actions,
     Open,
     Safety,
 }
@@ -333,6 +344,17 @@ struct HomeTurn {
     prompt: String,
     session_id: String,
     status: String,
+}
+
+/// A command saved on a project and run from its thread header.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectAction {
+    command: String,
+    id: String,
+    name: String,
+    #[serde(default)]
+    preview_url: String,
 }
 
 /// A conversation on Home. Each turn is its own run, and the agent-side session
@@ -495,6 +517,23 @@ fn startup_thread(threads: &[threads::StoredThread]) -> Option<threads::StoredTh
 /// The settings key that holds the branch a project's worktrees start from.
 fn worktree_base_key(workspace_id: &str) -> String {
     format!("worktreeBase:{workspace_id}")
+}
+
+/// The settings key that holds one project's actions.
+fn actions_key(workspace_id: &str) -> String {
+    format!("actions:{workspace_id}")
+}
+
+/// Read a project's saved actions.
+fn actions_from(value: Option<&str>) -> Vec<ProjectAction> {
+    value
+        .and_then(|text| serde_json::from_str(text).ok())
+        .unwrap_or_default()
+}
+
+/// Write a project's actions as a stable JSON list.
+fn actions_to(actions: &[ProjectAction]) -> String {
+    serde_json::to_string(actions).unwrap_or_default()
 }
 
 /// The unsent messages each thread keeps, as a JSON object of key to text.
@@ -1437,6 +1476,12 @@ struct DesktopShell {
     pending_draft: Option<String>,
     all_sessions: HashMap<String, String>,
     watching_all_sessions: bool,
+    actions: Vec<ProjectAction>,
+    action_name: Entity<InputState>,
+    action_command: Entity<InputState>,
+    action_preview: Entity<InputState>,
+    action_error: Option<String>,
+    action_notice: Option<String>,
     home_thread: Option<HomeThread>,
     panel: Option<Panel>,
     files: LoadState<Vec<String>>,
@@ -1630,6 +1675,10 @@ impl DesktopShell {
         let commit_message = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
         let browser_url =
             cx.new(|cx| InputState::new(window, cx).placeholder("http://localhost:3000"));
+        let action_name = cx.new(|cx| InputState::new(window, cx).placeholder("Test"));
+        let action_command = cx.new(|cx| InputState::new(window, cx).placeholder("bun test"));
+        let action_preview = cx
+            .new(|cx| InputState::new(window, cx).placeholder("http://localhost:5173 (optional)"));
         let composer_subscription = cx.subscribe_in(
             &composer,
             window,
@@ -1689,6 +1738,12 @@ impl DesktopShell {
             pending_draft: None,
             all_sessions: HashMap::new(),
             watching_all_sessions: false,
+            actions: Vec::new(),
+            action_name,
+            action_command,
+            action_preview,
+            action_error: None,
+            action_notice: None,
             home_thread: None,
             panel: None,
             files: LoadState::Loading,
@@ -2071,6 +2126,7 @@ impl DesktopShell {
 
                 exists.then_some(base)
             });
+        self.actions = actions_from(settings::load_text(&actions_key(&workspace_id)).as_deref());
         self.selected_session = None;
         self.session_logs = LoadState::Loading;
         self.session_steps = LoadState::Loading;
@@ -7267,6 +7323,199 @@ impl DesktopShell {
         section.into_any_element()
     }
 
+    /// Save the action in the form to the selected project.
+    fn add_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.action_name.read(cx).value().trim().to_string();
+        let command = self.action_command.read(cx).value().trim().to_string();
+        let preview_url = self.action_preview.read(cx).value().trim().to_string();
+
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            self.action_error = Some("Select a project first.".to_string());
+            self.action_notice = None;
+            cx.notify();
+            return;
+        };
+
+        if name.is_empty() || command.is_empty() {
+            self.action_error = Some("A name and a command are required.".to_string());
+            self.action_notice = None;
+            cx.notify();
+            return;
+        }
+
+        let id = format!("action-{}-{}", now_secs(), self.actions.len());
+
+        self.actions.push(ProjectAction {
+            command,
+            id,
+            name: name.clone(),
+            preview_url,
+        });
+        settings::save_text(&actions_key(&workspace_id), &actions_to(&self.actions));
+
+        self.action_error = None;
+        self.action_notice = Some(format!("Action {name} saved."));
+        self.action_name
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.action_command
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.action_preview
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        cx.notify();
+    }
+
+    fn delete_action(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.selected_workspace.clone() else {
+            return;
+        };
+
+        self.actions.retain(|action| action.id != id);
+        settings::save_text(&actions_key(&workspace_id), &actions_to(&self.actions));
+        self.action_notice = Some("Action removed.".to_string());
+        cx.notify();
+    }
+
+    /// Run an action in the thread's terminal and keep its preview URL ready.
+    fn run_action(&mut self, action: ProjectAction, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_checkout().is_none() {
+            self.composer_status = Some(ComposerStatus::Failed(
+                "Select a project first.".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+
+        self.section = Section::Home;
+        self.home_menu = None;
+        self.select_panel(Panel::Terminal, cx);
+
+        if let Some(terminal) = &mut self.terminal {
+            terminal.write(format!("{}\n", action.command).as_bytes());
+        }
+
+        if !action.preview_url.trim().is_empty() {
+            let preview = action.preview_url.trim().to_string();
+            self.browser_url
+                .update(cx, |state, cx| state.set_value(&preview, window, cx));
+            self.browser_notice = Some(format!("Preview ready: {preview}"));
+        }
+
+        self.composer_status = Some(ComposerStatus::Notice(format!("Running {}.", action.name)));
+        cx.notify();
+    }
+
+    fn render_actions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let add = Button::new("action-add")
+            .primary()
+            .small()
+            .label("Add action")
+            .on_click(cx.listener(|this, _, window, cx| this.add_action(window, cx)));
+
+        let mut form = v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().w(px(200.0)).child(Input::new(&self.action_name)))
+                    .child(div().flex_1().child(Input::new(&self.action_command))),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().child(Input::new(&self.action_preview)))
+                    .child(add),
+            );
+
+        if let Some(error) = &self.action_error {
+            form = form.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(error.clone()),
+            );
+        }
+
+        if let Some(notice) = &self.action_notice {
+            form = form.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().success_foreground)
+                    .child(notice.clone()),
+            );
+        }
+
+        let mut list = v_flex().gap_2();
+
+        for (index, action) in self.actions.iter().enumerate() {
+            let run = action.clone();
+            let delete_id = action.id.clone();
+            let mut row = h_flex()
+                .items_center()
+                .gap_2()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(cx.theme().border)
+                .px(px(10.0))
+                .py(px(8.0))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .gap_0p5()
+                        .child(div().text_sm().child(action.name.clone()))
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family(self.mono_font.clone())
+                                .text_color(cx.theme().muted_foreground)
+                                .child(action.command.clone()),
+                        ),
+                );
+
+            if !action.preview_url.is_empty() {
+                row = row.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(action.preview_url.clone()),
+                );
+            }
+
+            row = row
+                .child(
+                    Button::new(("action-run", index))
+                        .small()
+                        .label("Run")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.run_action(run.clone(), window, cx);
+                        })),
+                )
+                .child(
+                    Button::new(("action-delete", index))
+                        .ghost()
+                        .small()
+                        .label("Delete")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.delete_action(delete_id.clone(), cx);
+                        })),
+                );
+
+            list = list.child(row);
+        }
+
+        v_flex()
+            .gap_4()
+            .child(form)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Saved actions"),
+            )
+            .child(list)
+            .into_any_element()
+    }
+
     /// Home: a composer while nothing runs, a thread while an agent works.
     fn render_home(&self, cx: &mut Context<Self>) -> AnyElement {
         let card = self.render_composer_card(cx);
@@ -8846,6 +9095,21 @@ impl DesktopShell {
                             cx,
                         ),
                     )
+                    .when(self.selected_workspace.is_some(), |element| {
+                        element.child(
+                            self.home_popover(
+                                "thread-actions",
+                                Button::new("thread-actions")
+                                    .ghost()
+                                    .small()
+                                    .label("Actions")
+                                    .into_any_element(),
+                                HomeMenu::Actions,
+                                Corner::BottomRight,
+                                cx,
+                            ),
+                        )
+                    })
                     .when(self.thread_checkout().is_some(), |element| {
                         element.child(
                             self.home_popover(
@@ -9744,6 +10008,63 @@ impl DesktopShell {
                         .into_any_element()
                 })
             }
+            HomeMenu::Actions => {
+                let actions = self.actions.clone();
+
+                Rc::new(move |cx| {
+                    let mut list = menu_list(px(300.0));
+
+                    for (index, action) in actions.iter().enumerate() {
+                        let entity = entity.clone();
+                        let value = action.clone();
+
+                        list = list.child(menu_row(
+                            ("project-action", index),
+                            cx,
+                            false,
+                            vec![
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(div().text_sm().child(action.name.clone()))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(action.command.clone()),
+                                    )
+                                    .into_any_element(),
+                            ],
+                            Some(Box::new(move |window, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.run_action(value.clone(), window, cx);
+                                });
+                            })),
+                        ));
+                    }
+
+                    if actions.is_empty() {
+                        list = list.child(menu_note("No actions yet.", cx));
+                    }
+
+                    let new_entity = entity.clone();
+
+                    list = list.child(menu_row(
+                        ("project-action-new", 0),
+                        cx,
+                        false,
+                        vec![div().text_sm().child("New action").into_any_element()],
+                        Some(Box::new(move |_, cx| {
+                            let _ = new_entity.update(cx, |this, cx| {
+                                this.section = Section::Actions;
+                                this.home_menu = None;
+                                cx.notify();
+                            });
+                        })),
+                    ));
+
+                    list.into_any_element()
+                })
+            }
             HomeMenu::Open => {
                 let editors = available_editors();
 
@@ -10318,6 +10639,7 @@ impl DesktopShell {
         }
 
         let body: AnyElement = match self.section {
+            Section::Actions => self.render_actions(cx),
             Section::Decisions => self.render_decisions(cx),
             Section::Home => self.render_home(cx),
             Section::Chats => self.render_chats(cx),
@@ -11330,6 +11652,21 @@ mod home_tests {
         assert_eq!(empty_turn_label("failed"), "The run failed.");
         assert_eq!(empty_turn_label("stopped"), "Stopped before answering.");
         assert_eq!(empty_turn_label("done"), "The agent printed nothing.");
+    }
+
+    #[test]
+    fn keeps_actions_per_project() {
+        let action = ProjectAction {
+            command: "bun test".to_string(),
+            id: "a".to_string(),
+            name: "Test".to_string(),
+            preview_url: "http://localhost:5173".to_string(),
+        };
+        let stored = actions_to(std::slice::from_ref(&action));
+
+        assert_eq!(actions_from(Some(&stored)), vec![action]);
+        assert!(actions_from(Some("not json")).is_empty());
+        assert!(actions_from(None).is_empty());
     }
 
     #[test]
