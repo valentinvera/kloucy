@@ -354,6 +354,8 @@ struct ProjectAction {
     id: String,
     name: String,
     #[serde(default)]
+    open_preview: bool,
+    #[serde(default)]
     preview_url: String,
 }
 
@@ -1482,6 +1484,8 @@ struct DesktopShell {
     action_preview: Entity<InputState>,
     action_error: Option<String>,
     action_notice: Option<String>,
+    action_open_preview: bool,
+    editing_action: Option<String>,
     home_thread: Option<HomeThread>,
     panel: Option<Panel>,
     files: LoadState<Vec<String>>,
@@ -1744,6 +1748,8 @@ impl DesktopShell {
             action_preview,
             action_error: None,
             action_notice: None,
+            action_open_preview: false,
+            editing_action: None,
             home_thread: None,
             panel: None,
             files: LoadState::Loading,
@@ -2127,6 +2133,8 @@ impl DesktopShell {
                 exists.then_some(base)
             });
         self.actions = actions_from(settings::load_text(&actions_key(&workspace_id)).as_deref());
+        self.editing_action = None;
+        self.action_open_preview = false;
         self.selected_session = None;
         self.session_logs = LoadState::Loading;
         self.session_steps = LoadState::Loading;
@@ -7343,17 +7351,32 @@ impl DesktopShell {
             return;
         }
 
-        let id = format!("action-{}-{}", now_secs(), self.actions.len());
+        let open_preview = self.action_open_preview;
 
-        self.actions.push(ProjectAction {
-            command,
-            id,
-            name: name.clone(),
-            preview_url,
-        });
+        if let Some(id) = self.editing_action.clone() {
+            if let Some(action) = self.actions.iter_mut().find(|action| action.id == id) {
+                action.command = command;
+                action.name = name.clone();
+                action.open_preview = open_preview;
+                action.preview_url = preview_url;
+            }
+        } else {
+            let id = format!("action-{}-{}", now_secs(), self.actions.len());
+
+            self.actions.push(ProjectAction {
+                command,
+                id,
+                name: name.clone(),
+                open_preview,
+                preview_url,
+            });
+        }
+
         settings::save_text(&actions_key(&workspace_id), &actions_to(&self.actions));
 
         self.action_error = None;
+        self.editing_action = None;
+        self.action_open_preview = false;
         self.action_notice = Some(format!("Action {name} saved."));
         self.action_name
             .update(cx, |state, cx| state.set_value("", window, cx));
@@ -7370,6 +7393,12 @@ impl DesktopShell {
         };
 
         self.actions.retain(|action| action.id != id);
+
+        if self.editing_action.as_deref() == Some(id.as_str()) {
+            self.editing_action = None;
+            self.action_open_preview = false;
+        }
+
         settings::save_text(&actions_key(&workspace_id), &actions_to(&self.actions));
         self.action_notice = Some("Action removed.".to_string());
         cx.notify();
@@ -7397,10 +7426,46 @@ impl DesktopShell {
             let preview = action.preview_url.trim().to_string();
             self.browser_url
                 .update(cx, |state, cx| state.set_value(&preview, window, cx));
-            self.browser_notice = Some(format!("Preview ready: {preview}"));
+
+            if action.open_preview {
+                let _ = open_external(&preview);
+                self.browser_notice = Some(format!("Preview opened: {preview}"));
+            } else {
+                self.browser_notice = Some(format!("Preview ready: {preview}"));
+            }
         }
 
         self.composer_status = Some(ComposerStatus::Notice(format!("Running {}.", action.name)));
+        cx.notify();
+    }
+
+    /// Load an action into the form so it can be changed instead of duplicated.
+    fn edit_action(&mut self, action: ProjectAction, window: &mut Window, cx: &mut Context<Self>) {
+        self.action_name
+            .update(cx, |state, cx| state.set_value(&action.name, window, cx));
+        self.action_command
+            .update(cx, |state, cx| state.set_value(&action.command, window, cx));
+        self.action_preview.update(cx, |state, cx| {
+            state.set_value(&action.preview_url, window, cx)
+        });
+        self.action_open_preview = action.open_preview;
+        self.editing_action = Some(action.id);
+        self.action_error = None;
+        self.action_notice = None;
+        cx.notify();
+    }
+
+    fn cancel_action_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_action = None;
+        self.action_open_preview = false;
+        self.action_error = None;
+        self.action_notice = None;
+        self.action_name
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.action_command
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.action_preview
+            .update(cx, |state, cx| state.set_value("", window, cx));
         cx.notify();
     }
 
@@ -7408,7 +7473,11 @@ impl DesktopShell {
         let add = Button::new("action-add")
             .primary()
             .small()
-            .label("Add action")
+            .label(if self.editing_action.is_some() {
+                "Save changes"
+            } else {
+                "Add action"
+            })
             .on_click(cx.listener(|this, _, window, cx| this.add_action(window, cx)));
 
         let mut form = v_flex()
@@ -7424,7 +7493,33 @@ impl DesktopShell {
                     .gap_2()
                     .items_center()
                     .child(div().flex_1().child(Input::new(&self.action_preview)))
-                    .child(add),
+                    .child(add)
+                    .when(self.editing_action.is_some(), |element| {
+                        element.child(
+                            Button::new("action-cancel-edit")
+                                .ghost()
+                                .small()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.cancel_action_edit(window, cx);
+                                })),
+                        )
+                    }),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_sm().child("Open preview automatically"))
+                    .child(
+                        Switch::new("action-open-preview")
+                            .cursor(CursorStyle::PointingHand)
+                            .checked(self.action_open_preview)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.action_open_preview = !this.action_open_preview;
+                                cx.notify();
+                            })),
+                    ),
             );
 
         if let Some(error) = &self.action_error {
@@ -7477,11 +7572,26 @@ impl DesktopShell {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(action.preview_url.clone()),
+                        .child(if action.open_preview {
+                            format!("{} · opens", action.preview_url)
+                        } else {
+                            action.preview_url.clone()
+                        }),
                 );
             }
 
+            let edit = action.clone();
+
             row = row
+                .child(
+                    Button::new(("action-edit", index))
+                        .ghost()
+                        .small()
+                        .label("Edit")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.edit_action(edit.clone(), window, cx);
+                        })),
+                )
                 .child(
                     Button::new(("action-run", index))
                         .small()
@@ -11660,11 +11770,16 @@ mod home_tests {
             command: "bun test".to_string(),
             id: "a".to_string(),
             name: "Test".to_string(),
+            open_preview: true,
             preview_url: "http://localhost:5173".to_string(),
         };
         let stored = actions_to(std::slice::from_ref(&action));
 
         assert_eq!(actions_from(Some(&stored)), vec![action]);
+
+        let legacy = r#"[{"command":"bun test","id":"a","name":"Test","previewUrl":"http://x"}]"#;
+        let parsed = actions_from(Some(legacy));
+        assert!(!parsed[0].open_preview);
         assert!(actions_from(Some("not json")).is_empty());
         assert!(actions_from(None).is_empty());
     }
