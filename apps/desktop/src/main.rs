@@ -1435,6 +1435,8 @@ struct DesktopShell {
     composer_status: Option<ComposerStatus>,
     drafts: HashMap<String, String>,
     pending_draft: Option<String>,
+    all_sessions: HashMap<String, String>,
+    watching_all_sessions: bool,
     home_thread: Option<HomeThread>,
     panel: Option<Panel>,
     files: LoadState<Vec<String>>,
@@ -1647,6 +1649,7 @@ impl DesktopShell {
 
             this.update(cx, |this, cx| {
                 this.apply_account(account, cx);
+                this.watch_all_sessions(cx);
 
                 if matches!(this.session, SessionStatus::SignedIn(_))
                     && let Some(stored) = startup_thread(&this.threads)
@@ -1684,6 +1687,8 @@ impl DesktopShell {
             composer_status: None,
             drafts: drafts_from(settings::load_text(DRAFTS_KEY).as_deref()),
             pending_draft: None,
+            all_sessions: HashMap::new(),
+            watching_all_sessions: false,
             home_thread: None,
             panel: None,
             files: LoadState::Loading,
@@ -1832,6 +1837,8 @@ impl DesktopShell {
                         this.workspaces = workspaces;
                         this.agents = agents;
 
+                        this.watch_all_sessions(cx);
+
                         if let Some(stored) = startup_thread(&this.threads) {
                             this.restore_stored_thread(stored, cx);
                         }
@@ -1929,6 +1936,112 @@ impl DesktopShell {
         let stored = collapsed_to(&self.collapsed_projects);
         settings::save_text(COLLAPSED_PROJECTS_KEY, &stored);
         cx.notify();
+    }
+
+    /// Poll every workspace so the sidebar can show which threads are working,
+    /// waiting or failed even when they are not the open one.
+    fn watch_all_sessions(&mut self, cx: &mut Context<Self>) {
+        if self.watching_all_sessions {
+            return;
+        }
+
+        self.watching_all_sessions = true;
+        let client = self.client.clone();
+
+        cx.spawn(async move |this, cx| {
+            loop {
+                let signed_in = this
+                    .update(cx, |this, _| {
+                        matches!(this.session, SessionStatus::SignedIn(_))
+                    })
+                    .unwrap_or(false);
+
+                if signed_in {
+                    let workspaces = this
+                        .update(cx, |this, _| match &this.workspaces {
+                            LoadState::Loaded(workspaces) => workspaces
+                                .iter()
+                                .map(|workspace| workspace.id.clone())
+                                .collect(),
+                            _ => Vec::new(),
+                        })
+                        .unwrap_or_default();
+
+                    if !workspaces.is_empty() {
+                        let (statuses, by_workspace) = cx
+                            .background_executor()
+                            .spawn({
+                                let client = client.clone();
+                                async move {
+                                    let mut statuses = HashMap::new();
+                                    let mut by_workspace = HashMap::new();
+
+                                    for workspace_id in workspaces {
+                                        if let LoadState::Loaded(sessions) =
+                                            load_sessions(&client, &workspace_id)
+                                        {
+                                            for session in &sessions {
+                                                statuses.insert(
+                                                    session.id.clone(),
+                                                    session.status.clone(),
+                                                );
+                                            }
+
+                                            by_workspace.insert(workspace_id, sessions);
+                                        }
+                                    }
+
+                                    (statuses, by_workspace)
+                                }
+                            })
+                            .await;
+
+                        this.update(cx, |this, cx| {
+                            let mut changed = this.all_sessions != statuses;
+                            this.all_sessions = statuses;
+
+                            if let Some(workspace_id) = &this.selected_workspace
+                                && let Some(sessions) = by_workspace.get(workspace_id)
+                            {
+                                let same = match &this.sessions {
+                                    LoadState::Loaded(current) => {
+                                        current.len() == sessions.len()
+                                            && current.iter().zip(sessions).all(|(left, right)| {
+                                                left.id == right.id && left.status == right.status
+                                            })
+                                    }
+                                    _ => false,
+                                };
+
+                                if !same {
+                                    this.sessions = LoadState::Loaded(sessions.clone());
+                                    changed = true;
+                                }
+                            }
+
+                            if changed {
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    }
+                }
+
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(5))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    /// The live status of one stored thread, if the API reported it.
+    fn thread_live_status(&self, thread: &threads::StoredThread) -> Option<&str> {
+        thread
+            .session_ids
+            .last()
+            .and_then(|key| self.all_sessions.get(key))
+            .map(String::as_str)
     }
 
     fn select_workspace(&mut self, workspace_id: String, cx: &mut Context<Self>) {
@@ -5483,7 +5596,17 @@ impl DesktopShell {
                     .path("icons/message-square.svg")
                     .size(px(14.0)),
             )
-            .child(div().min_w_0().truncate().child(title))
+            .child(div().flex_1().min_w_0().truncate().child(title))
+            .when_some(self.thread_live_status(thread), |element, status| {
+                let color = match status {
+                    "running" | "ready" => cx.theme().success_foreground,
+                    "waiting" | "needs_setup" => cx.theme().warning_foreground,
+                    "failed" => cx.theme().danger_foreground,
+                    _ => return element,
+                };
+
+                element.child(div().size(px(6.0)).rounded(px(3.0)).bg(color))
+            })
             .into_any_element()
     }
 
