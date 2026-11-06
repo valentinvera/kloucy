@@ -62,6 +62,15 @@ actions!(
         PickModel7,
         PickModel8,
         PickModel9,
+        RunAction1,
+        RunAction2,
+        RunAction3,
+        RunAction4,
+        RunAction5,
+        RunAction6,
+        RunAction7,
+        RunAction8,
+        RunAction9,
     ]
 );
 
@@ -360,6 +369,8 @@ struct ProjectAction {
     #[serde(default)]
     run_on_create: bool,
     #[serde(default)]
+    shortcut: Option<u8>,
+    #[serde(default)]
     wait_before_agent: bool,
 }
 
@@ -586,6 +597,15 @@ fn spawn_action_command(cwd: &str, command: &str) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// How a project action's keyboard slot reads.
+fn action_shortcut_label(slot: u8) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⌥⌘{}", slot + 1)
+    } else {
+        format!("Ctrl+Alt+{}", slot + 1)
+    }
 }
 
 /// The unsent messages each thread keeps, as a JSON object of key to text.
@@ -1537,6 +1557,7 @@ struct DesktopShell {
     action_open_preview: bool,
     action_run_on_create: bool,
     action_wait_before_agent: bool,
+    action_shortcut: Option<u8>,
     editing_action: Option<String>,
     home_thread: Option<HomeThread>,
     panel: Option<Panel>,
@@ -1803,6 +1824,7 @@ impl DesktopShell {
             action_open_preview: false,
             action_run_on_create: false,
             action_wait_before_agent: false,
+            action_shortcut: None,
             editing_action: None,
             home_thread: None,
             panel: None,
@@ -2191,6 +2213,7 @@ impl DesktopShell {
         self.action_open_preview = false;
         self.action_run_on_create = false;
         self.action_wait_before_agent = false;
+        self.action_shortcut = None;
         self.selected_session = None;
         self.session_logs = LoadState::Loading;
         self.session_steps = LoadState::Loading;
@@ -7429,14 +7452,17 @@ impl DesktopShell {
         let open_preview = self.action_open_preview;
         let run_on_create = self.action_run_on_create;
         let wait_before_agent = self.action_wait_before_agent;
+        let shortcut = self.action_shortcut;
+        let editing = self.editing_action.clone();
 
-        if let Some(id) = self.editing_action.clone() {
+        if let Some(id) = editing.clone() {
             if let Some(action) = self.actions.iter_mut().find(|action| action.id == id) {
                 action.command = command;
                 action.name = name.clone();
                 action.open_preview = open_preview;
                 action.preview_url = preview_url;
                 action.run_on_create = run_on_create;
+                action.shortcut = shortcut;
                 action.wait_before_agent = wait_before_agent;
             }
         } else {
@@ -7449,8 +7475,17 @@ impl DesktopShell {
                 open_preview,
                 preview_url,
                 run_on_create,
+                shortcut,
                 wait_before_agent,
             });
+        }
+
+        if let Some(slot) = shortcut {
+            for action in &mut self.actions {
+                if Some(action.id.as_str()) != editing.as_deref() && action.shortcut == Some(slot) {
+                    action.shortcut = None;
+                }
+            }
         }
 
         settings::save_text(&actions_key(&workspace_id), &actions_to(&self.actions));
@@ -7460,6 +7495,7 @@ impl DesktopShell {
         self.action_open_preview = false;
         self.action_run_on_create = false;
         self.action_wait_before_agent = false;
+        self.action_shortcut = None;
         self.action_notice = Some(format!("Action {name} saved."));
         self.action_name
             .update(cx, |state, cx| state.set_value("", window, cx));
@@ -7482,6 +7518,7 @@ impl DesktopShell {
             self.action_open_preview = false;
             self.action_run_on_create = false;
             self.action_wait_before_agent = false;
+            self.action_shortcut = None;
         }
 
         settings::save_text(&actions_key(&workspace_id), &actions_to(&self.actions));
@@ -7491,6 +7528,15 @@ impl DesktopShell {
 
     /// Run an action in the thread's terminal and keep its preview URL ready.
     fn run_action(&mut self, action: ProjectAction, window: &mut Window, cx: &mut Context<Self>) {
+        if self.home_thread.is_none() {
+            self.action_error = Some("Open a thread to run an action.".to_string());
+            self.composer_status = Some(ComposerStatus::Notice(
+                "Open a thread to run an action.".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+
         if self.active_checkout().is_none() {
             self.composer_status = Some(ComposerStatus::Failed(
                 "Select a project first.".to_string(),
@@ -7536,10 +7582,24 @@ impl DesktopShell {
         self.action_open_preview = action.open_preview;
         self.action_run_on_create = action.run_on_create;
         self.action_wait_before_agent = action.wait_before_agent;
+        self.action_shortcut = action.shortcut;
         self.editing_action = Some(action.id);
         self.action_error = None;
         self.action_notice = None;
         cx.notify();
+    }
+
+    /// Run the action bound to a keyboard slot, if the project has one.
+    fn run_project_action_slot(&mut self, slot: u8, window: &mut Window, cx: &mut Context<Self>) {
+        let action = self
+            .actions
+            .iter()
+            .find(|action| action.shortcut == Some(slot))
+            .cloned();
+
+        if let Some(action) = action {
+            self.run_action(action, window, cx);
+        }
     }
 
     fn cancel_action_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -7547,6 +7607,7 @@ impl DesktopShell {
         self.action_open_preview = false;
         self.action_run_on_create = false;
         self.action_wait_before_agent = false;
+        self.action_shortcut = None;
         self.action_error = None;
         self.action_notice = None;
         self.action_name
@@ -7647,6 +7708,45 @@ impl DesktopShell {
                     ),
             );
 
+        let mut none_slot = Button::new("action-slot-none").small().label("—");
+        none_slot = if self.action_shortcut.is_none() {
+            none_slot.primary()
+        } else {
+            none_slot.ghost()
+        };
+
+        let mut slots = h_flex()
+            .items_center()
+            .gap_1()
+            .child(div().text_sm().child("Shortcut"))
+            .child(none_slot.on_click(cx.listener(|this, _, _, cx| {
+                this.action_shortcut = None;
+                cx.notify();
+            })));
+
+        for slot in 0..9_u8 {
+            let selected = self.action_shortcut == Some(slot);
+            let mut button = Button::new(("action-slot", usize::from(slot)))
+                .small()
+                .label(format!("{}", slot + 1));
+            button = if selected {
+                button.primary()
+            } else {
+                button.ghost()
+            };
+
+            slots = slots.child(button.on_click(cx.listener(move |this, _, _, cx| {
+                this.action_shortcut = if this.action_shortcut == Some(slot) {
+                    None
+                } else {
+                    Some(slot)
+                };
+                cx.notify();
+            })));
+        }
+
+        form = form.child(slots);
+
         if let Some(error) = &self.action_error {
             form = form.child(
                 div()
@@ -7702,6 +7802,15 @@ impl DesktopShell {
                         } else {
                             action.preview_url.clone()
                         }),
+                );
+            }
+
+            if let Some(slot) = action.shortcut {
+                row = row.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(action_shortcut_label(slot)),
                 );
             }
 
@@ -10935,6 +11044,33 @@ impl DesktopShell {
             .on_action(cx.listener(|this, _: &PickModel7, _, cx| this.on_action_pick_model(6, cx)))
             .on_action(cx.listener(|this, _: &PickModel8, _, cx| this.on_action_pick_model(7, cx)))
             .on_action(cx.listener(|this, _: &PickModel9, _, cx| this.on_action_pick_model(8, cx)))
+            .on_action(cx.listener(|this, _: &RunAction1, window, cx| {
+                this.run_project_action_slot(0, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RunAction2, window, cx| {
+                this.run_project_action_slot(1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RunAction3, window, cx| {
+                this.run_project_action_slot(2, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RunAction4, window, cx| {
+                this.run_project_action_slot(3, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RunAction5, window, cx| {
+                this.run_project_action_slot(4, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RunAction6, window, cx| {
+                this.run_project_action_slot(5, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RunAction7, window, cx| {
+                this.run_project_action_slot(6, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RunAction8, window, cx| {
+                this.run_project_action_slot(7, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RunAction9, window, cx| {
+                this.run_project_action_slot(8, window, cx);
+            }))
             .size_full()
             .child(self.render_nav(cx))
             .child(self.render_content(cx));
@@ -11638,6 +11774,24 @@ fn main() {
                 KeyBinding::new("ctrl-7", PickModel7, Some(SHELL_CONTEXT)),
                 KeyBinding::new("ctrl-8", PickModel8, Some(SHELL_CONTEXT)),
                 KeyBinding::new("ctrl-9", PickModel9, Some(SHELL_CONTEXT)),
+                KeyBinding::new("cmd-alt-1", RunAction1, None),
+                KeyBinding::new("cmd-alt-2", RunAction2, None),
+                KeyBinding::new("cmd-alt-3", RunAction3, None),
+                KeyBinding::new("cmd-alt-4", RunAction4, None),
+                KeyBinding::new("cmd-alt-5", RunAction5, None),
+                KeyBinding::new("cmd-alt-6", RunAction6, None),
+                KeyBinding::new("cmd-alt-7", RunAction7, None),
+                KeyBinding::new("cmd-alt-8", RunAction8, None),
+                KeyBinding::new("cmd-alt-9", RunAction9, None),
+                KeyBinding::new("ctrl-alt-1", RunAction1, None),
+                KeyBinding::new("ctrl-alt-2", RunAction2, None),
+                KeyBinding::new("ctrl-alt-3", RunAction3, None),
+                KeyBinding::new("ctrl-alt-4", RunAction4, None),
+                KeyBinding::new("ctrl-alt-5", RunAction5, None),
+                KeyBinding::new("ctrl-alt-6", RunAction6, None),
+                KeyBinding::new("ctrl-alt-7", RunAction7, None),
+                KeyBinding::new("ctrl-alt-8", RunAction8, None),
+                KeyBinding::new("ctrl-alt-9", RunAction9, None),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1120.0), px(720.0)), cx);
@@ -11898,6 +12052,7 @@ mod home_tests {
             open_preview: true,
             preview_url: "http://localhost:5173".to_string(),
             run_on_create: true,
+            shortcut: Some(2),
             wait_before_agent: true,
         };
         let stored = actions_to(std::slice::from_ref(&action));
@@ -11907,6 +12062,7 @@ mod home_tests {
         let legacy = r#"[{"command":"bun test","id":"a","name":"Test","previewUrl":"http://x"}]"#;
         let parsed = actions_from(Some(legacy));
         assert!(!parsed[0].open_preview);
+        assert_eq!(parsed[0].shortcut, None);
         assert!(actions_from(Some("not json")).is_empty());
         assert!(actions_from(None).is_empty());
     }
